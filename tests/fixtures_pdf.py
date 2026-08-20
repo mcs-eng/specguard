@@ -62,6 +62,34 @@ def write_pdf(path: Path, pages: list[list[str]], fontsize: int = 11) -> Path:
     return path
 
 
+def write_pdf_with_hidden_text(path: Path, visible: str, hidden: str) -> Path:
+    """Write one page whose visible text and invisible text layer disagree.
+
+    ``render_mode=3`` is the PDF "invisible" text render mode, the same mode an
+    OCR layer uses over a scanned image. A reader sees ``visible``; extraction
+    returns both lines.
+    """
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((72.0, 100.0), visible, fontname=FIXTURE_FONT, fontsize=11)
+    page.insert_text((72.0, 130.0), hidden, fontname=FIXTURE_FONT, fontsize=11, render_mode=3)
+    document.save(str(path))
+    document.close()
+    return path
+
+
+def write_image_only_pdf(path: Path) -> Path:
+    """Write one page that carries an image and no text layer at all."""
+    document = pymupdf.open()
+    page = document.new_page()
+    pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 60, 20))
+    pixmap.set_rect(pixmap.irect, (10, 10, 10))
+    page.insert_image(pymupdf.Rect(72.0, 72.0, 300.0, 148.0), pixmap=pixmap)
+    document.save(str(path))
+    document.close()
+    return path
+
+
 def write_spec_pdf(directory: Path, name: str = "fictional_spec.pdf") -> Path:
     """Write the fictional four-page specification fixture."""
     return write_pdf(directory / name, SPEC_PAGES)

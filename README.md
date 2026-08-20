@@ -57,7 +57,16 @@ Known-bad cases that reject:
 - A quote whose leading digit rides on a longer number: `5 A` against `0.5 A`, `5 kPa` against `-5 kPa`, `5% ` against `±5%`, `500 kcmil` against `12,500 kcmil`, `1 unit` against `AHU-1 unit`.
 - A quote that merges digits across a soft hyphen: `NEMA 12` against a page whose `NEMA 1` is broken by a soft hyphen before a `2`.
 
-Two mutations are run against the suite to show the tests are evidence rather than decoration. Both are caught: reading page 2 for every later citation (`document[min(page_number - 1, 1)]`) fails 2 tests, and replacing `casefold()` with `lower()` fails 1.
+Known limitations, each pinned by a test so the limitation cannot quietly disappear:
+
+- A page whose invisible text layer disagrees with the visible page verifies against the invisible text.
+- A page with no text layer at all verifies nothing.
+- Casefolding makes `15 mW` and `15 MW` identical.
+- NFKC folds `10²` to `102`.
+- Whitespace collapse makes text from separate columns adjacent.
+- The schema cannot prove the gate was ever run.
+
+Mutation testing is not automated. Two mutations were run by hand once and both were caught: reading page 2 for every later citation (`document[min(page_number - 1, 1)]`) failed 2 tests, and replacing `casefold()` with `lower()` failed 1. The receipts are in `HANDOFF.md`; re-run them by hand if the gate changes.
 
 All test fixture content is fictional.
 

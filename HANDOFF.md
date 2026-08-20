@@ -9,7 +9,7 @@ All commands run in `C:\Users\mcspd\dev\specguard` on arya. Exit codes are unpip
 | Command | Exit | Result |
 | --- | --- | --- |
 | `uv sync` | 0 | 15 packages installed |
-| `uv run pytest -q` | 0 | `68 passed in 0.72s` |
+| `uv run pytest -q` | 0 | `70 passed in 0.87s` |
 | `uv run ruff check .` | 0 | `All checks passed!` |
 | `uv run ruff format --check .` | 0 | `10 files already formatted` |
 | `gh repo create mcs-eng/specguard --private --source=. --remote=origin --push` | 0 | `https://github.com/mcs-eng/specguard`, `* [new branch] HEAD -> main` |
@@ -111,7 +111,7 @@ The session sandbox denies writing to `C:\Users\mcspd\AppData\Local\Temp\pytest-
 
 ## What the suite proves
 
-68 tests. Every case the work order names is present, and every known-bad case asserts the machine-readable rejection reason, not only the boolean.
+70 tests. Every case the work order names is present, and every known-bad case asserts the machine-readable rejection reason, not only the boolean.
 
 Known-good (verify):
 

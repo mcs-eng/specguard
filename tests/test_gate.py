@@ -14,7 +14,14 @@ import pytest
 
 from specguard.gate import build_document_record, extract_page_text, normalize, verify_quote
 from specguard.models import RejectionReason
-from tests.fixtures_pdf import FI_LIGATURE, NO_BREAK_SPACE, SOFT_HYPHEN, write_pdf
+from tests.fixtures_pdf import (
+    FI_LIGATURE,
+    NO_BREAK_SPACE,
+    SOFT_HYPHEN,
+    write_image_only_pdf,
+    write_pdf,
+    write_pdf_with_hidden_text,
+)
 
 # --- known-good: these MUST verify ------------------------------------------
 
@@ -315,6 +322,32 @@ def test_normalize_erases_case_sensitive_units_known_limitation() -> None:
 def test_normalize_splices_across_layout_known_limitation() -> None:
     """Whitespace collapse discards layout, so separated text becomes adjacent."""
     assert normalize("left column\n\n\nright column") == "left column right column"
+
+
+def test_invisible_text_layer_verifies_known_limitation(tmp_path: Path) -> None:
+    """The gate reads the text layer, not the visible page.
+
+    The page shows 208 volts. An invisible layer, the same render mode an OCR
+    layer uses, says 209 volts. The gate verifies the 209 quote against text no
+    reader can see. README records this as a limitation. It is the strongest
+    reason the gate must not be described as proving a claim true.
+    """
+    pdf = write_pdf_with_hidden_text(
+        tmp_path / "hidden.pdf",
+        visible="Panelboard rated 208 volts",
+        hidden="Panelboard rated 209 volts",
+    )
+    assert verify_quote("Panelboard rated 208 volts", 1, pdf).verified is True
+    assert verify_quote("Panelboard rated 209 volts", 1, pdf).verified is True
+
+
+def test_image_only_page_verifies_nothing(tmp_path: Path) -> None:
+    """A page with no text layer carries no evidence, so every quote rejects."""
+    pdf = write_image_only_pdf(tmp_path / "scan.pdf")
+    assert extract_page_text(pdf, 1).strip() == ""
+    result = verify_quote("Panelboard rated 208 volts", 1, pdf)
+    assert result.verified is False
+    assert result.rejection_reason is RejectionReason.QUOTE_NOT_FOUND_ON_CITED_PAGE
 
 
 def test_normalize_uses_casefold_not_lower() -> None:

@@ -11,7 +11,8 @@ VERIFICATION CONTRACT
       between two letters, remove it together with any whitespace that follows
       it. A soft hyphen next to a digit never joins, so ``1<U+00AD>2`` stays
       two tokens and does not become ``12``.
-   c. Remove every remaining soft hyphen, leaving surrounding whitespace alone.
+   c. Remove every remaining soft hyphen, leaving the surrounding whitespace
+      alone.
    d. Casefold.
    e. Collapse every run of whitespace to a single space.
    f. Strip leading and trailing whitespace.
