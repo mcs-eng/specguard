@@ -48,6 +48,32 @@ def test_finding_carries_a_machine_readable_rejection_reason() -> None:
     assert result.rejection_reason.value == "quote_not_found_on_cited_page"
 
 
+def test_rejected_finding_must_carry_a_reason() -> None:
+    with pytest.raises(ValidationError):
+        finding(verification_status=VerificationStatus.REJECTED)
+
+
+@pytest.mark.parametrize("status", [VerificationStatus.PENDING, VerificationStatus.VERIFIED])
+def test_only_a_rejected_finding_may_carry_a_reason(status: VerificationStatus) -> None:
+    with pytest.raises(ValidationError):
+        finding(
+            verification_status=status,
+            rejection_reason=RejectionReason.QUOTE_NOT_FOUND_ON_CITED_PAGE,
+        )
+
+
+def test_the_schema_does_not_prove_the_gate_ran() -> None:
+    """Recorded on purpose: the schema cannot enforce that the gate ran.
+
+    A caller can construct a VERIFIED finding without calling verify_quote.
+    Binding the two is the persistence path's job in a later phase. README
+    states this rather than claiming the schema prevents it.
+    """
+    assert finding(verification_status=VerificationStatus.VERIFIED).verification_status is (
+        VerificationStatus.VERIFIED
+    )
+
+
 def test_finding_requires_at_least_one_quote() -> None:
     """Uncited claims are blocked from the ledger; the schema refuses them."""
     with pytest.raises(ValidationError):

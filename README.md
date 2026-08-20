@@ -17,15 +17,21 @@ This is the exact claim SpecGuard defends. `specguard/gate.py` implements it and
    c. Casefold.
    d. Collapse every run of whitespace to a single space.
    e. Strip leading and trailing whitespace.
-3. **Match.** The claim verifies only if the normalized quote is a contiguous substring of the normalized text of the cited page. There is no fuzzy matching, no edit distance, and no cross-page search.
+3. **Match.** The claim verifies only if the normalized quote is a contiguous substring of the normalized text of the cited page, and the substring sits on alphanumeric boundaries: the match may not begin or end in the middle of a word or a number. There is no fuzzy matching, no edit distance, and no cross-page search.
 4. **A miss is a rejection, always.** Every rejection carries a machine-readable reason: `page_out_of_range` or `quote_not_found_on_cited_page`.
 
 ### What the contract does not claim
 
-- It does not claim the model tells the truth. It claims that a quote which is not on the cited page never reaches the ledger.
-- It does not claim zero hallucinations. A hallucinated quote is rejected; a hallucinated *interpretation* of a real quote is not something this gate can detect.
-- It does not read scanned documents. The gate is proven against text-based PDFs only.
-- NFKC widens the match in one known way: it folds superscripts and subscripts into plain digits. A page reading `10²` normalizes to `102`, so a claim quoting `102` verifies against it. Cut sheets use `mm²` often, so treat a numeric claim that sits next to a superscript as unproven. `test_normalize_flattens_superscripts_known_limitation` pins this behavior.
+The gate proves one narrow thing: the quoted characters appear on the page that was cited. Everything below is outside that proof. This list is deliberately long, because the honesty claim is only worth as much as the list of things it does not cover.
+
+- It does not claim the model tells the truth. A quote that is absent from the cited page is rejected. A true quote attached to a wrong conclusion is not something this gate can detect.
+- It does not claim zero hallucinations.
+- **Normalization merges some strings that mean different things.** Every item below is a real path to a wrong verification, each pinned by a test:
+  - Casefolding erases case-sensitive units. A page reading `15 mW` and a claim quoting `15 MW` normalize identically, a millionfold difference. Case-insensitive matching is required by the contract, so this is a known cost of it, not a defect.
+  - NFKC folds superscripts and subscripts into plain digits. A page reading `10²` normalizes to `102`. Cut sheets use `mm²` often.
+  - Whitespace collapse discards layout. Text from two columns, two table cells, or a header and a body can end up adjacent, so a quote can splice text that never appeared together on the page.
+- **It reads the text layer, not the visible page.** A PDF whose text layer disagrees with what a human sees — hidden text, or an OCR layer over a scan — verifies against text the reader cannot see. A pure image scan carries no text and cannot verify anything. The gate is proven against generated text-based PDFs only.
+- **The schema does not enforce that the gate ran.** `Finding.verification_status` is an ordinary field. The schema keeps the status and the rejection reason consistent, but a caller can construct a `VERIFIED` finding without calling `verify_quote`. Binding the two is the job of the persistence path, which does not exist yet.
 - SHA-256 in `DocumentRecord` is chain-of-custody metadata. It records which byte stream was read. It is not an accuracy mechanism and no part of the gate reads it.
 
 ## What the test suite proves

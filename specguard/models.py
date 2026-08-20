@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class VerificationStatus(StrEnum):
@@ -36,8 +36,9 @@ class RejectionReason(StrEnum):
 class Severity(StrEnum):
     """Placeholder severity scale.
 
-    Phase 1 assigns ``UNCLASSIFIED`` to every finding. A later phase sets a
-    real value; nothing in the gate reads this field.
+    Phase 1 never computes a severity, so a finding built by Phase 1 code keeps
+    the ``UNCLASSIFIED`` default. The other members exist so a later phase can
+    set a real value. Nothing in the gate reads this field.
     """
 
     UNCLASSIFIED = "unclassified"
@@ -78,8 +79,12 @@ class DocumentRecord(BaseModel):
 class Finding(BaseModel):
     """One discrepancy claim raised against a submittal.
 
-    A finding reaches ``VerificationStatus.VERIFIED`` only after every quote in
-    ``quotes`` passes the gate. Uncited claims are blocked from the ledger.
+    The schema requires a finding to carry at least one cited quote, and it
+    keeps ``verification_status`` and ``rejection_reason`` consistent with each
+    other. It does not and cannot prove that the gate was ever run: a caller
+    that sets ``VERIFIED`` by hand gets a ``VERIFIED`` finding. Binding the
+    status to a real :func:`specguard.gate.verify_quote` result is the job of
+    the persistence path in a later phase.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -104,3 +109,13 @@ class Finding(BaseModel):
     rejection_reason: RejectionReason | None = Field(
         default=None, description="Set when the gate rejects the finding; otherwise None."
     )
+
+    @model_validator(mode="after")
+    def _status_and_reason_agree(self) -> Finding:
+        """A rejection needs a reason, and nothing else may carry one."""
+        rejected = self.verification_status is VerificationStatus.REJECTED
+        if rejected and self.rejection_reason is None:
+            raise ValueError("a rejected finding must carry a rejection_reason")
+        if not rejected and self.rejection_reason is not None:
+            raise ValueError("only a rejected finding may carry a rejection_reason")
+        return self

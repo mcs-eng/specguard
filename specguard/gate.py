@@ -13,8 +13,10 @@ VERIFICATION CONTRACT
    d. Collapse every run of whitespace to a single space.
    e. Strip leading and trailing whitespace.
 3. Match. The claim verifies only if the normalized quote is a contiguous
-   substring of the normalized text of the cited page. There is no fuzzy
-   matching, no edit distance, and no cross-page search.
+   substring of the normalized text of the cited page, and the substring sits
+   on alphanumeric boundaries: the match may not begin or end in the middle of
+   a word or a number. There is no fuzzy matching, no edit distance, and no
+   cross-page search.
 4. A miss is a rejection, always. Every rejection carries a machine-readable
    reason: ``page_out_of_range`` or ``quote_not_found_on_cited_page``.
 
@@ -69,6 +71,37 @@ def normalize(text: str) -> str:
     return text.strip()
 
 
+def _sits_on_alphanumeric_boundaries(haystack: str, needle: str, start: int) -> bool:
+    """True if the match at ``start`` does not cut a word or a number in half.
+
+    A boundary is required only between two alphanumeric characters. A quote
+    that itself starts or ends with punctuation needs no boundary on that side.
+    """
+    end = start + len(needle)
+    if needle[0].isalnum() and start > 0 and haystack[start - 1].isalnum():
+        return False
+    if needle[-1].isalnum() and end < len(haystack) and haystack[end].isalnum():
+        return False
+    return True
+
+
+def contains_on_boundaries(haystack: str, needle: str) -> bool:
+    """True if ``needle`` occurs in ``haystack`` on alphanumeric boundaries.
+
+    Both arguments must already be normalized. Every occurrence is checked, not
+    only the first: an occurrence that cuts a number in half does not hide a
+    later occurrence that does not.
+    """
+    if not needle:
+        return False
+    start = haystack.find(needle)
+    while start != -1:
+        if _sits_on_alphanumeric_boundaries(haystack, needle, start):
+            return True
+        start = haystack.find(needle, start + 1)
+    return False
+
+
 def extract_page_text(pdf_path: str | Path, page_number: int) -> str:
     """Return the raw text of a one-based page number.
 
@@ -103,7 +136,7 @@ def verify_quote(quote: str, page_number: int, pdf_path: str | Path) -> Verifica
     normalized_quote = normalize(quote)
     normalized_page = normalize(page_text)
 
-    found = bool(normalized_quote) and normalized_quote in normalized_page
+    found = contains_on_boundaries(normalized_page, normalized_quote)
     return VerificationResult(
         verified=found,
         pdf_path=path_text,

@@ -7,13 +7,14 @@ rejection reason it demands.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
 
-from specguard.gate import build_document_record, normalize, verify_quote
+from specguard.gate import build_document_record, extract_page_text, normalize, verify_quote
 from specguard.models import RejectionReason
-from tests.fixtures_pdf import FI_LIGATURE, NO_BREAK_SPACE
+from tests.fixtures_pdf import FI_LIGATURE, NO_BREAK_SPACE, SOFT_HYPHEN, write_pdf
 
 # --- known-good: these MUST verify ------------------------------------------
 
@@ -149,8 +150,65 @@ def test_empty_quote_rejects(spec_pdf: Path, quote: str) -> None:
 
 def test_visible_hyphen_is_not_a_soft_hyphen(spec_pdf: Path) -> None:
     """The contract strips U+00AD only. A printed hyphen stays in the text."""
-    assert verify_quote("Panelboard MDP2", 2, spec_pdf).verified is False
+    result = verify_quote("Panelboard MDP2", 2, spec_pdf)
+    assert result.verified is False
+    assert result.rejection_reason is RejectionReason.QUOTE_NOT_FOUND_ON_CITED_PAGE
     assert verify_quote("Panelboard MDP-2", 2, spec_pdf).verified is True
+
+
+def test_match_may_not_start_inside_a_number(spec_pdf: Path) -> None:
+    """The page says 15 kV. A claim quoting 5 kV must not ride on that 5."""
+    assert verify_quote("15 kV with shielded conductors", 2, spec_pdf).verified is True
+    result = verify_quote("5 kV with shielded conductors", 2, spec_pdf)
+    assert result.verified is False
+    assert result.rejection_reason is RejectionReason.QUOTE_NOT_FOUND_ON_CITED_PAGE
+
+
+def test_match_may_not_start_inside_a_word(spec_pdf: Path) -> None:
+    """The page says Panelboard. A claim quoting board must not ride on it."""
+    assert verify_quote("board MDP-2 shall be rated", 2, spec_pdf).verified is False
+
+
+def test_match_may_not_end_inside_a_word(spec_pdf: Path) -> None:
+    """The page says Receptacles. A claim quoting Receptacle must not match."""
+    assert verify_quote("Receptacle", 1, spec_pdf).verified is False
+    assert verify_quote("Receptacles", 1, spec_pdf).verified is True
+
+
+def test_boundary_rule_allows_punctuation_edges(spec_pdf: Path) -> None:
+    """A quote whose edge is punctuation needs no alphanumeric boundary."""
+    assert verify_quote(", rated 20 amperes", 1, spec_pdf).verified is True
+
+
+def test_boundary_rule_checks_every_occurrence() -> None:
+    """A bad first occurrence must not hide a good later one."""
+    from specguard.gate import contains_on_boundaries
+
+    assert contains_on_boundaries("x208 and 208 volts", "208") is True
+    assert contains_on_boundaries("x208 and y208", "208") is False
+
+
+def test_extract_page_text_reads_the_cited_page(spec_pdf: Path) -> None:
+    assert "Receptacles" in extract_page_text(spec_pdf, 1)
+    assert "Receptacles" not in extract_page_text(spec_pdf, 2)
+
+
+@pytest.mark.parametrize("cited_page", [0, 5, -1])
+def test_extract_page_text_raises_for_a_bad_page(spec_pdf: Path, cited_page: int) -> None:
+    with pytest.raises(IndexError):
+        extract_page_text(spec_pdf, cited_page)
+
+
+def test_fixture_font_round_trips_the_special_characters(spec_pdf: Path) -> None:
+    """Guard the fixture premise, not only the final match.
+
+    If PyMuPDF ever stops carrying U+00AD or U+FB01 through extraction, the
+    soft-hyphen and ligature cases would silently stop testing anything. This
+    asserts the raw extracted characters.
+    """
+    raw = extract_page_text(spec_pdf, 2)
+    assert SOFT_HYPHEN in raw
+    assert FI_LIGATURE in raw
 
 
 # --- normalization and provenance -------------------------------------------
@@ -179,16 +237,37 @@ def test_normalize_flattens_superscripts_known_limitation() -> None:
     assert normalize("35 mm² copper") == "35 mm2 copper"
 
 
+def test_normalize_erases_case_sensitive_units_known_limitation() -> None:
+    """Casefolding makes mW and MW identical. That is a millionfold difference.
+
+    The contract requires case-insensitive matching, so this is a known cost of
+    the contract rather than a defect. README records it.
+    """
+    assert normalize("rated 15 mW") == normalize("rated 15 MW")
+
+
+def test_normalize_splices_across_layout_known_limitation() -> None:
+    """Whitespace collapse discards layout, so separated text becomes adjacent."""
+    assert normalize("left column\n\n\nright column") == "left column right column"
+
+
 def test_normalize_does_not_fold_unlike_dashes() -> None:
     """NFKC leaves a non-breaking hyphen distinct from a plain hyphen."""
     assert normalize("MDP‑2") != normalize("MDP-2")
 
 
-def test_document_record_is_chain_of_custody_only(spec_pdf: Path) -> None:
+def test_document_record_digests_the_actual_bytes(spec_pdf: Path) -> None:
+    """A constant digest would pass a length-and-stability check. This will not."""
     record = build_document_record(spec_pdf)
     assert record.page_count == 4
-    assert len(record.sha256) == 64
+    assert record.sha256 == hashlib.sha256(spec_pdf.read_bytes()).hexdigest()
     assert record.sha256 == build_document_record(spec_pdf).sha256
+
+
+def test_document_record_digest_differs_for_different_bytes(tmp_path: Path) -> None:
+    one = write_pdf(tmp_path / "one.pdf", [["Alpha content."]])
+    two = write_pdf(tmp_path / "two.pdf", [["Beta content."]])
+    assert build_document_record(one).sha256 != build_document_record(two).sha256
 
 
 def test_result_reports_the_document_it_read(spec_pdf: Path) -> None:
