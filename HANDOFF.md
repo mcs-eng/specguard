@@ -9,12 +9,12 @@ All commands run in `C:\Users\mcspd\dev\specguard` on arya. Exit codes are unpip
 | Command | Exit | Result |
 | --- | --- | --- |
 | `uv sync` | 0 | 15 packages installed |
-| `uv run pytest -q` | 0 | `55 passed in 0.57s` |
+| `uv run pytest -q` | 0 | `68 passed in 0.72s` |
 | `uv run ruff check .` | 0 | `All checks passed!` |
-| `uv run ruff format --check .` | 0 | `12 files already formatted` |
+| `uv run ruff format --check .` | 0 | `10 files already formatted` |
 | `gh repo create mcs-eng/specguard --private --source=. --remote=origin --push` | 0 | `https://github.com/mcs-eng/specguard`, `* [new branch] HEAD -> main` |
 
-Test count by stage: 36 at the first commit `ca48ab9`, 38 after the NFKC superscript limitation was pinned, 55 after the Codex review corrections.
+Test count by stage: 36 at the first commit `ca48ab9`, 38 after the NFKC superscript limitation was pinned, 55 after Codex review iteration 1, 68 after the adversarial review iteration 2.
 
 ## GitHub repository
 
@@ -68,13 +68,17 @@ Dev group (`[dependency-groups].dev`):
 
 ## Contract-precision and environment decisions, all flagged
 
-### 1. Soft hyphen strips its trailing whitespace
+### 1. Soft hyphen rejoins words, never numbers
 
 The work order states "strip soft hyphens (U+00AD)". Read literally, a page reading `trans\u00ad\nformer` normalizes to `trans former` — the line break survives as a space and the required known-good case ("quote split across a soft-hyphen line break") can never pass.
 
-Implemented rule: remove each soft hyphen **together with any whitespace that immediately follows it**, before the whitespace-collapse step. This is the only reading under which the mandated known-good case is provable. It does not loosen the match: a *printed* hyphen (U+002D) at a line break is left in place and still causes a rejection. `test_visible_hyphen_is_not_a_soft_hyphen` proves that boundary.
+Implemented rule: where a soft hyphen sits **between two letters**, remove it together with any whitespace that follows it. Every other soft hyphen is removed on its own, leaving the surrounding whitespace intact. This is the only reading under which the mandated known-good case is provable.
 
-Order of operations in `normalize()`: NFKC, then soft-hyphen removal, then casefold, then whitespace collapse, then strip.
+**Correction.** An earlier version of this file claimed the rule "does not loosen the match." That was false, and the adversarial review was right to call it out. The first implementation removed a soft hyphen plus following whitespace unconditionally, which merged digits: `NEMA 1<U+00AD>\n2` became `NEMA 12`, and Type 1 and Type 12 enclosures are materially different equipment. It also let a quote delete its own space, so `AHU<U+00AD> 1` matched page text `AHU1`. Restricting the join to letters closes both. Tests: `test_soft_hyphen_never_joins_digits`, `test_soft_hyphen_never_erases_a_space_next_to_a_digit`.
+
+What is true is the narrower claim: a *printed* hyphen (U+002D) is never removed, so a visible line-end hyphen still causes a rejection. `test_visible_hyphen_is_not_a_soft_hyphen` proves that.
+
+Order of operations in `normalize()`: NFKC, soft-hyphen word join, remaining soft-hyphen removal, casefold, whitespace collapse, strip.
 
 ### 2. `pymupdf-fonts` added as a dev dependency
 
@@ -100,7 +104,7 @@ The session sandbox denies writing to `C:\Users\mcspd\AppData\Local\Temp\pytest-
 
 ## What the suite proves
 
-55 tests. Every case the work order names is present, and every known-bad case asserts the machine-readable rejection reason, not only the boolean.
+68 tests. Every case the work order names is present, and every known-bad case asserts the machine-readable rejection reason, not only the boolean.
 
 Known-good (verify):
 
@@ -176,9 +180,40 @@ The third run completed: `task-mt1x4djd-ha83zp`, exit 0.
 
 ### Iteration 2 — adversarial design review
 
-An adversarial review (`task-mt1xluh7-hi5jc2`) was requested by Mason mid-session and run against commit `3963f89`, which predates the boundary fix above. Its findings and the responses are recorded below.
+Mason requested an adversarial design review mid-session. It ran read-only against clean commit `65948a9`, so it saw the iteration-1 corrections. It was asked to challenge the approach rather than hunt defects. `task-mt1xluh7-hi5jc2`, exit 0.
 
-<!-- CODEX-ADVERSARIAL -->
+`/codex:adversarial-review` could not be used directly: it is marked `disable-model-invocation: true`, and it resolves its target from a git diff, which a one-commit repo cannot supply. The same framing was sent through the task path with an explicit file list.
+
+**Accepted and fixed — two more false-verification paths, both the same class as iteration 1.**
+
+15. **The boundary rule was alphanumeric, not numeric.** A decimal point, a sign, and a thousands separator are all non-alphanumeric, so the iteration-1 fix still let a digit-leading quote ride on a longer number. Confirmed cases: page `0.5 A` satisfied a claim quoting `5 A`; page `-5 kPa` satisfied `5 kPa`; page `±5%` satisfied `5%`; page `12,500 kcmil` satisfied `500 kcmil`; page `AHU-1 unit` satisfied `1 unit`.
+
+    Fix: a digit at the edge of the quote may not sit against any character in `.,-+/±⁄` either. `test_match_may_not_start_against_a_number_binding_character` covers all five, and `test_whole_numbers_still_verify` guards against over-rejection.
+
+16. **The soft-hyphen rule merged digits.** See the correction above. `NEMA 1<U+00AD>\n2` became `NEMA 12`. Fixed by restricting the join to letters.
+
+**Accepted and fixed — the suite was weaker evidence than it looked.**
+
+17. **Two mutations survived the entire suite.** Codex identified both by static analysis and marked them unconfirmed because it did not run pytest. Both were confirmed by actually running them:
+
+    | Mutation | Before | After |
+    | --- | --- | --- |
+    | `document[min(page_number - 1, 1)]` — read page 2 for every later citation | suite passed | 2 failures, exit 1 |
+    | `text.casefold()` → `text.lower()` | suite passed | 1 failure, exit 1 |
+
+    Cause of the first: every positive case lived on pages 1 and 2, and the only page 3 and page 4 tests expected rejection. Fixed by `test_every_page_has_a_verifying_quote`, which requires a verifying quote on all four pages. Cause of the second: no fixture distinguished `casefold` from `lower`. Fixed by `test_normalize_uses_casefold_not_lower`, which uses the German sharp s. Restoring the original file returns exit 0 on 68 tests.
+
+**Recorded, not actioned — these are Phase 3 architecture, and several would change the mandated contract.**
+
+18. **"VERIFIED" is the wrong word for what the gate proves.** Codex's strongest point. The gate establishes that the quoted characters occur on the cited page. It does not establish that the claim built on them is sound. Its recommendation is to name the result `text_anchor_found` and keep the finding `unreviewed` until a human or a structured comparator checks the claim. This is a naming and narrative decision that touches the demo script and the README headline, so it is Mason's call, not this session's. See open question 9.
+
+19. **Match within one extracted block, not the whole page.** Whitespace collapse discards row, cell, and column boundaries, so a column-major extraction such as `AHU-1 / AHU-2 / 30 A / 60 A` can manufacture an association that never appeared visually. The fix is to match inside a single block or table cell and keep coordinates. This is a real contract change and is the most valuable single upgrade available for Phase 3.
+
+20. **The schema models prose plus an undifferentiated bag of quotes.** Missing: typed requirement evidence versus typed submittal evidence (today one spec quote satisfies the schema with no evidence of what the product actually offers); product and model applicability, so a multi-model cut sheet cannot have the right value cited from the wrong row; per-quote verification results with the matched span; structured comparison fields (subject, property, operator, required value and unit, submitted value and unit); evidence of absence, which no positive substring can support; and `ambiguous` / `unextractable` / `needs_review` outcomes, because a binary verified/rejected turns extraction uncertainty into false certainty.
+
+21. **`document_path` is mutable and unbound to `DocumentRecord.sha256`.** Same root as finding 14, stated more sharply: document identity should be the hash and revision, not a path string.
+
+22. **The fixtures are PDFs that PyMuPDF both writes and reads.** They prove the gate implements its contract; they are weak evidence about real vendor PDFs. Codex recommends checking representative real submittals with `get_text("rawdict")` and comparing collision candidates against the rendered page. Phase 2 fixture work should keep this in view.
 
 ## Open questions for Phase 3
 
@@ -189,4 +224,5 @@ An adversarial review (`task-mt1xluh7-hi5jc2`) was requested by Mason mid-sessio
 5. **`extract_pdf_text` tool boundary.** `extract_page_text` currently raises `IndexError` for a bad page, while `verify_quote` returns a rejection. Phase 3 should decide which surface the ADK tool exposes so a bad page number never becomes an agent-visible exception.
 6. **Multi-column extraction order.** The fixtures are single-column, so extraction order matches reading order. A two-column cut sheet can make PyMuPDF interleave text from both columns, which would break a legitimate quote and produce a false rejection. Phase 2 should either keep fixtures single-column or prove the gate against a two-column page before the demo depends on one.
 7. **Document identity binding.** `verify_quote(quote, page_number, pdf_path)` takes the document path as an argument, while `CitedQuote` carries its own `document_path`. Nothing checks that they agree, so a claim citing one document could be verified against another. Phase 3 must bind them at the call site, or `verify_quote` should take the `CitedQuote` directly.
-8. **Firestore write path.** Nothing persists yet. Decide whether the gate result is stored alongside the finding or recomputed on read, and whether a rejected finding is written at all or only counted.
+8. **Rename the passing outcome.** The adversarial review argues `VERIFIED` overstates what the gate proves and recommends `text_anchor_found`, with the finding staying `unreviewed` until the claim itself is checked. The counter-argument is that the demo narrative and the README headline are built on the current word. Decide before the video script is written, because changing it afterwards is expensive.
+9. **Firestore write path.** Nothing persists yet. Decide whether the gate result is stored alongside the finding or recomputed on read, and whether a rejected finding is written at all or only counted.

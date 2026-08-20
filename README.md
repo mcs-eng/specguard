@@ -13,11 +13,12 @@ This is the exact claim SpecGuard defends. `specguard/gate.py` implements it and
 1. **Extraction.** The gate extracts the text of the cited page with PyMuPDF (pinned version). It reads that page and no other page.
 2. **Normalization.** The gate normalizes the quote and the page text with the same steps, in this order:
    a. Unicode NFKC normalization.
-   b. Remove each soft hyphen (U+00AD) together with any whitespace that immediately follows it.
-   c. Casefold.
-   d. Collapse every run of whitespace to a single space.
-   e. Strip leading and trailing whitespace.
-3. **Match.** The claim verifies only if the normalized quote is a contiguous substring of the normalized text of the cited page, and the substring sits on alphanumeric boundaries: the match may not begin or end in the middle of a word or a number. There is no fuzzy matching, no edit distance, and no cross-page search.
+   b. Rejoin a word broken by a soft hyphen: where a soft hyphen (U+00AD) sits between two **letters**, remove it together with any whitespace that follows it. A soft hyphen next to a digit never joins, so `1<U+00AD>2` stays two tokens and does not become `12`.
+   c. Remove every remaining soft hyphen, leaving the surrounding whitespace alone.
+   d. Casefold.
+   e. Collapse every run of whitespace to a single space.
+   f. Strip leading and trailing whitespace.
+3. **Match.** The claim verifies only if the normalized quote is a contiguous substring of the normalized text of the cited page, and the substring sits on token boundaries: the match may not begin or end in the middle of a word or a number. A digit at the edge of the quote may not sit against a character that binds to a number either, so a claim quoting `5 A` cannot ride on the page text `0.5 A`. There is no fuzzy matching, no edit distance, and no cross-page search.
 4. **A miss is a rejection, always.** Every rejection carries a machine-readable reason: `page_out_of_range` or `quote_not_found_on_cited_page`.
 
 ### What the contract does not claim
@@ -53,6 +54,10 @@ Known-bad cases that reject:
 - A quote with the unit changed, such as V against kV.
 - A page number outside the document.
 - An empty quote.
+- A quote whose leading digit rides on a longer number: `5 A` against `0.5 A`, `5 kPa` against `-5 kPa`, `5% ` against `±5%`, `500 kcmil` against `12,500 kcmil`, `1 unit` against `AHU-1 unit`.
+- A quote that merges digits across a soft hyphen: `NEMA 12` against a page whose `NEMA 1` is broken by a soft hyphen before a `2`.
+
+Two mutations are run against the suite to show the tests are evidence rather than decoration. Both are caught: reading page 2 for every later citation (`document[min(page_number - 1, 1)]`) fails 2 tests, and replacing `casefold()` with `lower()` fails 1.
 
 All test fixture content is fictional.
 

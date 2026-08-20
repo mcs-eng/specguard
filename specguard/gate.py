@@ -7,16 +7,21 @@ VERIFICATION CONTRACT
 2. Normalization. The gate normalizes the quote and the page text with the same
    steps, in this order:
    a. Unicode NFKC normalization.
-   b. Remove each soft hyphen (U+00AD) together with any whitespace that
-      immediately follows it.
-   c. Casefold.
-   d. Collapse every run of whitespace to a single space.
-   e. Strip leading and trailing whitespace.
+   b. Rejoin a word broken by a soft hyphen: where a soft hyphen (U+00AD) sits
+      between two letters, remove it together with any whitespace that follows
+      it. A soft hyphen next to a digit never joins, so ``1<U+00AD>2`` stays
+      two tokens and does not become ``12``.
+   c. Remove every remaining soft hyphen, leaving surrounding whitespace alone.
+   d. Casefold.
+   e. Collapse every run of whitespace to a single space.
+   f. Strip leading and trailing whitespace.
 3. Match. The claim verifies only if the normalized quote is a contiguous
    substring of the normalized text of the cited page, and the substring sits
-   on alphanumeric boundaries: the match may not begin or end in the middle of
-   a word or a number. There is no fuzzy matching, no edit distance, and no
-   cross-page search.
+   on token boundaries: the match may not begin or end in the middle of a word
+   or a number. A digit at the edge of the quote may not sit against a
+   character that binds to a number either, so a claim quoting ``5 A`` cannot
+   ride on the page text ``0.5 A``. There is no fuzzy matching, no edit
+   distance, and no cross-page search.
 4. A miss is a rejection, always. Every rejection carries a machine-readable
    reason: ``page_out_of_range`` or ``quote_not_found_on_cited_page``.
 
@@ -37,8 +42,15 @@ from specguard.models import DocumentRecord, RejectionReason
 
 SOFT_HYPHEN = "\u00ad"
 
-_SOFT_HYPHEN_RUN = re.compile(SOFT_HYPHEN + r"\s*")
+#: A soft hyphen joins a word across a line break only between two letters.
+#: ``[^\W\d_]`` is "letter": word character, but not a digit and not underscore.
+_SOFT_HYPHEN_WORD_JOIN = re.compile(r"(?<=[^\W\d_])" + SOFT_HYPHEN + r"\s*(?=[^\W\d_])")
 _WHITESPACE_RUN = re.compile(r"\s+")
+
+#: Characters that bind to a digit and so must not sit against a quote edge
+#: that is itself a digit. Without these, the page text ``0.5 A`` would satisfy
+#: a claim quoting ``5 A``, and ``-5 kPa`` would satisfy ``5 kPa``.
+_NUMBER_BINDING = frozenset(".,-+/±⁄")
 
 
 class VerificationResult(BaseModel):
@@ -65,28 +77,39 @@ def normalize(text: str) -> str:
     here changes the contract.
     """
     text = unicodedata.normalize("NFKC", text)
-    text = _SOFT_HYPHEN_RUN.sub("", text)
+    text = _SOFT_HYPHEN_WORD_JOIN.sub("", text)
+    text = text.replace(SOFT_HYPHEN, "")
     text = text.casefold()
     text = _WHITESPACE_RUN.sub(" ", text)
     return text.strip()
 
 
-def _sits_on_alphanumeric_boundaries(haystack: str, needle: str, start: int) -> bool:
-    """True if the match at ``start`` does not cut a word or a number in half.
+def _cuts_a_token(edge: str, neighbour: str) -> bool:
+    """True if ``neighbour`` continues the token that ``edge`` belongs to.
 
-    A boundary is required only between two alphanumeric characters. A quote
-    that itself starts or ends with punctuation needs no boundary on that side.
+    An alphanumeric edge may not sit against another alphanumeric character.
+    A digit edge additionally may not sit against a character that binds to a
+    number, so a quote of ``5 A`` cannot ride on the page text ``0.5 A``.
     """
-    end = start + len(needle)
-    if needle[0].isalnum() and start > 0 and haystack[start - 1].isalnum():
+    if not edge.isalnum():
         return False
-    if needle[-1].isalnum() and end < len(haystack) and haystack[end].isalnum():
+    if neighbour.isalnum():
+        return True
+    return edge.isdigit() and neighbour in _NUMBER_BINDING
+
+
+def _sits_on_token_boundaries(haystack: str, needle: str, start: int) -> bool:
+    """True if the match at ``start`` does not cut a word or a number in half."""
+    end = start + len(needle)
+    if start > 0 and _cuts_a_token(needle[0], haystack[start - 1]):
+        return False
+    if end < len(haystack) and _cuts_a_token(needle[-1], haystack[end]):
         return False
     return True
 
 
 def contains_on_boundaries(haystack: str, needle: str) -> bool:
-    """True if ``needle`` occurs in ``haystack`` on alphanumeric boundaries.
+    """True if ``needle`` occurs in ``haystack`` on token boundaries.
 
     Both arguments must already be normalized. Every occurrence is checked, not
     only the first: an occurrence that cuts a number in half does not hide a
@@ -96,7 +119,7 @@ def contains_on_boundaries(haystack: str, needle: str) -> bool:
         return False
     start = haystack.find(needle)
     while start != -1:
-        if _sits_on_alphanumeric_boundaries(haystack, needle, start):
+        if _sits_on_token_boundaries(haystack, needle, start):
             return True
         start = haystack.find(needle, start + 1)
     return False

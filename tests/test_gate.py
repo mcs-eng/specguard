@@ -82,6 +82,25 @@ def test_quote_spanning_a_line_break_on_page_two_verifies(spec_pdf: Path) -> Non
     assert verify_quote("a 30 ampere branch circuit for the unit heater.", 2, spec_pdf).verified
 
 
+@pytest.mark.parametrize(
+    ("cited_page", "quote"),
+    [
+        (1, "SECTION 26 27 26 - WIRING DEVICES"),
+        (2, "Panelboard MDP-2 shall be rated 208 volts"),
+        (3, "Grounding conductors shall be sized in accordance with"),
+        (4, "The Contractor shall submit certified test reports"),
+    ],
+)
+def test_every_page_has_a_verifying_quote(spec_pdf: Path, cited_page: int, quote: str) -> None:
+    """Each page must carry at least one positive case.
+
+    Codex found that without a positive on pages 3 and 4, the mutation
+    ``document[min(page_number - 1, 1)]`` — read page 2 for every later
+    citation — passed the entire suite.
+    """
+    assert verify_quote(quote, cited_page, spec_pdf).verified is True
+
+
 # --- known-bad: these MUST reject -------------------------------------------
 
 
@@ -180,6 +199,53 @@ def test_boundary_rule_allows_punctuation_edges(spec_pdf: Path) -> None:
     assert verify_quote(", rated 20 amperes", 1, spec_pdf).verified is True
 
 
+@pytest.mark.parametrize(
+    ("page", "quote"),
+    [
+        ("breaker rated 0.5 A minimum", "5 A minimum"),
+        ("pressure of -5 kPa at inlet", "5 kPa at inlet"),
+        ("tolerance of ±5% allowed", "5% allowed"),
+        ("feeder 12,500 kcmil", "500 kcmil"),
+        ("model AHU-1 unit", "1 unit"),
+    ],
+)
+def test_match_may_not_start_against_a_number_binding_character(
+    page: str, quote: str, tmp_path: Path
+) -> None:
+    """A digit edge may not sit against a decimal point, a sign, or a separator.
+
+    Codex found this: the earlier rule required only an alphanumeric boundary,
+    so ``0.5 A`` satisfied a claim quoting ``5 A`` because ``.`` is not
+    alphanumeric.
+    """
+    pdf = write_pdf(tmp_path / "numbers.pdf", [[page]])
+    result = verify_quote(quote, 1, pdf)
+    assert result.verified is False, quote
+    assert result.rejection_reason is RejectionReason.QUOTE_NOT_FOUND_ON_CITED_PAGE
+
+
+def test_whole_numbers_still_verify(tmp_path: Path) -> None:
+    """The numeric boundary rule must not reject an honest whole-number quote."""
+    pdf = write_pdf(tmp_path / "numbers.pdf", [["breaker rated 0.5 A minimum"]])
+    assert verify_quote("0.5 A minimum", 1, pdf).verified is True
+
+
+def test_soft_hyphen_never_joins_digits(tmp_path: Path) -> None:
+    """Codex case: NEMA 1 broken by a soft hyphen must not become NEMA 12.
+
+    Type 1 and Type 12 enclosures are materially different equipment.
+    """
+    pdf = write_pdf(tmp_path / "shy.pdf", [["enclosure NEMA 1" + SOFT_HYPHEN, "2 required here"]])
+    assert verify_quote("NEMA 12 required", 1, pdf).verified is False
+    assert verify_quote("NEMA 1 2 required here", 1, pdf).verified is True
+
+
+def test_soft_hyphen_never_erases_a_space_next_to_a_digit(tmp_path: Path) -> None:
+    """A quote may not use an invisible character to delete its own space."""
+    pdf = write_pdf(tmp_path / "shy.pdf", [["unit AHU1 serves the lab"]])
+    assert verify_quote("AHU" + SOFT_HYPHEN + " 1 serves", 1, pdf).verified is False
+
+
 def test_boundary_rule_checks_every_occurrence() -> None:
     """A bad first occurrence must not hide a good later one."""
     from specguard.gate import contains_on_boundaries
@@ -249,6 +315,15 @@ def test_normalize_erases_case_sensitive_units_known_limitation() -> None:
 def test_normalize_splices_across_layout_known_limitation() -> None:
     """Whitespace collapse discards layout, so separated text becomes adjacent."""
     assert normalize("left column\n\n\nright column") == "left column right column"
+
+
+def test_normalize_uses_casefold_not_lower() -> None:
+    """Pin casefold specifically. Codex found lower() would pass the old suite.
+
+    ``lower()`` leaves the German sharp s alone; ``casefold()`` maps it to ss.
+    """
+    assert normalize("STRASSE") == normalize("Straße")
+    assert "ß".lower() != "ß".casefold()
 
 
 def test_normalize_does_not_fold_unlike_dashes() -> None:
