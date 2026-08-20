@@ -278,3 +278,15 @@ One authorized read-only Codex review ran after the local acceptance checks. It 
 1. The gate proves text anchors only. Phase 3 needs a structured comparison step that evaluates the 158 deg F to 70 deg C conversion and records its conclusion separately from the quote result.
 2. The citation display needs a decision on how it will present paired specification and cut-sheet page locators beside one discrepancy.
 3. The existing document-identity binding question remains: the Phase 3 persistence path must bind a cited document record to the exact PDF path and hash it verifies.
+
+### Fixture content correction
+
+The visual layout remains unchanged. This correction restores explicit fictional context, benign Section C boilerplate, and discrepancy-neutral language. It removes approval-like review status, external standards claims, certification implications, and language that disclosed the Veylan mismatch. `test_fixtures_disclose_fictional_status_without_approval_or_standard_claims` prevents those content defects from returning.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `79 passed in 1.70s`. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `13 files already formatted`. |
+| `git diff --check` | 0 | No whitespace errors. |
+| `uv run python -c "from fixtures.build_fixtures import build_fixtures; from pathlib import Path; import hashlib; root=Path('fixtures'); before={path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in root.glob('*.pdf')}; build_fixtures(); after={path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in root.glob('*.pdf')}; print('byte-identical=' + str(before == after)); raise SystemExit(0 if before == after else 1)"` | 0 | `byte-identical=True`. |

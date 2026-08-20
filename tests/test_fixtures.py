@@ -118,6 +118,43 @@ def test_compliant_cut_sheet_matches_both_required_values() -> None:
     )
 
 
+def test_fixtures_disclose_fictional_status_without_approval_or_standard_claims() -> None:
+    """Fixtures must not resemble an approved real submittal or certification record."""
+    document_text = {
+        pdf_name: "\n".join(_extracted_text_by_page(FIXTURE_DIRECTORY / pdf_name))
+        for pdf_name in PDF_NAMES
+    }
+    prohibited_claims = (
+        "APPROVED AS NOTED",
+        "SUBMITTED AS COMPLIANT WITH CONTRACT DOCUMENTS",
+        "SUBMITTED WITH VARIANCES NOTED",
+        "ISSUED FOR BID AND CONSTRUCTION",
+        "UL 891",
+        "NEMA PB 2",
+        "NFPA 70 (NEC)",
+    )
+
+    for pdf_name, text in document_text.items():
+        assert "fictional" in text.casefold(), pdf_name
+        assert all(claim not in text for claim in prohibited_claims), pdf_name
+
+    for pdf_name in PDF_NAMES[1:]:
+        text = document_text[pdf_name]
+        assert "This cut sheet is invented for SpecGuard" in text
+        assert "No endorsement, certification, or product availability is implied" in text
+
+    specification = FIXTURE_DIRECTORY / "asterquay_learning_workshop_specification.pdf"
+    assert (
+        verify_quote(
+            "This harmless boilerplate exists only to give the demo"
+            " specification realistic context.",
+            7,
+            specification,
+        ).verified
+        is True
+    )
+
+
 def test_fixture_rebuild_has_identical_extracted_text(tmp_path: Path) -> None:
     """The generator must reproduce every committed fixture's page text."""
     rebuilt_paths = build_fixtures(tmp_path)

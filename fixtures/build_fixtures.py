@@ -104,7 +104,7 @@ def _draw_stamp_box(
     status_text: str,
     theme_color: tuple[float, float, float],
 ) -> None:
-    """Draw a realistic contractor and engineer submittal review stamp."""
+    """Draw a fictional demo context box without representing a real review."""
     page.draw_rect(
         pymupdf.Rect(x, y, x + width, y + height),
         fill=(0.98, 0.99, 1.0),
@@ -119,7 +119,7 @@ def _draw_stamp_box(
     page.draw_rect(pymupdf.Rect(x + 2, y + 2, x + width - 2, y + 17), fill=theme_color, color=None)
     page.insert_text(
         (x + 10, y + 12.5),
-        "CONTRACTOR & ENGINEER SUBMITTAL REVIEW STAMP",
+        "SPEC GUARD DEMO REVIEW CONTEXT",
         fontname="hebo",
         fontsize=7.5,
         color=WHITE,
@@ -149,14 +149,14 @@ def _draw_stamp_box(
     )
     page.insert_text(
         (x + 260, y + 39),
-        "SUBMITTAL NO: SUB-262413-001 | REV: 02",
+        "FIXTURE: CITATION DEMO | REVISION: DEMONSTRATION",
         fontname="helv",
         fontsize=7.0,
         color=TEXT_MUTED,
     )
     page.insert_text(
         (x + 260, y + 50),
-        "REVIEW DATE: August 20, 2026 | ACTION: APPROVED AS NOTED",
+        "DEMO DATE: 20 August 2026 | ACTION: NO PROJECT APPROVAL",
         fontname="helv",
         fontsize=7.0,
         color=TEXT_MUTED,
@@ -255,21 +255,21 @@ def _build_specification_pdf(path: Path) -> None:
     )
     p1.insert_text(
         (LEFT_MARGIN + 12, y + 16),
-        "ISSUED FOR BID AND CONSTRUCTION — AUGUST 2026",
+        "SPEC GUARD DEMO FIXTURE — ALL CONTENT IS FICTIONAL",
         fontname="hebo",
         fontsize=8.5,
         color=theme,
     )
     p1.insert_text(
         (LEFT_MARGIN + 12, y + 30),
-        "Division 26 contains the electrical requirements used for the demonstration.",
+        "This document is an invented training specification for the SpecGuard demo.",
         fontname="helv",
         fontsize=8.5,
         color=TEXT_DARK,
     )
     p1.insert_text(
         (LEFT_MARGIN + 12, y + 44),
-        "Section 26 24 13 describes the distribution switchboard assembly. Section 26 05 19 describes conductor terminations.",
+        "No project, company, manufacturer, or product in this document is real.",
         fontname="helv",
         fontsize=8.0,
         color=TEXT_MUTED,
@@ -378,6 +378,11 @@ def _build_specification_pdf(path: Path) -> None:
         part_title: str,
         articles: list[tuple[str, list[str]]],
     ) -> None:
+        division_title = (
+            "DIVISION 01 — GENERAL REQUIREMENTS"
+            if section_code.startswith("01")
+            else "DIVISION 26 — ELECTRICAL"
+        )
         p = doc.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
 
         # Running Top Header
@@ -390,8 +395,8 @@ def _build_specification_pdf(path: Path) -> None:
             color=TEXT_MUTED,
         )
         p.insert_text(
-            (RIGHT_MARGIN - 130, 32),
-            "DIVISION 26 — ELECTRICAL",
+            (RIGHT_MARGIN - 170, 32),
+            division_title,
             fontname="hebo",
             fontsize=7.5,
             color=theme,
@@ -440,6 +445,13 @@ def _build_specification_pdf(path: Path) -> None:
             y_pos += 6.0
 
         # Footer
+        p.insert_text(
+            (LEFT_MARGIN, 732),
+            "SPEC GUARD DEMO FIXTURE — ALL CONTENT IS FICTIONAL",
+            fontname="hebo",
+            fontsize=6.5,
+            color=TEXT_MUTED,
+        )
         p.draw_line((LEFT_MARGIN, 745), (RIGHT_MARGIN, 745), color=BORDER_COLOR, width=0.75)
         p.insert_text(
             (LEFT_MARGIN, 757),
@@ -468,7 +480,7 @@ def _build_specification_pdf(path: Path) -> None:
                 [
                     "A. Furnish a floor-mounted distribution switchboard for the workshop service.",
                     "B. Include service disconnecting means, distribution bus, and protective devices.",
-                    "C. Coordinate the assembly with the room dimensions shown on the drawings.",
+                    "C. Coordinate the assembly with the room dimensions shown on the fictional drawings.",
                 ],
             ),
             (
@@ -517,7 +529,7 @@ def _build_specification_pdf(path: Path) -> None:
             (
                 "2.3 FACTORY WORK",
                 [
-                    "A. Perform routine production tests before shipment to the project site.",
+                    "A. Perform routine production tests before shipment to the fictional project site.",
                 ],
             ),
         ],
@@ -599,7 +611,7 @@ def _build_specification_pdf(path: Path) -> None:
             (
                 "1.1 PURPOSE",
                 [
-                    "A. Use this procedure to organize product data for the project record.",
+                    "A. Use this procedure to organize product data for the fictional project record.",
                     "B. A submittal is complete only when its product identifier and revision are visible.",
                 ],
             ),
@@ -646,10 +658,10 @@ def _build_specification_pdf(path: Path) -> None:
                 ],
             ),
             (
-                "2.3 CLOSEOUT",
+                "2.3 DEMONSTRATION NOTE",
                 [
-                    "A. Submit certified operation and maintenance manuals before final inspection.",
-                    "B. Provide manufacturer warranty certificates for all furnished equipment.",
+                    "A. This harmless boilerplate exists only to give the demo specification realistic context.",
+                    "B. It creates no obligation outside the fictional Asterquay Learning Workshop.",
                 ],
             ),
         ],
@@ -730,7 +742,7 @@ def _build_cut_sheet_pdf(
     )
     p1.insert_text(
         (LEFT_MARGIN + 10, y + 37),
-        "Application: indoor service distribution for commercial/industrial service.",
+        "Application: indoor service distribution for a fictional training project.",
         fontname="helv",
         fontsize=7.5,
         color=TEXT_MUTED,
@@ -752,7 +764,7 @@ def _build_cut_sheet_pdf(
     )
     p1.insert_text(
         (LEFT_MARGIN + 280, y + 37),
-        "Submittal: SUB-262413-001 | Rev: 02 (Final)",
+        "Demo fixture: citation evidence only | Revision: demonstration",
         fontname="helv",
         fontsize=7.5,
         color=TEXT_MUTED,
@@ -776,7 +788,7 @@ def _build_cut_sheet_pdf(
         "Main protective device: molded-case main breaker sized by the final design load.",
         "Branch positions: configurable to suit the listed feeder breaker schedule.",
         "Short-circuit rating: selected during engineered configuration for the application.",
-        "Product drawings: issued after order configuration review.",
+        "Product drawings: issued after the fictional order review is complete.",
     ]
     text_y = y
     for feat in features:
@@ -808,17 +820,11 @@ def _build_cut_sheet_pdf(
     electrical_rows = [
         ("ELECTRICAL DATA", system_val),
         ("Bus arrangement", "copper main bus with full neutral and ground bars."),
-        ("Short-circuit rating", "65 kAIC symmetrical; braced for available fault current."),
-        ("Main disconnect", "Molded-case circuit breaker with electronic trip unit."),
-        (
-            "Branch positions",
-            "Configurable chassis supporting thermal-magnetic & electronic breakers.",
-        ),
-        (
-            "Enclosure construction",
-            "NEMA Type 1 indoor, heavy-gauge formed steel with front service access.",
-        ),
-        ("Industry standards", "UL 891 Dead-Front Switchboards, NEMA PB 2, NFPA 70 (NEC)."),
+        ("Short-circuit rating", "selected during engineered configuration for the application."),
+        ("Main protective device", "molded-case main breaker sized by the final design load."),
+        ("Branch positions", "configurable to suit the listed feeder breaker schedule."),
+        ("Enclosure", "indoor, floor-mounted steel assembly with front service access."),
+        ("Product drawings", "issued after the fictional order review is complete."),
     ]
     y = _draw_table(
         p1,
@@ -833,6 +839,13 @@ def _build_cut_sheet_pdf(
     )
 
     # Footer Page 1
+    p1.insert_text(
+        (LEFT_MARGIN, 730),
+        "This cut sheet is invented for SpecGuard and does not describe a real product.",
+        fontname="hebo",
+        fontsize=6.8,
+        color=TEXT_MUTED,
+    )
     p1.draw_line((LEFT_MARGIN, 745), (RIGHT_MARGIN, 745), color=BORDER_COLOR, width=0.75)
     p1.insert_text(
         (LEFT_MARGIN, 757),
@@ -882,10 +895,6 @@ def _build_cut_sheet_pdf(
         ("Accepted conductor material", "copper conductors within the marked lug range."),
         ("Installation access", "front removable barriers support routine field landing work."),
         ("Torque information", "ship a terminal schedule with the configured assembly."),
-        (
-            "Terminal lug types",
-            "Mechanical set-screw and compression terminal lugs rated 600V.",
-        ),
     ]
     y = _draw_table(
         p2,
@@ -903,7 +912,7 @@ def _build_cut_sheet_pdf(
     # Section 4: Nameplates and Records
     p2.insert_text(
         (LEFT_MARGIN, y),
-        "4. NAMEPLATES, DRAWINGS & QUALITY DOCUMENTATION",
+        "4. NAMEPLATES AND RECORDS",
         fontname="hebo",
         fontsize=9.5,
         color=theme_color,
@@ -942,6 +951,20 @@ def _build_cut_sheet_pdf(
     )
 
     # Footer Page 2
+    p2.insert_text(
+        (LEFT_MARGIN, 716),
+        "All names, values, and statements on this cut sheet are fictional demo content.",
+        fontname="hebo",
+        fontsize=6.8,
+        color=TEXT_MUTED,
+    )
+    p2.insert_text(
+        (LEFT_MARGIN, 728),
+        "No endorsement, certification, or product availability is implied by this fixture.",
+        fontname="helv",
+        fontsize=6.8,
+        color=TEXT_MUTED,
+    )
     p2.draw_line((LEFT_MARGIN, 745), (RIGHT_MARGIN, 745), color=BORDER_COLOR, width=0.75)
     p2.insert_text(
         (LEFT_MARGIN, 757),
@@ -977,7 +1000,7 @@ def build_fixtures(output_directory: Path = FIXTURE_DIRECTORY) -> list[Path]:
         system_val="Nominal system: 480V, 3-phase, 4-wire.",
         termination_val="Field conductor terminations: 90 deg C minimum.",
         theme_color=(0.08, 0.20, 0.40),
-        stamp_status="SUBMITTED AS COMPLIANT WITH CONTRACT DOCUMENTS",
+        stamp_status="DEMO FIXTURE — NOT A PROJECT APPROVAL",
     )
     paths.append(caldra_path)
 
@@ -991,7 +1014,7 @@ def build_fixtures(output_directory: Path = FIXTURE_DIRECTORY) -> list[Path]:
         system_val="Nominal system: 208V, 3-phase, 4-wire.",
         termination_val="Field conductor terminations: 90 deg C minimum.",
         theme_color=(0.06, 0.35, 0.35),
-        stamp_status="SUBMITTED WITH VARIANCES NOTED",
+        stamp_status="DEMO FIXTURE — NOT A PROJECT APPROVAL",
     )
     paths.append(veylan_path)
 
@@ -1005,7 +1028,7 @@ def build_fixtures(output_directory: Path = FIXTURE_DIRECTORY) -> list[Path]:
         system_val="Nominal system: 480V, 3-phase, 4-wire.",
         termination_val="Field conductor termination rating: 158 deg F.",
         theme_color=(0.18, 0.20, 0.25),
-        stamp_status="SUBMITTED FOR REVIEW",
+        stamp_status="DEMO FIXTURE — NOT A PROJECT APPROVAL",
     )
     paths.append(torven_path)
 
