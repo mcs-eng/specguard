@@ -233,3 +233,58 @@ Mason requested an adversarial design review mid-session. It ran read-only again
 7. **Document identity binding.** `verify_quote(quote, page_number, pdf_path)` takes the document path as an argument, while `CitedQuote` carries its own `document_path`. Nothing checks that they agree, so a claim citing one document could be verified against another. Phase 3 must bind them at the call site, or `verify_quote` should take the `CitedQuote` directly.
 8. **Rename the passing outcome.** The adversarial review argues `VERIFIED` overstates what the gate proves and recommends `text_anchor_found`, with the finding staying `unreviewed` until the claim itself is checked. The counter-argument is that the demo narrative and the README headline are built on the current word. Decide before the video script is written, because changing it afterwards is expensive.
 9. **Firestore write path.** Nothing persists yet. Decide whether the gate result is stored alongside the finding or recomputed on read, and whether a rejected finding is written at all or only counted.
+
+## Phase 2 — demo fixtures
+
+Date: 2026-08-20. Scope: four fictional, text-based PDFs; the reproducible PyMuPDF generator; a SHA-256 and citation manifest; and fixture acceptance tests. No Phase 1 code or tests changed.
+
+### Deliverables
+
+- `fixtures/build_fixtures.py` generates all committed PDFs with fixed content and metadata.
+- `fixtures/asterquay_learning_workshop_specification.pdf` is a seven-page fictional specification with Sections 26 24 13, 26 05 19, and 01 33 00.
+- `fixtures/caldra_meridian_480v_switchboard.pdf` is a compliant fictional 480V, 3-phase, 90 deg C cut sheet.
+- `fixtures/veylan_arcworks_208v_switchboard.pdf` plants the 208V versus 480V system mismatch.
+- `fixtures/torven_70c_termination_switchboard.pdf` plants the 158 deg F termination rating, which is 70 deg C, versus the 90 deg C requirement. Its cut-sheet rating is stated in Fahrenheit only.
+- `fixtures/MANIFEST.md` contains each PDF purpose, committed SHA-256, planted discrepancy, and exact quote/page evidence pair.
+- `tests/test_fixtures.py` parses the manifest evidence block, verifies every listed spec and cut-sheet quote through `verify_quote`, and proves that a correct quote on its wrong page rejects.
+
+### Quality-gate receipts
+
+All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code below is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run python fixtures/build_fixtures.py` | 0 | Generated the four committed PDFs. |
+| `uv run pytest -q tests/test_fixtures.py` | 0 | `6 passed in 0.49s`. |
+| `uv run ruff check .` | 1 | Initial fixture-generator lint found 15 E501 source-line violations. The generator was formatted and given a file-local E501 exception for full PDF sentence literals. |
+| `uv run ruff format fixtures/build_fixtures.py` | 0 | Formatted the generator signature. |
+| `uv run ruff check .` | 0 | `All checks passed!` after the correction. |
+| `uv run ruff format --check .` | 0 | `13 files already formatted`. |
+| `git diff --check` | 0 | No whitespace errors. |
+| `uv run pytest -q` | 0 | `76 passed in 1.16s`. |
+| `uv run python -c "from fixtures.build_fixtures import build_fixtures; from pathlib import Path; import hashlib; root=Path('fixtures'); before={path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in root.glob('*.pdf')}; build_fixtures(); after={path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in root.glob('*.pdf')}; print('byte-identical=' + str(before == after)); raise SystemExit(0 if before == after else 1)"` | 0 | `byte-identical=True`. |
+| `uv run pytest -q` | 0 | Final run: `78 passed in 1.08s`. |
+| `uv run ruff check .` | 1 | A later test addition had one E501 source-line violation. |
+| `uv run ruff format tests/test_fixtures.py` | 0 | Formatted the later test addition. |
+| `uv run ruff check .` | 0 | Final run: `All checks passed!` |
+| `uv run ruff format --check .` | 0 | Final run: `13 files already formatted`. |
+| `git diff --check` | 0 | Final run: no whitespace errors. |
+| `uv run python -c "from fixtures.build_fixtures import build_fixtures; from pathlib import Path; import hashlib; root=Path('fixtures'); before={path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in root.glob('*.pdf')}; build_fixtures(); after={path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in root.glob('*.pdf')}; print('byte-identical=' + str(before == after)); raise SystemExit(0 if before == after else 1)"` | 0 | Final run: `byte-identical=True`. |
+
+### Manufacturer-name collision checks
+
+The following exact-name web searches returned no results. This is an exact-name search result, not a claim that no similar name exists.
+
+- `"Caldra Meridian Electric" manufacturer` — no links found.
+- `"Veylan Arcworks" manufacturer` — no links found.
+- `"Torven Switchgear Works" manufacturer` — no links found.
+
+### Codex review
+
+One authorized read-only Codex review ran after the local acceptance checks. It reported no concrete correctness or work-order failures. It confirmed that the four PDFs are reproducible and text-based, manifest hashes match, every manifest citation verifies through the unchanged gate, and the wrong-page case rejects. It made no edits. No correction iteration was needed.
+
+### Open questions for Phase 3
+
+1. The gate proves text anchors only. Phase 3 needs a structured comparison step that evaluates the 158 deg F to 70 deg C conversion and records its conclusion separately from the quote result.
+2. The citation display needs a decision on how it will present paired specification and cut-sheet page locators beside one discrepancy.
+3. The existing document-identity binding question remains: the Phase 3 persistence path must bind a cited document record to the exact PDF path and hash it verifies.
