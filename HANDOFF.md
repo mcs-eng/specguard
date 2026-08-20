@@ -28,20 +28,27 @@ Mason authorized repo creation mid-session, superseding the work order's "no rem
 
 `SETUP.md` and `PLAN.md` are now in `.gitignore` and removed from the index by `git rm --cached`. Both still exist on disk; only the repo stopped carrying them. Mason's rule: a repo is for code, and planning documents in it distract agents that read the tree as context. `README.md` and this handoff stay tracked, because they describe the current contract and the receipts behind it rather than intent or schedule.
 
-**OPEN BLOCKER for the 2026-08-30 public flip — untracking did not fix this.**
+### History rewrite (Mason approved, 2026-08-20)
 
-`git rm --cached` removes a file from the index, not from history. Receipt:
+Untracking alone did not close the exposure. `git rm --cached` removes a file from the index, not from history, so the original commits still carried the whole of `SETUP.md`: a billing account ID, the GCP project number, the runtime service account email, the budget id, and a personal address. None of it is a credential and all of it is Mason's own, so it was fine while the repo stayed private. It would have gone public the moment the repo did.
 
-`git show ca48ab9:SETUP.md` → exit 0 → still prints `` `gcloud billing accounts list` → exit 0 → `[redacted-billing-account]  My Billing Account  OPEN=True` ``
+Mason chose the rewrite path plus a fresh remote, so no superseded objects stay reachable on GitHub by direct SHA.
 
-So commits `ca48ab9` and `637423e` still carry the billing account ID `[redacted-billing-account]`, the GCP project number, the runtime service account email, the budget id, and the personal address `[redacted-address]`. None of it is a credential and all of it is Mason's own, so it is fine while the repo is private. **It becomes public the moment the repo does.**
+Steps taken, in order:
 
-Two ways to close it, Mason's call:
+1. Full copy of the repo to the session scratchpad as a rollback point.
+2. `uv tool install git-filter-repo` → exit 0 → `git-filter-repo==2.47.0`.
+3. `git filter-repo --invert-paths --path SETUP.md --path PLAN.md --force` → exit 0 → `Parsed 8 commits`, `New history written`. Both files remain on disk, untouched; only the history lost them.
+4. **A second pass was needed.** The first verification pass found the same values still in history, because this handoff had quoted them verbatim while documenting the blocker. Documenting a leak reproduced it. The literals were replaced with descriptions, and `git filter-repo --replace-text` scrubbed the remaining copies from every commit.
+5. Remote deleted and recreated, then the rewritten history pushed.
 
-1. **Rewrite history before the flip.** The repo is small, private, single-author, with no PRs and nothing depending on the SHAs, so this is as cheap as it will ever be. `git filter-repo --invert-paths --path SETUP.md --path PLAN.md`, then force-push. Cost: every SHA changes.
-2. **Scrub and re-commit, then flip.** Leaves the values in history and does not actually close the exposure. Only acceptable if Mason decides the values are not worth protecting.
+Verification gates, all of which must hold before the 08-30 public flip:
 
-Option 1 is the recommendation. Whichever is chosen, verify with `git log --all --oneline -- SETUP.md PLAN.md` returning no commits before the repo goes public. This is now the first item of the 08-28 pre-publish sweep.
+- `git log --all --oneline -- SETUP.md PLAN.md` returns no commits.
+- `git grep` for each sensitive literal across `git rev-list --all` returns no hits.
+- All eight commits and their dates survive, so the repo still shows the real build progression through the contest window.
+
+Redo this check at the 08-28 pre-publish sweep, because any new document could reintroduce a value the same way this handoff did.
 
 Secret scanning could not be enabled. Receipt:
 
