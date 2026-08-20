@@ -1,0 +1,34 @@
+[project]
+name = "specguard"
+version = "0.1.0"
+description = "Deterministic verification gate for construction submittal audit claims."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pymupdf==1.28.2",
+    "pydantic>=2.9,<3",
+]
+
+[dependency-groups]
+dev = [
+    "pymupdf-fonts>=1.0.5",
+    "pytest>=8.3,<9",
+    "ruff>=0.6,<1",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.4,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--basetemp=.pytest-tmp"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
