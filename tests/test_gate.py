@@ -167,6 +167,23 @@ def test_normalize_keeps_word_boundaries() -> None:
     assert normalize("one\ntwo") == "one two"
 
 
+def test_normalize_flattens_superscripts_known_limitation() -> None:
+    """NFKC folds a superscript into a plain digit. This widens the match.
+
+    A page reading "10 squared amperes" normalizes to "102 amperes", so a claim
+    that quotes "102 amperes" verifies against it. The contract mandates NFKC,
+    so this behavior is pinned here rather than worked around. README records it
+    as a limitation.
+    """
+    assert normalize("rated 10² amperes") == "rated 102 amperes"
+    assert normalize("35 mm² copper") == "35 mm2 copper"
+
+
+def test_normalize_does_not_fold_unlike_dashes() -> None:
+    """NFKC leaves a non-breaking hyphen distinct from a plain hyphen."""
+    assert normalize("MDP‑2") != normalize("MDP-2")
+
+
 def test_document_record_is_chain_of_custody_only(spec_pdf: Path) -> None:
     record = build_document_record(spec_pdf)
     assert record.page_count == 4

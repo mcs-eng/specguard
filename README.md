@@ -25,6 +25,7 @@ This is the exact claim SpecGuard defends. `specguard/gate.py` implements it and
 - It does not claim the model tells the truth. It claims that a quote which is not on the cited page never reaches the ledger.
 - It does not claim zero hallucinations. A hallucinated quote is rejected; a hallucinated *interpretation* of a real quote is not something this gate can detect.
 - It does not read scanned documents. The gate is proven against text-based PDFs only.
+- NFKC widens the match in one known way: it folds superscripts and subscripts into plain digits. A page reading `10²` normalizes to `102`, so a claim quoting `102` verifies against it. Cut sheets use `mm²` often, so treat a numeric claim that sits next to a superscript as unproven. `test_normalize_flattens_superscripts_known_limitation` pins this behavior.
 - SHA-256 in `DocumentRecord` is chain-of-custody metadata. It records which byte stream was read. It is not an accuracy mechanism and no part of the gate reads it.
 
 ## What the test suite proves
@@ -55,7 +56,7 @@ All test fixture content is fictional.
 from specguard.gate import verify_quote
 
 result = verify_quote("Receptacles shall be specification grade", 1, "spec.pdf")
-result.verified          # bool
+result.verified  # bool
 result.rejection_reason  # None, or a machine-readable reason
 ```
 
