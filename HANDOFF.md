@@ -43,7 +43,7 @@ Runtime (`[project.dependencies]`):
 
 Dev group (`[dependency-groups].dev`):
 
-- `pytest>=8.3,<9` — resolved to `8.4.2`.
+- `pytest>=9.0.3,<10` — resolved to `9.1.1`. Raised from `>=8.3,<9` after Dependabot flagged GHSA for "pytest has vulnerable tmpdir handling" (`< 9.0.3`, medium) on first push. Suite passes unchanged on pytest 9.
 - `ruff>=0.6,<1` — resolved to `0.16.4`.
 - `pymupdf-fonts==1.0.5` — **deviation from the work order, see below.**
 
