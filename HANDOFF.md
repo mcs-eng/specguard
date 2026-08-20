@@ -24,7 +24,24 @@ Mason authorized repo creation mid-session, superseding the work order's "no rem
 - Private matches the settled plan: private during build, public 2026-08-30 before submission.
 - No AI attribution in any commit message or in the repo description.
 
-**Blocker for the 2026-08-30 public flip.** `SETUP.md` is committed and contains the billing account ID `[redacted-billing-account]`, the GCP project number, the runtime service account email, the budget id, and the personal address `[redacted-address]`. None of this is a credential and all of it is Mason's own, so it is fine in a private repo under the knowledge boundary. It must not go public. Fold this into the 08-28 claims audit, which the plan already designates as the pre-publish sweep.
+### Planning docs are untracked (Mason, 2026-08-20)
+
+`SETUP.md` and `PLAN.md` are now in `.gitignore` and removed from the index by `git rm --cached`. Both still exist on disk; only the repo stopped carrying them. Mason's rule: a repo is for code, and planning documents in it distract agents that read the tree as context. `README.md` and this handoff stay tracked, because they describe the current contract and the receipts behind it rather than intent or schedule.
+
+**OPEN BLOCKER for the 2026-08-30 public flip — untracking did not fix this.**
+
+`git rm --cached` removes a file from the index, not from history. Receipt:
+
+`git show ca48ab9:SETUP.md` → exit 0 → still prints `` `gcloud billing accounts list` → exit 0 → `[redacted-billing-account]  My Billing Account  OPEN=True` ``
+
+So commits `ca48ab9` and `637423e` still carry the billing account ID `[redacted-billing-account]`, the GCP project number, the runtime service account email, the budget id, and the personal address `[redacted-address]`. None of it is a credential and all of it is Mason's own, so it is fine while the repo is private. **It becomes public the moment the repo does.**
+
+Two ways to close it, Mason's call:
+
+1. **Rewrite history before the flip.** The repo is small, private, single-author, with no PRs and nothing depending on the SHAs, so this is as cheap as it will ever be. `git filter-repo --invert-paths --path SETUP.md --path PLAN.md`, then force-push. Cost: every SHA changes.
+2. **Scrub and re-commit, then flip.** Leaves the values in history and does not actually close the exposure. Only acceptable if Mason decides the values are not worth protecting.
+
+Option 1 is the recommendation. Whichever is chosen, verify with `git log --all --oneline -- SETUP.md PLAN.md` returning no commits before the repo goes public. This is now the first item of the 08-28 pre-publish sweep.
 
 Secret scanning could not be enabled. Receipt:
 
