@@ -49,7 +49,7 @@ Dev group (`[dependency-groups].dev`):
 
 `google-adk` is not installed and is not referenced anywhere. Python pin: 3.12.
 
-## Two contract-precision decisions, both flagged
+## Contract-precision and environment decisions, all flagged
 
 ### 1. Soft hyphen strips its trailing whitespace
 
@@ -83,7 +83,7 @@ The session sandbox denies writing to `C:\Users\mcspd\AppData\Local\Temp\pytest-
 
 ## What the suite proves
 
-36 tests. Every case the work order names is present and is asserted on the rejection reason, not only on the boolean.
+55 tests. Every case the work order names is present, and every known-bad case asserts the machine-readable rejection reason, not only the boolean.
 
 Known-good (verify):
 
@@ -107,7 +107,9 @@ All fixture content is fictional: an invented project name, an invented section 
 
 ## SHA-256 handling
 
-`DocumentRecord.sha256` is described as chain-of-custody metadata in `specguard/models.py`, in `specguard/gate.py`, and in `README.md`. Each place states that no part of the gate reads it. No code path passes it to `verify_quote`. `test_document_record_is_chain_of_custody_only` asserts only that the digest is stable across two reads of the same bytes.
+`DocumentRecord.sha256` is described as chain-of-custody metadata in `specguard/models.py`, in `specguard/gate.py`, and in `README.md`. Each place states that no part of the gate reads it. No code path passes it to `verify_quote`. Codex confirmed this heading clean with no findings.
+
+`test_document_record_digests_the_actual_bytes` asserts the digest equals `hashlib.sha256` of the file bytes, and `test_document_record_digest_differs_for_different_bytes` asserts two different files differ. The earlier version checked only length and repeatability, which a hardcoded constant would have passed.
 
 ## Codex review
 
