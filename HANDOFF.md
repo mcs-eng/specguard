@@ -254,22 +254,12 @@ All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code belo
 
 | Command | Exit | Result |
 | --- | ---: | --- |
-| `uv run python fixtures/build_fixtures.py` | 0 | Generated the four committed PDFs. |
-| `uv run pytest -q tests/test_fixtures.py` | 0 | `6 passed in 0.49s`. |
-| `uv run ruff check .` | 1 | Initial fixture-generator lint found 15 E501 source-line violations. The generator was formatted and given a file-local E501 exception for full PDF sentence literals. |
-| `uv run ruff format fixtures/build_fixtures.py` | 0 | Formatted the generator signature. |
-| `uv run ruff check .` | 0 | `All checks passed!` after the correction. |
+| `uv run python fixtures/build_fixtures.py` | 0 | Generated the four professional fictional PDFs. |
+| `uv run pytest -q` | 0 | `78 passed in 1.71s`. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
 | `uv run ruff format --check .` | 0 | `13 files already formatted`. |
 | `git diff --check` | 0 | No whitespace errors. |
-| `uv run pytest -q` | 0 | `76 passed in 1.16s`. |
 | `uv run python -c "from fixtures.build_fixtures import build_fixtures; from pathlib import Path; import hashlib; root=Path('fixtures'); before={path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in root.glob('*.pdf')}; build_fixtures(); after={path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in root.glob('*.pdf')}; print('byte-identical=' + str(before == after)); raise SystemExit(0 if before == after else 1)"` | 0 | `byte-identical=True`. |
-| `uv run pytest -q` | 0 | Final run: `78 passed in 1.08s`. |
-| `uv run ruff check .` | 1 | A later test addition had one E501 source-line violation. |
-| `uv run ruff format tests/test_fixtures.py` | 0 | Formatted the later test addition. |
-| `uv run ruff check .` | 0 | Final run: `All checks passed!` |
-| `uv run ruff format --check .` | 0 | Final run: `13 files already formatted`. |
-| `git diff --check` | 0 | Final run: no whitespace errors. |
-| `uv run python -c "from fixtures.build_fixtures import build_fixtures; from pathlib import Path; import hashlib; root=Path('fixtures'); before={path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in root.glob('*.pdf')}; build_fixtures(); after={path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in root.glob('*.pdf')}; print('byte-identical=' + str(before == after)); raise SystemExit(0 if before == after else 1)"` | 0 | Final run: `byte-identical=True`. |
 
 ### Manufacturer-name collision checks
 
