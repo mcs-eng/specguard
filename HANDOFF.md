@@ -12,9 +12,9 @@ All commands run in `C:\Users\mcspd\dev\specguard` on arya. Exit codes are unpip
 | `uv run pytest -q` | 0 | `70 passed in 0.87s` |
 | `uv run ruff check .` | 0 | `All checks passed!` |
 | `uv run ruff format --check .` | 0 | `10 files already formatted` |
-| `gh repo create mcs-eng/specguard --private --source=. --remote=origin --push` | 0 | `https://github.com/mcs-eng/specguard`, `* [new branch] HEAD -> main` |
+| `gh repo create mcs-eng/specguard --private --source=. --remote=origin --push` | 0 | `https://github.com/mcs-eng/specguard`, `* [new branch] HEAD -> main` (re-run after the history rewrite) |
 
-Test count by stage: 36 at the first commit `ca48ab9`, 38 after the NFKC superscript limitation was pinned, 55 after Codex review iteration 1, 68 after the adversarial review iteration 2.
+Test count by stage: 36 at the first commit, 38 after the NFKC superscript limitation was pinned, 55 after review iteration 1, 68 after adversarial iteration 2, 70 after backing the text-layer limitations with tests. Commit SHAs quoted elsewhere in this file predate the history rewrite.
 
 ## GitHub repository
 
@@ -46,7 +46,7 @@ Verification gates, all of which must hold before the 08-30 public flip:
 
 - `git log --all --oneline -- SETUP.md PLAN.md` returns no commits.
 - `git grep` for each sensitive literal across `git rev-list --all` returns no hits.
-- All eight commits and their dates survive, so the repo still shows the real build progression through the contest window.
+- Every commit and its date survives, so the repo still shows the real build progression through the contest window.
 
 Redo this check at the 08-28 pre-publish sweep, because any new document could reintroduce a value the same way this handoff did.
 
