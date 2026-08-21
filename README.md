@@ -69,9 +69,7 @@ When either bound document carries at least one invisible span, the run is quara
 
 The runtime and its tools must be bound to the same two documents; a split binding is refused when the runtime is constructed. After extraction, the runtime re-reads both hashes and refuses to send text if either document changed since the screen read it. A writer that replaces a document and restores it inside that window is outside the guarantee, exactly as recorded above for the gate.
 
-`check_text_integrity` is the first of the agent's five tools, so the screen is available to the agent on request. That tool takes a bound role rather than a path, and it returns the flag summary only — never the hidden span text — because handing that text back to a model would reopen the disclosure the screen exists to close. The runtime does not depend on the model calling it.
-
-One tool surface is deliberately unchanged and is disclosed here rather than claimed away: `extract_pdf_text` accepts a path argument and returns raw page text, which for an unscreened file would include text hidden by render mode. The quarantine does not rest on that tool refusing; it rests on the runtime stopping the run before any extraction happens. Binding `extract_pdf_text` to roles is recorded as a follow-up in `HANDOFF.md`, not done here.
+`check_text_integrity`, `extract_pdf_text`, and `verify_quote` are model-facing tools bound to a document role rather than a path. The agent can address only the specification or submitted document already bound to the audit. `check_text_integrity` returns the flag summary only — never hidden-span text — because handing that text back to the model would reopen the disclosure the screen exists to close. `extract_pdf_text` returns raw page text from its bound document, so the quarantine still stops a flagged document before any extraction happens. The runtime does not depend on the model calling any tool.
 
 ## What the test suite proves
 
@@ -159,3 +157,17 @@ uv run pytest
 ```bash
 uv run ruff check .
 ```
+
+## Running it
+
+Set `SPECGUARD_PROJECT`, `SPECGUARD_RUNS_BUCKET`, and `SPECGUARD_DEMO_PASSPHRASE` in the local environment first. The passphrase is not stored in this repository.
+
+### arya (PowerShell)
+
+```powershell
+uv run uvicorn specguard.web.app:app --host 127.0.0.1 --port 8080
+```
+
+Deployment URL: recorded in `HANDOFF.md` after the Cloud Run deployment.
+
+The public GET routes are read-only. `POST /audit` requires the demo passphrase, accepts only `application/pdf`, and limits each upload to 5 MB. Each Cloud Run instance accepts at most two concurrent requests and runs at most two in-flight audits. Cloud Run compute is ephemeral. The uploaded PDFs and generated RFI PDFs are durable Cloud Storage objects keyed by run ID, with each object SHA-256 recorded in the Firestore run document. A failed audit remains visible as `FAILED` with its stored source-object records.

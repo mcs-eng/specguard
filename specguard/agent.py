@@ -310,8 +310,12 @@ class AuditRuntime:
                 raise RuntimeError("a source document changed after the integrity screen read it")
 
     def _build_document_message(self) -> str:
-        specification = self._extract_document(self._spec_path, "SPECIFICATION")
-        submitted = self._extract_document(self._cut_sheet_path, "SUBMITTED DOCUMENT")
+        specification = self._extract_document(
+            self._spec_path, "SPECIFICATION", DocumentRole.SPECIFICATION
+        )
+        submitted = self._extract_document(
+            self._cut_sheet_path, "SUBMITTED DOCUMENT", DocumentRole.SUBMITTED_DOCUMENT
+        )
         self._assert_documents_still_match_the_screen()
         return (
             "Audit the two extracted documents below. "
@@ -319,11 +323,11 @@ class AuditRuntime:
             f"{specification}\n\n{submitted}"
         )
 
-    def _extract_document(self, path: Path, label: str) -> str:
+    def _extract_document(self, path: Path, label: str, role: DocumentRole) -> str:
         page_count = gate.build_document_record(path).page_count
         pages: list[str] = []
         for page_number in range(1, page_count + 1):
-            result = self._tools.extract_pdf_text(str(path), page_number)
+            result = self._tools.extract_pdf_text(role.value, page_number)
             if not result["ok"]:
                 raise RuntimeError(result["error_message"])
             pages.append(f"--- {label} PAGE {page_number} ---\n{result['text']}")
@@ -331,11 +335,13 @@ class AuditRuntime:
 
     def _verify_claim(self, claim: AuditClaim) -> list[dict[str, object]]:
         return [
-            self._tools.verify_quote(claim.spec_quote, claim.spec_page, str(self._spec_path)),
+            self._tools.verify_quote(
+                claim.spec_quote, claim.spec_page, DocumentRole.SPECIFICATION.value
+            ),
             self._tools.verify_quote(
                 claim.cut_sheet_quote,
                 claim.cut_sheet_page,
-                str(self._cut_sheet_path),
+                DocumentRole.SUBMITTED_DOCUMENT.value,
             ),
         ]
 

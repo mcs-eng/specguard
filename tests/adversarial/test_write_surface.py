@@ -19,22 +19,29 @@ def _runtime_sources() -> dict[Path, str]:
     return {path: path.read_text(encoding="utf-8") for path in files}
 
 
-def test_only_the_tools_module_acquires_firestore_collections() -> None:
-    """Every collection reference in runtime code must live in tools.py."""
-    offenders = [
+def test_only_the_tools_and_read_only_web_repository_acquire_firestore_collections() -> None:
+    """The web repository may read records, but only tools may write claim records."""
+    collection_users = [
+        path.name for path, source in _runtime_sources().items() if ".collection(" in source
+    ]
+    assert collection_users == ["tools.py", "repository.py"]
+
+    finding_writers = [
         path.name
         for path, source in _runtime_sources().items()
-        if ".collection(" in source and path.name != "tools.py"
+        if "FINDINGS_COLLECTION" in source and "batch.set(" in source
     ]
-    assert offenders == []
+    assert finding_writers == ["tools.py"]
 
 
-def test_only_the_entry_point_imports_the_firestore_client() -> None:
-    """The client is constructed once, in run_audit.py, and injected."""
+def test_firestore_clients_exist_only_at_the_cli_and_web_boundaries() -> None:
+    """The audit and web adapters construct clients and inject them into tools."""
     importers = [
-        path.name for path, source in _runtime_sources().items() if "google.cloud" in source
+        path.name
+        for path, source in _runtime_sources().items()
+        if "from google.cloud import firestore" in source
     ]
-    assert importers == ["run_audit.py"]
+    assert importers == ["repository.py", "runtime.py", "run_audit.py"]
 
 
 def test_draft_rfi_refuses_a_fabricated_quote_even_with_correct_hashes(tmp_path: Path) -> None:

@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% block title %}SpecGuard Findings{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="section-head">
+    <h2>Audit a submittal</h2>
+    <p>One specification PDF and one submitted cut sheet, 5 MB each at most.</p>
+  </div>
+  {% if error %}
+  <div class="notice stop" role="alert">
+    <strong>{{ error }}</strong>
+    {% if failed_run_id %}<p>The run is recorded as FAILED with its stored source documents. <a href="/runs/{{ failed_run_id }}">Open run {{ failed_run_id }}</a>.</p>{% endif %}
+  </div>
+  {% endif %}
+  <form id="audit-form" action="/audit" method="post" enctype="multipart/form-data">
+    <div id="audit-fields" class="fields">
+      <div class="drop-grid">
+        <label class="drop-zone" for="spec-pdf">
+          <input id="spec-pdf" name="spec_pdf" type="file" accept="application/pdf" required>
+          <span class="role">Specification</span>
+          <strong>Specification PDF</strong>
+          <span class="hint">The governing requirement document.</span>
+          <span class="file" data-empty="true">No file chosen</span>
+          <span class="warn" hidden></span>
+          <span class="choose">Choose PDF</span>
+        </label>
+        <label class="drop-zone" for="cut-sheet-pdf">
+          <input id="cut-sheet-pdf" name="cut_sheet_pdf" type="file" accept="application/pdf" required>
+          <span class="role">Submittal</span>
+          <strong>Cut-sheet PDF</strong>
+          <span class="hint">The submitted product document under review.</span>
+          <span class="file" data-empty="true">No file chosen</span>
+          <span class="warn" hidden></span>
+          <span class="choose">Choose PDF</span>
+        </label>
+      </div>
+      <label class="passphrase" for="demo-passphrase"><span>Demo passphrase</span><input id="demo-passphrase" name="demo_passphrase" type="password" autocomplete="current-password" required></label>
+    </div>
+    <div class="submit-row">
+      <button id="audit-submit" type="submit">Run audit</button>
+      <span class="submit-note muted">One submit starts one audit run.</span>
+    </div>
+    <div id="audit-progress" class="running-panel" role="status" aria-live="polite" tabindex="-1" hidden>
+      <span class="pulse" aria-hidden="true"></span>
+      <div>
+        <strong>Audit running. Do not submit again.</strong>
+        <p>A second submit starts a duplicate run.</p>
+        <p>The model step takes time. The server reports no progress, so this page shows no bar and no percentage. It moves to the findings page by itself when the run ends.</p>
+      </div>
+    </div>
+  </form>
+</section>
+<section class="card">
+  <div class="section-head">
+    <h2>Recent runs</h2>
+    <p>Newest first. Open a run to read its quotes, page locators, and rejection reasons.</p>
+  </div>
+  {% if runs %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th scope="col">Status</th><th scope="col">Run</th><th scope="col" class="num">Findings</th><th scope="col" class="num">Rejected</th><th scope="col">RFI</th><th scope="col">Created</th></tr></thead>
+      <tbody>
+      {% for run in runs %}
+        <tr>
+          <td><span class="badge {% if run.status == 'QUARANTINED' %}quarantined{% elif run.status == 'FAILED' %}failed{% elif run.status == 'RUNNING' %}running{% else %}completed{% endif %}">{{ run.status }}</span></td>
+          <td><a class="run-link" href="/runs/{{ run.run_id }}" title="{{ run.run_id }}"><code>{{ run.run_id[:8] }}</code></a></td>
+          <td class="num">{{ run.summary.findings_persisted }}</td>
+          <td class="num">{{ run.summary.rejected }}</td>
+          <td>{% if run.rfi %}<a href="/runs/{{ run.run_id }}/rfi.pdf">RFI PDF</a>{% else %}<span class="muted">None</span>{% endif %}</td>
+          <td class="muted">{% if run.created_at %}<time datetime="{{ run.created_at.isoformat() }}">{{ run.created_at }}</time>{% else %}Unknown{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<p class="empty">No audit runs are stored yet.</p>{% endif %}
+</section>
+<style>
+  .drop-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+  .drop-zone { position: relative; display: grid; gap: .3rem; align-content: start; border: 2px dashed var(--line); border-radius: .5rem; padding: 1rem; cursor: pointer; background: var(--field); transition: border-color 180ms var(--ease-out), background-color 180ms var(--ease-out); }
+  .drop-zone input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+  .drop-zone:focus-within { border-color: var(--accent); border-style: solid; }
+  .drop-zone:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @supports not selector(:has(*)) { .drop-zone:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; } }
+  .drop-zone.dragging { border-color: var(--accent); border-style: solid; background: var(--accent-soft); }
+  .drop-zone[data-filled] { border-style: solid; border-color: var(--ok-line); }
+  .drop-zone[data-problem] { border-style: solid; border-color: var(--bad-line); }
+  .drop-zone .role { font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+  .drop-zone .hint { font-size: .86rem; color: var(--ink-soft); }
+  .drop-zone .file { margin-top: .35rem; font-size: .88rem; overflow-wrap: anywhere; }
+  .drop-zone .file[data-empty="true"] { color: var(--ink-soft); font-style: italic; }
+  .drop-zone[data-filled] .file::before { content: "\2713"; margin-right: .4rem; color: var(--ok-ink); font-weight: 700; }
+  .drop-zone .warn { margin-top: .2rem; font-size: .84rem; color: var(--bad-ink); }
+  .drop-zone .warn[hidden] { display: none; }
+  .drop-zone .choose { justify-self: start; margin-top: .6rem; border: 1px solid var(--line); border-radius: .3rem; background: var(--surface); padding: .35rem .8rem; font-size: .86rem; font-weight: 600; transition: border-color 180ms var(--ease-out), background-color 180ms var(--ease-out); }
+  .passphrase { display: grid; gap: .35rem; max-width: 24rem; margin: 1.15rem 0 0; }
+  .passphrase span { font-size: .76rem; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-soft); }
+  .passphrase input { padding: .55rem .6rem; border: 1px solid var(--line); border-radius: .35rem; background: var(--surface); color: var(--ink); font: inherit; transition: border-color 160ms var(--ease-out); }
+  .passphrase input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .submit-row { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem; margin-top: 1.35rem; }
+  .submit-note { font-size: .86rem; }
+  #audit-submit { background: var(--accent); color: var(--on-accent); border: 1px solid var(--accent); border-radius: .35rem; padding: .7rem 1.4rem; font: inherit; font-weight: 700; letter-spacing: .02em; cursor: pointer; transition: transform 140ms var(--ease-out), background-color 160ms var(--ease-out), color 160ms var(--ease-out), border-color 160ms var(--ease-out); }
+  #audit-submit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #audit-submit:active:not(:disabled) { transform: scale(0.97); }
+  #audit-submit:disabled { background: var(--line-soft); border-color: var(--line); color: var(--ink-soft); cursor: not-allowed; transform: none; }
+  .fields { transition: opacity 220ms var(--ease-out); }
+  .fields[data-state="submitting"] { opacity: .45; }
+  .running-panel { display: flex; align-items: flex-start; gap: .8rem; margin-top: 1.2rem; border: 2px solid var(--run-line); border-radius: .45rem; background: var(--run-bg); color: var(--run-ink); padding: 1rem 1.15rem; opacity: 1; transform: translateY(0); transition: opacity 260ms var(--ease-out), transform 260ms var(--ease-out), display 260ms allow-discrete; }
+  .running-panel[hidden] { display: none; }
+  .running-panel:focus-visible { outline: 2px solid var(--run-line); outline-offset: 3px; }
+  .running-panel strong { display: block; font-size: 1.05rem; }
+  .running-panel p { margin: .4rem 0 0; font-size: .92rem; }
+  @starting-style { .running-panel { opacity: 0; transform: translateY(8px); } }
+  .pulse { flex: 0 0 auto; width: .7rem; height: .7rem; margin-top: .45rem; border-radius: 50%; background: currentColor; animation: breathe 1.8s var(--ease-in-out) infinite; }
+  .run-link { text-decoration: none; }
+  .run-link code { display: inline-block; border: 1px solid var(--line-soft); border-radius: .25rem; padding: .1rem .35rem; background: var(--field); transition: border-color 120ms ease, background-color 120ms ease; }
+  .run-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: .25rem; }
+  @media (hover: hover) and (pointer: fine) {
+    .drop-zone:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .drop-zone:hover .choose { border-color: var(--accent); }
+    #audit-submit:hover:not(:disabled) { filter: brightness(1.12); }
+    .run-link:hover code { border-color: var(--accent); background: var(--accent-soft); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pulse { animation: none; }
+    .running-panel { transition: opacity 200ms ease, display 200ms allow-discrete; transform: none; }
+    #audit-submit:active:not(:disabled) { transform: none; }
+    @starting-style { .running-panel { transform: none; } }
+  }
+</style>
+<script>
+  const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+  function describeSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+  function refreshZone(zone) {
+    const input = zone.querySelector('input');
+    const fileLabel = zone.querySelector('.file');
+    const warnLabel = zone.querySelector('.warn');
+    const choose = zone.querySelector('.choose');
+    const file = input.files && input.files[0];
+    if (!file) {
+      zone.removeAttribute('data-filled');
+      zone.removeAttribute('data-problem');
+      fileLabel.textContent = 'No file chosen';
+      fileLabel.dataset.empty = 'true';
+      warnLabel.hidden = true;
+      choose.textContent = 'Choose PDF';
+      return;
+    }
+    zone.setAttribute('data-filled', '');
+    fileLabel.textContent = file.name + ' · ' + describeSize(file.size);
+    fileLabel.dataset.empty = 'false';
+    choose.textContent = 'Replace PDF';
+    const problems = [];
+    if (file.type !== 'application/pdf') problems.push('This file is not application/pdf.');
+    if (file.size > MAX_UPLOAD_BYTES) problems.push('This file is larger than 5 MB.');
+    if (problems.length) {
+      zone.setAttribute('data-problem', '');
+      warnLabel.textContent = problems.join(' ') + ' The server will reject it.';
+      warnLabel.hidden = false;
+    } else {
+      zone.removeAttribute('data-problem');
+      warnLabel.hidden = true;
+    }
+  }
+  for (const zone of document.querySelectorAll('.drop-zone')) {
+    const input = zone.querySelector('input');
+    for (const eventName of ['dragenter', 'dragover']) zone.addEventListener(eventName, event => { event.preventDefault(); zone.classList.add('dragging'); });
+    for (const eventName of ['dragleave', 'drop']) zone.addEventListener(eventName, event => { event.preventDefault(); zone.classList.remove('dragging'); });
+    zone.addEventListener('drop', event => { input.files = event.dataTransfer.files; refreshZone(zone); });
+    input.addEventListener('change', () => refreshZone(zone));
+    refreshZone(zone);
+  }
+  const auditForm = document.getElementById('audit-form');
+  const auditSubmit = document.getElementById('audit-submit');
+  const auditProgress = document.getElementById('audit-progress');
+  const auditFields = document.getElementById('audit-fields');
+  const idleLabel = auditSubmit.textContent;
+  const idleTitle = document.title;
+  let submitting = false;
+  function setIdle() {
+    submitting = false;
+    auditSubmit.disabled = false;
+    auditSubmit.textContent = idleLabel;
+    auditProgress.hidden = true;
+    auditForm.removeAttribute('aria-busy');
+    auditFields.removeAttribute('data-state');
+    auditFields.removeAttribute('inert');
+    document.title = idleTitle;
+  }
+  auditForm.addEventListener('submit', event => {
+    if (submitting) { event.preventDefault(); return; }
+    submitting = true;
+    auditSubmit.disabled = true;
+    auditSubmit.textContent = 'Audit running';
+    auditProgress.hidden = false;
+    auditProgress.focus();
+    auditForm.setAttribute('aria-busy', 'true');
+    auditFields.setAttribute('data-state', 'submitting');
+    auditFields.setAttribute('inert', '');
+    document.title = 'Audit running — ' + idleTitle;
+  });
+  window.addEventListener('pageshow', event => { if (event.persisted) setIdle(); });
+  const relativeTime = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  const timeUnits = [['second', 60], ['minute', 60], ['hour', 24], ['day', 7], ['week', 4.35], ['month', 12], ['year', Infinity]];
+  for (const stamp of document.querySelectorAll('time[datetime]')) {
+    const moment = new Date(stamp.dateTime);
+    if (isNaN(moment.getTime())) continue;
+    stamp.title = moment.toLocaleString();
+    let value = (moment.getTime() - Date.now()) / 1000;
+    let unit = 'second';
+    for (const [name, step] of timeUnits) {
+      unit = name;
+      if (Math.abs(value) < step) break;
+      value = value / step;
+    }
+    stamp.textContent = relativeTime.format(Math.round(value), unit);
+  }
+</script>
+{% endblock %}

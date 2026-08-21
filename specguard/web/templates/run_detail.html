@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}SpecGuard Run {{ run.run_id }}{% endblock %}
+{% block content %}
+<a class="backlink" href="/">Back to recent runs</a>
+<section class="card">
+  <div class="run-head">
+    <span class="badge {% if run.status == 'QUARANTINED' %}quarantined{% elif run.status == 'FAILED' %}failed{% elif run.status == 'RUNNING' %}running{% else %}completed{% endif %}">{{ run.status }}</span>
+    <div>
+      <h2>Run <code>{{ run.run_id }}</code></h2>
+      <p class="muted">Created {{ run.created_at }}</p>
+    </div>
+  </div>
+  {% if run.status == 'FAILED' %}
+  <div class="notice stop"><strong>The audit did not complete.</strong><p>The stored source documents remain recorded for this run. Submit the pair again to start a new run.</p></div>
+  {% elif run.status == 'RUNNING' %}
+  <div class="notice"><strong>This run has not finished.</strong><p>Reload this page later. The server reports no progress while the model step runs.</p></div>
+  {% elif run.status == 'QUARANTINED' %}
+  <div class="notice"><strong>The text-layer integrity screen stopped this run.</strong>{% if run.summary.quarantine %}<p>Reason: <code>{{ run.summary.quarantine.reason }}</code>. No model call was made and no RFI was drafted. The hidden text is recorded below for a human reviewer only.</p>{% endif %}</div>
+  {% endif %}
+  <dl class="stats">
+    <div><dt>Claims made</dt><dd>{{ run.summary.claims_made }}</dd></div>
+    <div><dt>Findings persisted</dt><dd>{{ run.summary.findings_persisted }}</dd></div>
+    <div><dt>Rejected</dt><dd>{{ run.summary.rejected }}</dd></div>
+    <div><dt>Retried</dt><dd>{{ run.summary.retried }}</dd></div>
+  </dl>
+  {% if run.rfi %}<p class="rfi-link"><a href="/runs/{{ run.run_id }}/rfi.pdf">Open the RFI draft PDF</a></p>{% endif %}
+</section>
+<section class="card">
+  <div class="section-head">
+    <h2>Findings <span class="badge verified">VERIFIED</span></h2>
+    <p>Each quote below passed the verification gate against its cited page.</p>
+  </div>
+  {% if findings %}
+  <div class="table-wrap"><table><thead><tr><th scope="col">Claim</th><th scope="col">Specification quote</th><th scope="col">Submitted quote</th><th scope="col">Severity</th></tr></thead><tbody>
+  {% for finding in findings %}<tr><td>{{ finding.claim_text }}</td><td><span class="locator">Specification page {{ finding.spec_quote.page_number }}</span><q class="quote">{{ finding.spec_quote.text }}</q></td><td><span class="locator">Submitted page {{ finding.cut_sheet_quote.page_number }}</span><q class="quote">{{ finding.cut_sheet_quote.text }}</q></td><td>{{ finding.severity }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% else %}<p class="empty">No verified findings were persisted for this run.</p>{% endif %}
+</section>
+<section class="card">
+  <div class="section-head">
+    <h2>Rejections <span class="badge rejected">REJECTED</span></h2>
+    <p>Claims the gate refused, with the exact reason code it returned.</p>
+  </div>
+  {% if rejections %}
+  <div class="table-wrap"><table><thead><tr><th scope="col">Claim</th><th scope="col">Reason</th></tr></thead><tbody>
+  {% for rejection in rejections %}<tr><td>{{ rejection.claim_text }}</td><td><code>{{ rejection.reason }}</code></td></tr>{% endfor %}
+  </tbody></table></div>
+  {% else %}<p class="empty">No claims were rejected for this run.</p>{% endif %}
+</section>
+<section class="card">
+  <div class="section-head">
+    <h2>Integrity records <span class="badge quarantined">QUARANTINED</span></h2>
+    <p>Hidden text found in the document text layer. No model read this text.</p>
+  </div>
+  {% if integrity_records %}
+    {% for record in integrity_records %}
+    <article>
+      <h3>{{ record.document_role }} · flagged pages {{ record.flagged_pages }}</h3>
+      <p class="muted">Document SHA-256: <code>{{ record.document_sha256 }}</code></p>
+      <div class="table-wrap"><table><thead><tr><th scope="col">Page</th><th scope="col">Hidden span text</th><th scope="col">Font</th><th scope="col">Size</th></tr></thead><tbody>
+      {% for span in record.hidden_spans %}<tr><td>{{ span.page_number }}</td><td><q>{{ span.text }}</q></td><td>{{ span.font }}</td><td>{{ span.size }}</td></tr>{% endfor %}
+      </tbody></table></div>
+    </article>
+    {% endfor %}
+  {% else %}<p class="empty">No text-layer integrity record exists for this run.</p>{% endif %}
+</section>
+<section class="card">
+  <div class="section-head">
+    <h2>Durable objects</h2>
+    <p>Every source and generated file, keyed by run ID with its SHA-256.</p>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th scope="col">Role</th><th scope="col">Object</th><th scope="col">SHA-256</th></tr></thead><tbody>
+  {% for role, document in run.documents.items() %}<tr><td>{{ role }}</td><td><code>{{ document.object_name }}</code></td><td><code>{{ document.sha256 }}</code></td></tr>{% endfor %}
+  {% if run.rfi %}<tr><td>RFI</td><td><code>{{ run.rfi.object_name }}</code></td><td><code>{{ run.rfi.sha256 }}</code></td></tr>{% endif %}
+  </tbody></table></div>
+</section>
+<style>
+  .run-head { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem; margin-bottom: 1rem; }
+  .run-head h2 { margin: 0; }
+  .run-head p { margin: .15rem 0 0; font-size: .9rem; }
+  .rfi-link { margin: 1.2rem 0 0; }
+  .rfi-link a { display: inline-block; border: 1px solid var(--accent); border-radius: .35rem; padding: .55rem 1rem; font-weight: 700; text-decoration: none; transition: transform 140ms var(--ease-out), background-color 160ms var(--ease-out); }
+  .rfi-link a:active { transform: scale(0.97); }
+  .rfi-link a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (hover: hover) and (pointer: fine) {
+    .rfi-link a:hover { background: var(--accent-soft); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rfi-link a { transition: background-color 160ms ease; }
+    .rfi-link a:active { transform: none; }
+  }
+</style>
+{% endblock %}

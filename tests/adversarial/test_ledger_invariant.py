@@ -67,7 +67,7 @@ def test_a_passing_tool_check_carries_no_authority_at_write_time(tmp_path: Path)
     refuse.
     """
     harness = Harness(tmp_path)
-    first_check = harness.tools.verify_quote(CUT_LINE, 1, str(harness.cut_sheet))
+    first_check = harness.tools.verify_quote(CUT_LINE, 1, "submitted_document")
     assert first_check["verified"] is True
 
     write_pdf(

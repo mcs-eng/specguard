@@ -186,12 +186,12 @@ class PersistedFinding(BaseModel):
 
 
 class PdfTextResult(BaseModel):
-    """Structured result from the PDF extraction tool."""
+    """Structured result from extraction of one bound document page."""
 
     model_config = ConfigDict(frozen=True)
 
     ok: bool
-    pdf_path: str
+    document_role: DocumentRole
     page_number: int
     text: str | None = None
     error_code: str | None = None

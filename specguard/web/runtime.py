@@ -1,0 +1,64 @@
+"""Production audit runner for the web service."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Protocol
+
+from google.cloud import firestore
+
+from specguard.agent import AdkClaimGenerator, AuditRuntime, create_adk_agent
+from specguard.models import AuditRunSummary
+from specguard.tools import AuditTools
+
+
+class AuditRunner(Protocol):
+    """The audit operation used after validated PDFs reach durable storage."""
+
+    async def run_audit(
+        self,
+        *,
+        spec_path: Path,
+        cut_sheet_path: Path,
+        run_id: str,
+        output_directory: Path,
+    ) -> AuditRunSummary:
+        """Run one audit over the two local request copies."""
+
+
+class GoogleAuditRunner:
+    """Construct the existing deterministic runtime for one web request."""
+
+    def __init__(self, *, project_id: str) -> None:
+        self._project_id = project_id
+
+    async def run_audit(
+        self,
+        *,
+        spec_path: Path,
+        cut_sheet_path: Path,
+        run_id: str,
+        output_directory: Path,
+    ) -> AuditRunSummary:
+        """Run the existing runtime with Cloud Run application credentials."""
+        firestore_client = firestore.Client(project=self._project_id)
+        try:
+            tools = AuditTools(
+                firestore_client=firestore_client,
+                spec_path=spec_path,
+                cut_sheet_path=cut_sheet_path,
+                run_id=run_id,
+                output_directory=output_directory,
+            )
+            agent = create_adk_agent(tools, project_id=self._project_id)
+            claim_generator = AdkClaimGenerator(agent, run_id=run_id)
+            runtime = AuditRuntime(
+                claim_generator=claim_generator,
+                tools=tools,
+                spec_path=spec_path,
+                cut_sheet_path=cut_sheet_path,
+                run_id=run_id,
+            )
+            return await runtime.run()
+        finally:
+            firestore_client.close()

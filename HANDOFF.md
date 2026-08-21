@@ -600,3 +600,180 @@ RFI path: C:\Users\mcspd\dev\specguard\artifacts\rfi-996f2388477248fa87f9d6e984e
 One Firestore query covering both runs returned exit 0. For `074fd5342e57430b9c24b7e66b4d95bd` it reported `integrity_findings = 1`, `findings = 0`, `rejections = 0`, with the record carrying the fixture SHA-256, `flagged_pages=[1]`, and both hidden span texts. For `996f2388477248fa87f9d6e984ecf4e7` it reported `integrity_findings = 0`, `findings = 1`, `rejections = 0`, citing the same two quotes and pages as run E. The RFI content assertion returned `missing=[]` and found no `209V`, exit 0.
 
 These two runs, not runs D and E, are the receipts for the committed code.
+
+## Phase 4 — findings page, durable uploads, and Cloud Run
+
+Date: 2026-08-21. Scope: FastAPI findings page, role-bound model tools, Cloud Storage object persistence, and the Cloud Run deployment path.
+
+### Delivered locally
+
+- `extract_pdf_text` and `verify_quote` now accept `specification` or `submitted_document`, never a filesystem path. The runtime uses the same role-bound tool surface.
+- `specguard/web/` adds the public read-only findings page, guarded PDF upload, run detail page, human-only integrity record view, and durable RFI route.
+- Each upload and generated RFI is stored under `<run_id>/` in Cloud Storage. The run document records each object name, content type, and SHA-256. No ephemeral path enters the run document.
+- The upload route requires a passphrase, accepts only `application/pdf` with a PDF signature, limits each file to 5 MB, and allows two in-flight audits per instance.
+
+### Local quality-gate receipts
+
+All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code below is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv lock` | 0 | Locked FastAPI, Cloud Storage, Jinja2, multipart parsing, and Uvicorn dependencies. |
+| `uv sync` | 0 | Installed the new locked dependencies. |
+| `uv run pytest -q tests/test_web.py` | 0 | `8 passed, 2 warnings in 1.93s`. |
+| `uv run pytest -q` | 0 | `172 passed, 2 warnings in 7.48s`. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `34 files already formatted`. |
+| `git diff --check` | 0 | No whitespace errors; Git printed existing LF-to-CRLF working-copy warnings only. |
+
+### Cloud setup receipts
+
+The setup commands and their unpiped exit codes are recorded in local `SETUP.md`. They enabled Cloud Storage and Secret Manager, created the private uniform-access `specguard-hack-runs` bucket in us-central1, granted the runtime service account `roles/storage.objectAdmin` on that bucket, created `specguard-demo-passphrase` without a value, and granted the runtime service account `roles/secretmanager.secretAccessor` on that secret.
+
+### Deployment hold
+
+Deployment is intentionally stopped before the `gcloud run deploy` command. `specguard-demo-passphrase` has no enabled version, and Mason must create one in Google Cloud Console without sending its value through this session. The exact human step is in local `SETUP.md`. After Mason confirms that one enabled version exists, the remaining work is: deploy with the Secret Manager reference, record the live URL and cold-start time, curl public `GET /`, submit one real audit through the web UI, run the authorized Codex review, apply at most two corrections, re-run the quality gates, and commit.
+
+## Phase 5 — submission-state UI pass
+
+Date: 2026-08-21. Scope: the deployed page's idle, running, completed, quarantined, and failed states, and the human-facing failure path. No change to the verification gate, the role-bound tools, the passphrase guard, the upload limits, the two-audit application limit, or the Cloud Run concurrency setting.
+
+The Phase 4 "Deployment hold" section above is superseded. The secret version exists and the service is deployed.
+
+### Capability delivered
+
+Mason submits one audit, sees at once that it started, reads that the model step has no progress report, and cannot start a duplicate run by clicking or by pressing Enter again.
+
+### Behavior changes
+
+- The submit control disables itself on submit and now has a real disabled appearance: flat grey fill, muted label, `not-allowed` cursor, no hover brightening. `#audit-submit:disabled` is the rule.
+- The form-level submit handler sets a `submitting` flag and calls `event.preventDefault()` on every later submit event. This covers a repeated Enter press, not only a repeated click. The submit button carries no `name`, so disabling it does not remove a field from the POST body.
+- The running panel is a bordered blue block with a pulsing dot, `role="status"` and `aria-live="polite"`. Its copy is: `Audit running. Do not submit again.` then `A second submit starts a duplicate run.` then a sentence stating that the model step takes time and that the server reports no progress, so the page shows no bar and no percentage. No completion time is promised. The pulse is disabled under `prefers-reduced-motion: reduce`.
+- The field group receives `inert` and dims to 50 percent while a submit is in flight. `inert` blocks focus and pointer interaction only; it does not remove fields from the POST body, unlike `disabled`.
+- A `pageshow` handler with `event.persisted` returns the form to its idle state, so a back-button restore from the browser cache does not leave a permanently dead button.
+- A failed audit no longer returns FastAPI's JSON error body. `POST /audit` now renders the landing page with HTTP 500, a red alert reading `The audit did not complete.`, and, when a run record exists, a link to that FAILED run. `AuditFailedError` carries the run ID from `_run_audit` to the route for this. When the failure happened before any run record could be written, the page shows the alert with no run link, matching the existing cleanup path.
+- The run detail page states each non-completed status in plain words: FAILED, RUNNING, and QUARANTINED each get their own notice. The quarantine notice names the reason code and states that no model call was made.
+- Finding quotes now carry an explicit locator label above each quote, `Specification page N` and `Submitted page N`, instead of an inline `Page N`. Quote text, rejection reason codes, hidden-span text, SHA-256 values, and the RFI link are unchanged in content.
+- The recent-runs table leads with the status column, right-aligns the two count columns with tabular figures, and reads `None` instead of an em dash when a run has no RFI.
+
+### Controls confirmed unchanged
+
+`specguard/gate.py`, `PLAN.md`, and every fixture PDF are untouched. `POST /audit` still requires the demo passphrase through `secrets.compare_digest`. Uploads are still `application/pdf` only, still capped at 5 MB, and still checked for the `%PDF-` signature. `MAX_IN_FLIGHT_AUDITS` is still 2. `deploy-specguard.ps1` still passes `--concurrency 2`, and `test_deploy_script_limits_cloud_run_request_concurrency` still pins it. Durable objects are still keyed by run ID with SHA-256 in Firestore. Failed runs are still recorded as FAILED, and unrecorded objects are still deleted. Public routes are still GET-only. No external analytics, tracking, or third-party asset was added; the pages use system fonts and inline CSS only.
+
+### Test changes
+
+`tests/test_web.py` moved from 8 to 16 tests. New or changed:
+
+- `test_findings_page_shows_a_disabled_submit_state_and_a_stop_message` asserts the stop copy, the `#audit-submit:disabled` rule, the disable statement, and the repeat-submit guard.
+- `test_findings_page_promises_no_completion_time_or_progress_value` asserts the no-progress sentence and asserts that no `role="progressbar"` and no `<progress>` element exists.
+- `test_audit_cleans_up_objects_when_uploads_cannot_be_recorded` now also asserts an HTML response carrying the failure message and no FAILED-run link.
+- `test_audit_records_a_failed_run_after_durable_inputs_are_stored` now also asserts an HTML response carrying the failure message and a link to the FAILED run.
+- `test_run_view_tells_a_reviewer_that_a_running_run_has_not_finished` covers the RUNNING notice.
+- `test_run_view_renders_findings_rejections_and_hidden_integrity_text` now also asserts the quarantine notice, its reason code, and both quote locators.
+- `test_findings_page_shows_the_upload_form_and_no_runs` dropped the retired `Audit is running. Wait for the findings page.` string.
+
+Every route test remains network-free. All fakes stay in-process.
+
+### Local quality-gate receipts
+
+All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code below is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `180 passed, 2 warnings in 7.98s`. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `34 files already formatted`. |
+| `git diff --check` | 0 | No whitespace error. Git printed existing LF-to-CRLF working-copy warnings only. |
+
+### Deployment receipts
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `.\deploy-specguard.ps1` | 0 | `Service [specguard] revision [specguard-00003-797] has been deployed and is serving 100 percent of traffic.` |
+| `gcloud run services describe specguard --region us-central1 --project specguard-hack` | 0 | `containerConcurrency = 2`, `specguard-00003-797`, `percent = 100`. |
+| `Invoke-WebRequest https://specguard-108657628939.us-central1.run.app/` | 0 | `StatusCode = 200`, 18303 bytes. The response contains `Audit running. Do not submit again.`, `A second submit starts a duplicate run.`, `#audit-submit:disabled`, and `The server reports no progress`. |
+
+- Deployed revision: `specguard-00003-797`, 100 percent of traffic.
+- Live URL: `https://specguard-108657628939.us-central1.run.app`.
+- Internal run URL reported by describe: `https://specguard-ypkohkbwgq-uc.a.run.app`.
+
+### Visual check limitation
+
+The Chrome extension was not connected in this session, so no live browser screenshot was taken. The pages were rendered to static HTML through the in-process test client with fictional run data, one file per state, and reviewed as files. The running state and the disabled button are covered by the route tests listed above rather than by a browser screenshot.
+
+### Phase 5 second pass — design-engineering polish
+
+Mason asked for a further pass using Emil Kowalski's design-engineering skill. The animation gate from that skill's `find-animation-opportunities` companion was applied: every candidate had to name a frequency band, one purpose, a duration budget, and a function test. Rejected candidates are recorded below, because a skipped animation is a decision, not an omission.
+
+Deployed revision after this pass: `specguard-00004-q7r`, 100 percent of traffic. `containerConcurrency` is still 2.
+
+#### Motion added, with its reason
+
+- Easing tokens `--ease-out: cubic-bezier(0.23, 1, 0.32, 1)` and `--ease-in-out: cubic-bezier(0.77, 0, 0.175, 1)` replace the built-in curves. The built-ins are too weak to read as intentional.
+- The submit button scales to `0.97` on `:active` over 140 ms. Purpose: feedback. This is the direct answer to a slow audit that gave no sign it heard the click.
+- The running panel now enters over 260 ms with `opacity` and an 8 px `translateY`, through `@starting-style` and `transition-behavior: allow-discrete` on `display`. Purpose: preventing a jarring change. Nothing in the real world appears from nothing.
+- The error alert enters the same way, 240 ms. Purpose: preventing a jarring change on a page that reloads into a failure.
+- The RUNNING badge dot and the running-panel dot breathe on a 1.8 s `ease-in-out` loop. Purpose: state indication. A breathing dot indicates activity; it is not a progress claim, and it carries no bar and no percentage.
+- The field group fades to 45 percent over 220 ms while a submit is in flight, instead of snapping.
+- Table rows tint on hover over 120 ms. Purpose: scanning a list of runs.
+
+Every animated property is `transform`, `opacity`, `background-color`, `border-color`, or `filter`. No layout property is animated. There is no `transition: all` anywhere, and nothing enters from `scale(0)`.
+
+#### Animation candidates rejected
+
+- Staggered entry on the recent-runs rows. Rejected on frequency. The list renders on every visit to the landing page, and a cascade would make the page feel slower every time.
+- A spinner inside the submit button. Rejected on purpose. The running panel already indicates activity, and a second indicator on the same event is decoration.
+- A page transition between the landing page and a run detail page. Rejected on function. The detail page is dense evidence, and motion between reading states hinders.
+- An animated counter on the four run statistics. Rejected on function. These are functional numbers a reviewer reads, and animated data hinders comprehension.
+
+#### Interaction and clarity, not motion
+
+- The file inputs are now transparent overlays that fill their drop zone, so the whole zone is one control. The input keeps layout and focus, so the browser's own `required` message still anchors to the zone. Each zone shows the chosen filename and its size, a check mark, a solid green border, and a `Replace PDF` label instead of `Choose PDF`. Mason can now confirm both slots are loaded before he commits to a slow run.
+- Each zone runs an advisory client-side check for content type and the 5 MB limit and shows a red warning reading that the server will reject the file. This check is advisory only. It never blocks submission, and it changes nothing about the server-side check in `_read_pdf_upload`, which stays authoritative.
+- Focus is moved to the running panel on submit. Without this the focus would land on `<body>` when the submit button disables, and a screen-reader user would lose the context.
+- The browser tab title changes to `Audit running — SpecGuard` for the length of the run and resets on a back-button restore. Mason can leave the tab and still see the state.
+- The recent-runs table now shows the first 8 characters of the run ID in a chip, with the complete ID in the link's `title`. The complete ID stays on the run detail page and in its durable-objects table. This trades one-click copying from the list for a readable list; say so if the trade is wrong.
+- The created column renders a relative time such as `2 hours ago` through `Intl.RelativeTimeFormat`, with the absolute local time in the `title`. The server still emits the absolute timestamp inside the `<time>` element, so a browser with JavaScript disabled still shows it.
+- Hover states are gated behind `@media (hover: hover) and (pointer: fine)`, so a tap on a touch device does not leave a stuck hover state.
+- `prefers-reduced-motion: reduce` removes every transform and every looping animation, and keeps the opacity transitions that carry meaning.
+
+#### Test changes in this pass
+
+`tests/test_web.py` moved from 16 to 20 tests. New:
+
+- `test_findings_page_confirms_each_chosen_file_before_the_run_starts`
+- `test_findings_page_gives_the_submit_button_press_feedback`
+- `test_findings_page_respects_reduced_motion_and_gates_hover`, which also asserts that no `transition: all` and no `scale(0)` reaches the page
+- `test_recent_runs_shorten_the_run_identifier_and_keep_it_reachable`
+
+#### Receipts for this pass
+
+All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code below is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `184 passed, 2 warnings in 7.45s`. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `34 files already formatted`. |
+| `git diff --check` | 0 | No whitespace error after one trailing blank line was trimmed from this file. |
+| `.\deploy-specguard.ps1` | 0 | `Service [specguard] revision [specguard-00004-q7r] has been deployed and is serving 100 percent of traffic.` |
+| `gcloud run services describe specguard --region us-central1 --project specguard-hack` | 0 | `containerConcurrency = 2`, `specguard-00004-q7r`, `percent = 100`. |
+| `Invoke-WebRequest https://specguard-108657628939.us-central1.run.app/` | 0 | `StatusCode = 200`. The response contains the press-feedback rule, `No file chosen`, `Replace PDF`, the reduced-motion block, the hover gate, the stop copy, and a `<time datetime=` element. |
+
+#### Live audit receipt
+
+Mason submitted the audit through the deployed web UI on 2026-08-21 and reported the run. This session never held the demo passphrase and submitted no audit; every live run on the service is Mason's. The receipt below was read back from the public GET routes, not from the submission.
+
+- Run ID: `c3a307abec1143bd92d11011b59834d9`.
+- Status: `COMPLETED`.
+- Created: `2026-08-21 18:09:56.381332+00:00`.
+- Claims made 1, findings persisted 1, rejected 0, retried 0.
+- Verified finding, both quotes read back from `GET /runs/c3a307abec1143bd92d11011b59834d9`:
+  - Specification page 3: `Provide a 480V, 3-phase distribution switchboard for service distribution.`
+  - Submitted page 1: `Nominal system: 208V, 3-phase, 4-wire.`
+- Durable objects, both keyed by run ID with SHA-256 recorded in Firestore:
+  - `c3a307abec1143bd92d11011b59834d9/specification.pdf` -> `88988353d0332a32c3dcdf47225e150814a92277beb920cdfc919de9d3dfe568`
+  - `c3a307abec1143bd92d11011b59834d9/submitted-document.pdf` -> `8c3109b8ef690dd2c51de6fa3efacedcdbc6da6df582c138c504f82b2155a385`
+- `GET /runs/c3a307abec1143bd92d11011b59834d9/rfi.pdf` returned `200`, `Content-Type: application/pdf`, 5408 bytes.
+
+The run exercised the whole deployed path: guarded upload, durable object write, run record, the deterministic gate, a persisted verified finding, RFI generation, and the RFI download route. Mason independently confirmed the landing page renders with the upload form, the passphrase field, and the run list. He read page text only; the browser pane was not compositing, so no pixel-level visual confirmation exists from either side.

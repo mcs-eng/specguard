@@ -104,28 +104,42 @@ class AuditTools:
             "hidden_span_count": len(report.hidden_spans),
         }
 
-    def extract_pdf_text(self, pdf_path: str, page: int) -> dict[str, Any]:
-        """Extract one one-based PDF page and return an error instead of raising."""
+    def extract_pdf_text(self, document_role: str, page_number: int) -> dict[str, Any]:
+        """Extract one page from a bound document and return errors as data.
+
+        The model names a role, never a path. It therefore cannot read another
+        file through this agent tool.
+        """
+        role, path = self._path_for_role(document_role)
+        if role is None or path is None:
+            return {"ok": False, "error_code": "unknown_document_role"}
         try:
-            text = gate.extract_page_text(pdf_path, page)
+            text = gate.extract_page_text(path, page_number)
         except IndexError as error:
             return PdfTextResult(
                 ok=False,
-                pdf_path=str(pdf_path),
-                page_number=page,
+                document_role=role,
+                page_number=page_number,
                 error_code="page_out_of_range",
                 error_message=str(error),
             ).model_dump(mode="json")
         return PdfTextResult(
             ok=True,
-            pdf_path=str(pdf_path),
-            page_number=page,
+            document_role=role,
+            page_number=page_number,
             text=text,
         ).model_dump(mode="json")
 
-    def verify_quote(self, quote: str, page_number: int, pdf_path: str) -> dict[str, Any]:
-        """Return the unchanged verification-gate result as structured data."""
-        return gate.verify_quote(quote, page_number, pdf_path).model_dump(mode="json")
+    def verify_quote(self, quote: str, page_number: int, document_role: str) -> dict[str, Any]:
+        """Verify a quote on a page of a bound document.
+
+        The model names a role, never a path. The result is the unchanged gate
+        result and does not disclose the bound path.
+        """
+        _, path = self._path_for_role(document_role)
+        if path is None:
+            return {"verified": False, "error_code": "unknown_document_role"}
+        return gate.verify_quote(quote, page_number, path).model_dump(mode="json")
 
     def persist_finding(self, finding: Finding) -> dict[str, Any]:
         """Re-verify both bound source quotes before one atomic Firestore write."""
@@ -362,6 +376,14 @@ class AuditTools:
             }
         )
         return rejection_ref.id
+
+    def _path_for_role(self, document_role: str) -> tuple[DocumentRole | None, Path | None]:
+        """Return one bound source path for a valid document role."""
+        try:
+            role = DocumentRole(document_role)
+        except ValueError:
+            return None, None
+        return role, self._spec_path if role is DocumentRole.SPECIFICATION else self._cut_sheet_path
 
     def _bind_source_quotes(self, finding: Finding) -> tuple[CitedQuote, CitedQuote] | str:
         if len(finding.quotes) != 2:

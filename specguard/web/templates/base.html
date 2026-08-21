@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}SpecGuard{% endblock %}</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+      --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+      --ink: #16202b;
+      --ink-soft: #55636f;
+      --page: #eef1f4;
+      --surface: #ffffff;
+      --line: #ccd5dd;
+      --line-soft: #dfe5ea;
+      --accent: #0b4f7d;
+      --on-accent: #ffffff;
+      --accent-soft: #e6eff6;
+      --field: #f7f9fb;
+      --row-hover: #f2f6f9;
+      --shadow: 0 1px 2px #0f1a2410, 0 6px 18px #0f1a240d;
+      --ok-bg: #d7f0e2; --ok-ink: #04562a; --ok-line: #4aa274;
+      --run-bg: #dfe7fb; --run-ink: #26357e; --run-line: #5a6dc4;
+      --warn-bg: #f9e9cd; --warn-ink: #6d4300; --warn-line: #c08a1e;
+      --bad-bg: #fbdedf; --bad-ink: #8a1418; --bad-line: #c4565a;
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--page); }
+    body { margin: 0 auto; max-width: 1120px; padding: 0 1rem 5rem; font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 16px; line-height: 1.55; color: var(--ink); background: var(--page); }
+    a { color: var(--accent); }
+    code, .mono { font-family: "Cascadia Mono", "SF Mono", Consolas, "Liberation Mono", monospace; font-size: .92em; overflow-wrap: anywhere; }
+    .masthead { display: flex; flex-wrap: wrap; align-items: baseline; gap: .35rem 1rem; padding: 1.75rem 0 1rem; border-bottom: 2px solid var(--accent); margin-bottom: 1.5rem; }
+    .masthead h1 { margin: 0; font-size: 1.5rem; letter-spacing: -.01em; }
+    .masthead h1 a { text-decoration: none; }
+    .masthead .rule { font-size: .84rem; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-soft); }
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: .6rem; padding: 1.4rem 1.5rem; margin: 0 0 1.15rem; box-shadow: var(--shadow); }
+    .card > :first-child { margin-top: 0; }
+    .card > :last-child { margin-bottom: 0; }
+    h2 { margin: 0 0 .3rem; font-size: 1.12rem; letter-spacing: .02em; }
+    h3 { margin: 1.4rem 0 .3rem; font-size: .96rem; }
+    .lede { margin: 0 0 1rem; color: var(--ink-soft); }
+    .section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .4rem 1rem; margin-bottom: .9rem; padding-bottom: .55rem; border-bottom: 1px solid var(--line-soft); }
+    .section-head p { margin: 0; color: var(--ink-soft); font-size: .9rem; }
+    .badge { display: inline-flex; align-items: center; gap: .35rem; border-radius: .3rem; padding: .18rem .5rem; font-size: .74rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; white-space: nowrap; border: 1px solid transparent; }
+    .badge::before { content: ""; width: .45rem; height: .45rem; border-radius: 50%; background: currentColor; }
+    .verified, .completed { background: var(--ok-bg); color: var(--ok-ink); border-color: var(--ok-line); }
+    .running { background: var(--run-bg); color: var(--run-ink); border-color: var(--run-line); }
+    .quarantined { background: var(--warn-bg); color: var(--warn-ink); border-color: var(--warn-line); }
+    .rejected, .failed { background: var(--bad-bg); color: var(--bad-ink); border-color: var(--bad-line); }
+    .badge.running::before { animation: breathe 1.8s var(--ease-in-out) infinite; }
+    .notice { border: 1px solid var(--warn-line); border-left-width: .3rem; background: var(--warn-bg); color: var(--warn-ink); border-radius: .35rem; padding: .8rem 1rem; margin: 0 0 1rem; opacity: 1; transform: translateY(0); transition: opacity 240ms var(--ease-out), transform 240ms var(--ease-out); }
+    .notice.stop { border-color: var(--bad-line); background: var(--bad-bg); color: var(--bad-ink); }
+    .notice p { margin: .4rem 0 0; }
+    .notice strong { display: block; font-size: 1rem; }
+    .notice a { color: inherit; }
+    @starting-style { .notice { opacity: 0; transform: translateY(-6px); } }
+    table { width: 100%; border-collapse: collapse; }
+    caption { text-align: left; color: var(--ink-soft); font-size: .88rem; padding-bottom: .5rem; }
+    th, td { text-align: left; vertical-align: top; border-bottom: 1px solid var(--line-soft); padding: .6rem .7rem; }
+    th { background: var(--field); font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-soft); border-bottom-color: var(--line); }
+    tbody tr { transition: background-color 120ms ease; }
+    tbody tr:last-child td { border-bottom: 0; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line-soft); border-radius: .4rem; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .muted { color: var(--ink-soft); }
+    .empty { color: var(--ink-soft); font-style: italic; margin: 0; }
+    q { quotes: "\201C" "\201D"; }
+    .quote { display: block; margin-top: .25rem; border-left: .2rem solid var(--line); padding-left: .6rem; }
+    .locator { display: block; font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-soft); }
+    .stats { display: flex; flex-wrap: wrap; gap: .5rem 2rem; margin: 1rem 0 0; padding: 0; list-style: none; }
+    .stats div { min-width: 6rem; }
+    .stats dt { font-size: .76rem; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-soft); }
+    .stats dd { margin: 0; font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .backlink { display: inline-block; margin-bottom: .9rem; font-size: .9rem; }
+    @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+    @media (hover: hover) and (pointer: fine) {
+      tbody tr:hover { background: var(--row-hover); }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: #e6ecf2; --ink-soft: #9dabb8; --page: #131b23; --surface: #1c2731; --line: #384855; --line-soft: #2c3a46; --accent: #79c8f2; --on-accent: #0a1620; --accent-soft: #14344a; --field: #22303b; --row-hover: #24313d;
+        --shadow: none;
+        --ok-bg: #133724; --ok-ink: #96e2b1; --ok-line: #2f6f4b;
+        --run-bg: #23295a; --run-ink: #c3cdff; --run-line: #4d5aa8;
+        --warn-bg: #46330f; --warn-ink: #f7cf8a; --warn-line: #8d6a20;
+        --bad-bg: #47191c; --bad-ink: #ffb0b3; --bad-line: #90383c;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .notice { transition: opacity 200ms ease; transform: none; }
+      .badge.running::before { animation: none; }
+      @starting-style { .notice { transform: none; } }
+    }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <h1><a href="/">SpecGuard</a></h1>
+    <span class="rule">Construction submittal review</span>
+  </header>
+  {% block content %}{% endblock %}
+</body>
+</html>

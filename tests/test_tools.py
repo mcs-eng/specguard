@@ -81,22 +81,24 @@ def _finding(
     )
 
 
-def test_extract_pdf_text_returns_page_text(tmp_path: Path) -> None:
+def test_extract_pdf_text_returns_a_bound_document_page(tmp_path: Path) -> None:
     client = FakeFirestoreClient()
     spec, cut_sheet = _source_pdfs(tmp_path)
-    result = _tools(tmp_path, client, spec, cut_sheet).extract_pdf_text(str(spec), 1)
+    result = _tools(tmp_path, client, spec, cut_sheet).extract_pdf_text("specification", 1)
     assert result["ok"] is True
+    assert result["document_role"] == "specification"
     assert "Requirement alpha." in result["text"]
     assert result["error_code"] is None
+    assert str(spec) not in str(result)
 
 
-def test_extract_pdf_text_catches_bad_page(tmp_path: Path) -> None:
+def test_extract_pdf_text_catches_bad_page_on_a_bound_document(tmp_path: Path) -> None:
     client = FakeFirestoreClient()
     spec, cut_sheet = _source_pdfs(tmp_path)
-    result = _tools(tmp_path, client, spec, cut_sheet).extract_pdf_text(str(spec), 2)
+    result = _tools(tmp_path, client, spec, cut_sheet).extract_pdf_text("specification", 2)
     assert result == {
         "ok": False,
-        "pdf_path": str(spec),
+        "document_role": "specification",
         "page_number": 2,
         "text": None,
         "error_code": "page_out_of_range",
@@ -104,12 +106,42 @@ def test_extract_pdf_text_catches_bad_page(tmp_path: Path) -> None:
     }
 
 
-def test_verify_quote_tool_returns_the_gate_result_unchanged(tmp_path: Path) -> None:
+def test_extract_pdf_text_refuses_a_path_or_unknown_role(tmp_path: Path) -> None:
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    tools = _tools(tmp_path, client, spec, cut_sheet)
+
+    assert tools.extract_pdf_text(str(spec), 1) == {
+        "ok": False,
+        "error_code": "unknown_document_role",
+    }
+    assert tools.extract_pdf_text("other-document", 1) == {
+        "ok": False,
+        "error_code": "unknown_document_role",
+    }
+
+
+def test_verify_quote_tool_returns_the_gate_result_for_a_bound_role(tmp_path: Path) -> None:
     client = FakeFirestoreClient()
     spec, cut_sheet = _source_pdfs(tmp_path)
     tools = _tools(tmp_path, client, spec, cut_sheet)
     expected = verify_quote("Requirement alpha.", 1, spec).model_dump(mode="json")
-    assert tools.verify_quote("Requirement alpha.", 1, str(spec)) == expected
+    assert tools.verify_quote("Requirement alpha.", 1, "specification") == expected
+
+
+def test_verify_quote_tool_refuses_a_path_or_unknown_role(tmp_path: Path) -> None:
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    tools = _tools(tmp_path, client, spec, cut_sheet)
+
+    assert tools.verify_quote("Requirement alpha.", 1, str(spec)) == {
+        "verified": False,
+        "error_code": "unknown_document_role",
+    }
+    assert tools.verify_quote("Requirement alpha.", 1, "other-document") == {
+        "verified": False,
+        "error_code": "unknown_document_role",
+    }
 
 
 def test_agent_owns_exactly_the_five_required_tools(tmp_path: Path) -> None:
@@ -406,7 +438,7 @@ def test_no_model_registered_tool_returns_hidden_span_text(tmp_path: Path) -> No
         "draft_rfi",
     ]
     assert hidden_line not in str(tools.check_text_integrity("submitted_document"))
-    assert hidden_line not in str(tools.verify_quote("Requirement alpha.", 1, str(spec)))
+    assert hidden_line not in str(tools.verify_quote("Requirement alpha.", 1, "specification"))
 
 
 def test_persist_integrity_finding_refuses_a_clean_document(tmp_path: Path) -> None:
