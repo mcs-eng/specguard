@@ -71,6 +71,10 @@ The runtime and its tools must be bound to the same two documents; a split bindi
 
 `check_text_integrity`, `extract_pdf_text`, and `verify_quote` are model-facing tools bound to a document role rather than a path. The agent can address only the specification or submitted document already bound to the audit. `check_text_integrity` returns the flag summary only — never hidden-span text — because handing that text back to the model would reopen the disclosure the screen exists to close. `extract_pdf_text` returns raw page text from its bound document, so the quarantine still stops a flagged document before any extraction happens. The runtime does not depend on the model calling any tool.
 
+## Gemma severity classification
+
+SpecGuard uses Gemma (`gemma-3-27b-it`) as a secondary model to classify the technical severity (LOW, MEDIUM, HIGH) of verified discrepancy claims. Gemma runs strictly as a post-verification annotation on findings that have already passed the deterministic verification gate and been persisted to the Firestore ledger. Severity classification is an advisory annotation only: it is not a path into the ledger, it never modifies verification status or rejection reasons, and a classification failure keeps the finding marked UNCLASSIFIED without blocking or failing the audit.
+
 ## What the test suite proves
 
 Known-good cases that verify:

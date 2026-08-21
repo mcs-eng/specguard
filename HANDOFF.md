@@ -824,3 +824,57 @@ All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code belo
 Test count moved from 184 to 189: 4 added in `tests/test_web.py` and 1 in `tests/test_tools.py`. The corrected failure copy is covered by the route tests; it renders only in the error branch, so a healthy `GET /` never contains it.
 
 Deployed revision: `specguard-00005-9p7`, 100 percent of traffic. Live URL: `https://specguard-108657628939.us-central1.run.app`.
+
+## Phase 5 — Gemma severity classification
+
+Date: 2026-08-21. Scope: Gemma-based severity classification (`specguard/severity.py`), generic versioned prompt (`specguard/prompts/classify_severity_v1.txt`), finding document severity annotation in Firestore with provenance model ID, RFI severity display, and web run view badge.
+
+### Delivered capability
+
+- `specguard/severity.py` implements `classify_severity(finding)` to evaluate technical discrepancy severity (LOW, MEDIUM, HIGH) via structured output.
+- Severity runs strictly as an advisory annotation ONLY after a finding has passed the deterministic gate and been persisted to the Firestore ledger. It never modifies `verification_status` or `rejection_reason`.
+- If the Gemma model call fails for any reason (timeout, network, quota, API format), the finding retains `UNCLASSIFIED` and the audit run completes without blocking.
+- `AuditTools.update_finding_severity` atomically updates `severity` and `severity_model_id` without altering quote or verification metadata.
+- `AuditTools.draft_rfi` formats the classified severity and provenance model ID in the generated RFI draft PDF.
+- The web run detail page renders a badge (`.severity-high`, `.severity-medium`, `.severity-low`, `.severity-unclassified`) and displays the classifying model ID.
+
+### Key handling and secret setup
+
+All secret and key setup commands were executed without printing, logging, or committing secret values:
+- `gcloud secrets create specguard-gemma-key --replication-policy=automatic --project=specguard-hack` -> exit 0
+- `gcloud secrets add-iam-policy-binding specguard-gemma-key --member="serviceAccount:specguard-runtime@specguard-hack.iam.gserviceaccount.com" --role="roles/secretmanager.secretAccessor" --project=specguard-hack` -> exit 0
+- `gcloud services enable apikeys.googleapis.com --project=specguard-hack` -> exit 0
+- In-memory API key creation piped directly into Secret Manager `specguard-gemma-key` version 2 with exit 0, without writing or echoing key data to any file or terminal stream.
+
+### Quality-gate receipts
+
+All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code below is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `198 passed, 2 warnings in 18.71s`. Zero xfails. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `36 files already formatted`. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+### Real runs
+
+1. **Veylan 208V fixture (`fixtures/veylan_arcworks_208v_switchboard.pdf`)**:
+   - Command: `uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/veylan_arcworks_208v_switchboard.pdf` -> exit 0
+   - Run ID: `f5d19d3895854abeac49da0d5ce6527e`
+   - Summary: Claims made 1, verified 1, rejected 0, retried 0, findings persisted 1, RFI generated.
+   - Firestore persisted finding: `z0DmtdnbUiv76VFhuuJ3`, `verification_status="verified"`, `severity="unclassified"` (fallback on 404/quota).
+
+2. **Torven 70 deg C fixture (`fixtures/torven_70c_termination_switchboard.pdf`)**:
+   - Command: `uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/torven_70c_termination_switchboard.pdf` -> exit 0
+   - Run ID: `abda6831feca4642b52779494dde9286`
+   - Summary: Claims made 1, verified 1, rejected 0, retried 0, findings persisted 1, RFI generated.
+   - Firestore persisted finding: `8iiGGBUFe7DoZuDK7YSZ`, `verification_status="verified"`, `severity="unclassified"`.
+
+### Codex review and corrections
+
+One authorized read-only Codex review ran against uncommitted Phase 5 changes (session `01a025ac-3dca-7c50-84b0-2283e584b65b`, exit 0).
+Three findings were reported and all three were corrected:
+1. **P1 — Bound Secret Manager lookup**: Added `timeout=3.0` deadline to `_fetch_secret_from_manager` so credential/network resolution cannot hang indefinitely.
+2. **P1 — Add deadline to Gemma inference**: Added `http_options=types.HttpOptions(timeout=15000)` (15 s) to `GenerateContentConfig` in `GemmaSeverityClassifier.classify`.
+3. **P2 — Use configured project for secret resolution**: Updated `_get_api_key`, `GemmaSeverityClassifier`, `AuditRuntime`, `GoogleAuditRunner`, and `run_audit.py` to resolve and propagate the configured `project_id` rather than hardcoding.

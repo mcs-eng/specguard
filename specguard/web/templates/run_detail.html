@@ -32,7 +32,7 @@
   </div>
   {% if findings %}
   <div class="table-wrap"><table><thead><tr><th scope="col">Claim</th><th scope="col">Specification quote</th><th scope="col">Submitted quote</th><th scope="col">Severity</th></tr></thead><tbody>
-  {% for finding in findings %}<tr><td>{{ finding.claim_text }}</td><td><span class="locator">Specification page {{ finding.spec_quote.page_number }}</span><q class="quote">{{ finding.spec_quote.text }}</q></td><td><span class="locator">Submitted page {{ finding.cut_sheet_quote.page_number }}</span><q class="quote">{{ finding.cut_sheet_quote.text }}</q></td><td>{{ finding.severity }}</td></tr>{% endfor %}
+  {% for finding in findings %}<tr><td>{{ finding.claim_text }}</td><td><span class="locator">Specification page {{ finding.spec_quote.page_number }}</span><q class="quote">{{ finding.spec_quote.text }}</q></td><td><span class="locator">Submitted page {{ finding.cut_sheet_quote.page_number }}</span><q class="quote">{{ finding.cut_sheet_quote.text }}</q></td><td><span class="badge severity-{{ (finding.severity or 'unclassified')|lower }}">{{ (finding.severity or 'unclassified')|upper }}</span>{% if finding.severity_model_id %}<span class="locator">{{ finding.severity_model_id }}</span>{% endif %}</td></tr>{% endfor %}
   </tbody></table></div>
   {% else %}<p class="empty">No verified findings were persisted for this run.</p>{% endif %}
 </section>

@@ -58,6 +58,7 @@ class GoogleAuditRunner:
                 spec_path=spec_path,
                 cut_sheet_path=cut_sheet_path,
                 run_id=run_id,
+                project_id=self._project_id,
             )
             return await runtime.run()
         finally:

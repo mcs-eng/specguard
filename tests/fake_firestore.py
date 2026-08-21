@@ -7,6 +7,15 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class FakeDocumentSnapshot:
+    exists: bool
+    _data: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any] | None:
+        return self._data
+
+
+@dataclass(frozen=True)
 class FakeDocumentReference:
     client: FakeFirestoreClient
     collection_name: str
@@ -14,6 +23,14 @@ class FakeDocumentReference:
 
     def set(self, data: dict[str, Any], merge: bool = False) -> None:
         self.client._write(self.collection_name, self.id, data, merge=merge)
+
+    def update(self, data: dict[str, Any]) -> None:
+        self.client._write(self.collection_name, self.id, data, merge=True)
+
+    def get(self) -> FakeDocumentSnapshot:
+        collection = self.client.data.get(self.collection_name, {})
+        exists = self.id in collection
+        return FakeDocumentSnapshot(exists=exists, _data=collection.get(self.id))
 
 
 class FakeCollectionReference:

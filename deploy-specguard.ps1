@@ -21,7 +21,7 @@ $deployArguments = @(
     "--set-env-vars"
     "SPECGUARD_PROJECT=specguard-hack,SPECGUARD_RUNS_BUCKET=specguard-hack-runs"
     "--set-secrets"
-    "SPECGUARD_DEMO_PASSPHRASE=specguard-demo-passphrase:latest"
+    "SPECGUARD_DEMO_PASSPHRASE=specguard-demo-passphrase:latest,SPECGUARD_GEMMA_KEY=specguard-gemma-key:latest"
     "--project"
     "specguard-hack"
 )

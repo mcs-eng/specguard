@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from google.adk.agents import LlmAgent
 from google.adk.models.google_llm import Gemini
@@ -24,6 +24,7 @@ from specguard.models import (
     PersistedFinding,
     QuarantinedDocument,
     RunQuarantine,
+    Severity,
 )
 from specguard.tools import AuditTools
 
@@ -147,12 +148,16 @@ class AuditRuntime:
         spec_path: str | Path,
         cut_sheet_path: str | Path,
         run_id: str,
+        severity_classifier: Any = None,
+        project_id: str | None = None,
     ) -> None:
         self._claim_generator = claim_generator
         self._tools = tools
         self._spec_path = Path(spec_path).resolve(strict=True)
         self._cut_sheet_path = Path(cut_sheet_path).resolve(strict=True)
         self._run_id = run_id
+        self._severity_classifier = severity_classifier
+        self._project_id = project_id
         if self._spec_path != tools.spec_path or self._cut_sheet_path != tools.cut_sheet_path:
             raise ValueError("the runtime and its tools must be bound to the same two documents")
         self._screened_hashes: dict[Path, str] = {}
@@ -234,9 +239,9 @@ class AuditRuntime:
                     str(persistence_result.get("reason", "persistence_refused_finding")),
                 )
                 continue
-            persisted_findings.append(
-                PersistedFinding.model_validate(persistence_result["finding"])
-            )
+            persisted = PersistedFinding.model_validate(persistence_result["finding"])
+            persisted = self._annotate_severity(persisted)
+            persisted_findings.append(persisted)
 
         rfi_result = self._tools.draft_rfi(persisted_findings)
         return AuditRunSummary(
@@ -247,6 +252,38 @@ class AuditRuntime:
             findings_persisted=len(persisted_findings),
             rfi_path=rfi_result["rfi_path"],
         )
+
+    def _annotate_severity(self, finding: PersistedFinding) -> PersistedFinding:
+        """Annotate a persisted finding with Gemma severity classification.
+
+        Severity is an annotation on a verified finding. It runs ONLY on
+        findings that already passed the gate and were persisted to the ledger.
+        It never touches verification status or rejection reason. If Gemma
+        fails, UNCLASSIFIED is retained and the audit still completes.
+        """
+        try:
+            from specguard.severity import classify_severity
+
+            result = classify_severity(
+                finding,
+                classifier=self._severity_classifier,
+                project_id=self._project_id,
+            )
+            if result.severity is not Severity.UNCLASSIFIED:
+                self._tools.update_finding_severity(
+                    finding.finding_id,
+                    result.severity,
+                    model_id=result.model_id,
+                )
+                return finding.model_copy(
+                    update={
+                        "severity": result.severity,
+                        "severity_model_id": result.model_id,
+                    }
+                )
+        except Exception:
+            pass
+        return finding
 
     def _screen_documents(self) -> RunQuarantine | None:
         """Screen both bound documents before any text can reach the model.

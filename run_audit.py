@@ -61,6 +61,7 @@ async def _run(args: argparse.Namespace) -> AuditRunSummary:
             spec_path=args.spec,
             cut_sheet_path=args.cutsheet,
             run_id=run_id,
+            project_id=args.project,
         )
         return await runtime.run()
     finally:

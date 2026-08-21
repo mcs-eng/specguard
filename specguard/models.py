@@ -113,7 +113,10 @@ class Finding(BaseModel):
         min_length=1, description="Verbatim quotes with page numbers that support the claim."
     )
     severity: Severity = Field(
-        default=Severity.UNCLASSIFIED, description="Placeholder severity; set in a later phase."
+        default=Severity.UNCLASSIFIED, description="Severity rating; annotated after verification."
+    )
+    severity_model_id: str | None = Field(
+        default=None, description="Provenance model ID that classified the severity."
     )
     verification_status: VerificationStatus = Field(
         default=VerificationStatus.PENDING, description="Gate outcome for this finding."
@@ -183,6 +186,7 @@ class PersistedFinding(BaseModel):
     spec_quote: PersistedQuote
     cut_sheet_quote: PersistedQuote
     severity: Severity = Severity.UNCLASSIFIED
+    severity_model_id: str | None = None
 
 
 class PdfTextResult(BaseModel):

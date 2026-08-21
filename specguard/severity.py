@@ -1,0 +1,218 @@
+"""Gemma-based severity classification for verified SpecGuard findings.
+
+Severity classification is an annotation on a verified finding. It runs ONLY
+on findings that have already passed the verification gate and been persisted to
+the ledger. It is never a path into the ledger and it never alters verification
+status.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Protocol
+
+from google.genai import types
+from pydantic import BaseModel, Field
+
+from specguard.models import Finding, PersistedFinding, Severity
+
+logger = logging.getLogger(__name__)
+
+GEMMA_MODEL_ID = "gemma-3-27b-it"
+PROMPT_PATH = Path(__file__).parent / "prompts" / "classify_severity_v1.txt"
+
+
+class SeverityClassification(BaseModel):
+    """Structured response schema from Gemma severity classifier."""
+
+    severity: Severity = Field(description="Assigned severity level: low, medium, or high.")
+    rationale: str = Field(
+        default="",
+        description="Brief technical rationale for the assigned severity level.",
+    )
+
+
+@dataclass(frozen=True)
+class SeverityResult:
+    """The outcome of a severity classification attempt."""
+
+    severity: Severity
+    model_id: str | None = None
+    rationale: str = ""
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Severity):
+            return self.severity == other
+        if isinstance(other, SeverityResult):
+            return (
+                self.severity == other.severity
+                and self.model_id == other.model_id
+                and self.rationale == other.rationale
+            )
+        return super().__eq__(other)
+
+
+class SeverityClassifier(Protocol):
+    """Protocol for severity classifiers (used for dependency injection and tests)."""
+
+    def classify(
+        self,
+        claim_text: str,
+        spec_quote: str,
+        cut_sheet_quote: str,
+    ) -> SeverityResult:
+        """Classify the severity of a verified finding."""
+
+
+def load_severity_prompt() -> str:
+    """Load the versioned, fixture-neutral severity classification instruction."""
+    return PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def _fetch_secret_from_manager(
+    project_id: str = "specguard-hack",
+    secret_id: str = "specguard-gemma-key",
+    timeout: float = 3.0,
+) -> str | None:
+    """Fetch the Gemma API key from Google Secret Manager if configured."""
+    try:
+        from google.cloud import secretmanager
+
+        client = secretmanager.SecretManagerServiceClient()
+        name = f"projects/{project_id}/secrets/{secret_id}/versions/latest"
+        response = client.access_secret_version(request={"name": name}, timeout=timeout)
+        return response.payload.data.decode("utf-8").strip()
+    except Exception:
+        return None
+
+
+def _get_api_key(project_id: str | None = None) -> str | None:
+    """Resolve the Gemini API key from environment variables or Secret Manager."""
+    env_key = os.environ.get("SPECGUARD_GEMMA_KEY") or os.environ.get("GEMINI_API_KEY")
+    if env_key and env_key.strip():
+        return env_key.strip()
+    resolved_project = project_id or os.environ.get("SPECGUARD_PROJECT", "specguard-hack")
+    return _fetch_secret_from_manager(resolved_project)
+
+
+class GemmaSeverityClassifier:
+    """Gemma severity classifier calling generativelanguage.googleapis.com."""
+
+    def __init__(
+        self,
+        *,
+        model_id: str = GEMMA_MODEL_ID,
+        api_key: str | None = None,
+        client: Any = None,
+        project_id: str | None = None,
+        timeout_ms: int = 15000,
+    ) -> None:
+        self.model_id = model_id
+        self._api_key = api_key
+        self._client = client
+        self._project_id = project_id or os.environ.get("SPECGUARD_PROJECT", "specguard-hack")
+        self._timeout_ms = timeout_ms
+
+    def _get_client(self) -> Any:
+        if self._client is not None:
+            return self._client
+        key = self._api_key or _get_api_key(self._project_id)
+        if not key:
+            raise ValueError("No Gemini API key available for Gemma classification.")
+        from google import genai
+
+        self._client = genai.Client(api_key=key)
+        return self._client
+
+    def classify(
+        self,
+        claim_text: str,
+        spec_quote: str,
+        cut_sheet_quote: str,
+    ) -> SeverityResult:
+        """Call Gemma with structured output to classify severity."""
+        try:
+            client = self._get_client()
+            prompt = load_severity_prompt()
+            content = (
+                f"{prompt}\n\n"
+                f"Discrepancy Claim:\n{claim_text}\n\n"
+                f'Specification Requirement Quote:\n"{spec_quote}"\n\n'
+                f'Submitted Document Quote:\n"{cut_sheet_quote}"'
+            )
+            response = client.models.generate_content(
+                model=self.model_id,
+                contents=content,
+                config=types.GenerateContentConfig(
+                    temperature=0,
+                    response_mime_type="application/json",
+                    response_schema=SeverityClassification,
+                    http_options=types.HttpOptions(timeout=self._timeout_ms),
+                ),
+            )
+            text = response.text
+            if not text:
+                return SeverityResult(severity=Severity.UNCLASSIFIED, model_id=None)
+
+            data = json.loads(text)
+            parsed = SeverityClassification.model_validate(data)
+            return SeverityResult(
+                severity=parsed.severity,
+                model_id=self.model_id,
+                rationale=parsed.rationale,
+            )
+        except Exception as error:
+            logger.warning("Gemma severity classification failed: %s", error)
+            return SeverityResult(severity=Severity.UNCLASSIFIED, model_id=None)
+
+
+def classify_severity(
+    finding: Finding | PersistedFinding,
+    *,
+    classifier: SeverityClassifier | None = None,
+    client: Any = None,
+    model_id: str = GEMMA_MODEL_ID,
+    api_key: str | None = None,
+    project_id: str | None = None,
+) -> SeverityResult:
+    """Classify the severity of a verified finding using Gemma.
+
+    Failure mode: if the Gemma call fails for any reason (network, API, schema,
+    missing key), this function returns SeverityResult with UNCLASSIFIED and
+    None model_id. Classification failure must never block an audit.
+    """
+    try:
+        if isinstance(finding, PersistedFinding):
+            claim_text = finding.claim_text
+            spec_quote = finding.spec_quote.text
+            cut_sheet_quote = finding.cut_sheet_quote.text
+        elif isinstance(finding, Finding):
+            claim_text = finding.claim_text
+            if len(finding.quotes) >= 2:
+                spec_quote = finding.quotes[0].text
+                cut_sheet_quote = finding.quotes[1].text
+            elif finding.quotes:
+                spec_quote = finding.quotes[0].text
+                cut_sheet_quote = ""
+            else:
+                return SeverityResult(severity=Severity.UNCLASSIFIED, model_id=None)
+        else:
+            return SeverityResult(severity=Severity.UNCLASSIFIED, model_id=None)
+
+        if classifier is not None:
+            return classifier.classify(claim_text, spec_quote, cut_sheet_quote)
+
+        active_classifier = GemmaSeverityClassifier(
+            model_id=model_id,
+            client=client,
+            api_key=api_key,
+            project_id=project_id,
+        )
+        return active_classifier.classify(claim_text, spec_quote, cut_sheet_quote)
+    except Exception as error:
+        logger.warning("classify_severity encountered an unhandled error: %s", error)
+        return SeverityResult(severity=Severity.UNCLASSIFIED, model_id=None)

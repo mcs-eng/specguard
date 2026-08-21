@@ -572,3 +572,43 @@ def test_quarantined_run_stores_no_rfi() -> None:
     assert repository.runs[run_id]["status"] == "QUARANTINED"
     assert repository.runs[run_id]["rfi"] is None
     assert f"{run_id}/rfi.pdf" not in storage.objects
+
+
+def test_run_view_renders_classified_severity_badge_and_model_id() -> None:
+    client, repository, _, _ = _client()
+    repository.runs[RUN_ID] = {
+        "run_id": RUN_ID,
+        "created_at": datetime(2026, 8, 21, tzinfo=UTC),
+        "status": "COMPLETED",
+        "summary": {
+            "claims_made": 1,
+            "rejected": 0,
+            "retried": 0,
+            "findings_persisted": 1,
+            "quarantine": None,
+        },
+        "documents": {
+            "specification": {"object_name": f"{RUN_ID}/specification.pdf", "sha256": "ab" * 32},
+            "submitted_document": {
+                "object_name": f"{RUN_ID}/submitted-document.pdf",
+                "sha256": "cd" * 32,
+            },
+        },
+        "rfi": {"object_name": f"{RUN_ID}/rfi.pdf", "sha256": "ef" * 32},
+    }
+    repository.findings[RUN_ID] = [
+        {
+            "claim_text": "The submitted voltage conflicts with the requirement.",
+            "spec_quote": {"page_number": 3, "text": "Provide 480V."},
+            "cut_sheet_quote": {"page_number": 1, "text": "Nominal system: 208V."},
+            "severity": "high",
+            "severity_model_id": "gemma-3-27b-it",
+        }
+    ]
+
+    response = client.get(f"/runs/{RUN_ID}")
+
+    assert response.status_code == 200
+    assert "severity-high" in response.text
+    assert "HIGH" in response.text
+    assert "gemma-3-27b-it" in response.text

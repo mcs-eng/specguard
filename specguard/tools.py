@@ -224,6 +224,36 @@ class AuditTools:
             "verification_results": [_json_data(result) for result in verification_results],
         }
 
+    def update_finding_severity(
+        self,
+        finding_id: str,
+        severity: Severity,
+        *,
+        model_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Update only severity and provenance on a persisted finding.
+
+        This method updates severity and severity_model_id only. It cannot
+        modify verification_status, rejection_reason, quotes, or claims.
+        """
+        finding_ref = self._firestore.collection(FINDINGS_COLLECTION).document(finding_id)
+        update_data: dict[str, Any] = {
+            "severity": (
+                severity.value if isinstance(severity, Severity) else str(severity).lower()
+            ),
+            "severity_model_id": model_id,
+        }
+        if hasattr(finding_ref, "update"):
+            finding_ref.update(update_data)
+        else:
+            finding_ref.set(update_data, merge=True)
+        return {
+            "updated": True,
+            "finding_id": finding_id,
+            "severity": update_data["severity"],
+            "severity_model_id": model_id,
+        }
+
     def persist_integrity_finding(self, document_role: str) -> dict[str, Any]:
         """Re-screen one bound document and write its integrity record.
 
@@ -332,7 +362,17 @@ class AuditTools:
             for index, finding in enumerate(findings, start=1):
                 writer.heading(f"FINDING {index}", size=12)
                 writer.paragraph(finding.claim_text)
-                writer.line("Severity: UNCLASSIFIED", bold=True)
+                severity_val = (
+                    finding.severity.value.upper()
+                    if isinstance(finding.severity, Severity)
+                    else str(finding.severity).upper()
+                )
+                if finding.severity_model_id:
+                    writer.line(
+                        f"Severity: {severity_val} (model: {finding.severity_model_id})", bold=True
+                    )
+                else:
+                    writer.line(f"Severity: {severity_val}", bold=True)
                 writer.line(
                     f"Specification quote - page {finding.spec_quote.page_number}", bold=True
                 )
