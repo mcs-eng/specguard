@@ -9,7 +9,7 @@
   {% if error %}
   <div class="notice stop" role="alert">
     <strong>{{ error }}</strong>
-    {% if failed_run_id %}<p>The run is recorded as FAILED with its stored source documents. <a href="/runs/{{ failed_run_id }}">Open run {{ failed_run_id }}</a>.</p>{% endif %}
+    {% if failed_run_id %}<p>The run and its stored source documents are recorded. <a href="/runs/{{ failed_run_id }}">Open run {{ failed_run_id }}</a> to read its final state.</p>{% endif %}
   </div>
   {% endif %}
   <form id="audit-form" action="/audit" method="post" enctype="multipart/form-data">

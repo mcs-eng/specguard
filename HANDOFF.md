@@ -777,3 +777,50 @@ Mason submitted the audit through the deployed web UI on 2026-08-21 and reported
 - `GET /runs/c3a307abec1143bd92d11011b59834d9/rfi.pdf` returned `200`, `Content-Type: application/pdf`, 5408 bytes.
 
 The run exercised the whole deployed path: guarded upload, durable object write, run record, the deterministic gate, a persisted verified finding, RFI generation, and the RFI download route. Mason independently confirmed the landing page renders with the upload form, the passphrase field, and the run list. He read page text only; the browser pane was not compositing, so no pixel-level visual confirmation exists from either side.
+
+### Phase 5 Codex review and corrections
+
+One authorized read-only Codex review ran against commit `9ce251c`. It reported four findings and checked seven named invariants. It modified no file and ran no test, because the review forbade file modification and the suite writes cache files.
+
+The first attempt to run it through the plugin's forwarding subagent returned without doing any work: zero tool uses, no review. The review was then launched directly against the companion CLI as job `task-mt3a1fus-o9zfcz`. Codex session `01a0258f-994f-7393-8e69-c418761c72b5`.
+
+Three findings were real and are fixed. One is recorded and not actioned, because fixing it needs an architecture change this pass was told to stop on.
+
+**MEDIUM, fixed — extra multipart file parts never met the upload checks.** The route binds one scalar `UploadFile` per declared field, so a request carrying a third file part, or two parts for one field, had those extra parts fully parsed and spooled while only the two bound values were checked for content type and the 5 MB limit. `_reject_unexpected_file_parts` now inspects the parsed form and refuses any submission carrying a file part outside `spec_pdf` and `cut_sheet_pdf`, or more than one file for either field. `test_audit_rejects_a_submission_carrying_an_unexpected_file` and `test_audit_rejects_a_submission_carrying_two_files_for_one_document` pin both. The first implementation of the guard silently passed, because `isinstance(value, fastapi.UploadFile)` is false for the `starlette.datastructures.UploadFile` instances the form actually holds. The check now tests for the string case instead, which is correct for both classes. The two tests caught this before deployment.
+
+Codex also noted that the passphrase is evaluated only after multipart parsing. That is inherent to carrying the passphrase as a form field, and it is not fixed here. Cloud Run's own request size limit bounds the body.
+
+**MEDIUM, fixed — a failed audit could leave storage objects that no run document referenced.** `pending_run` was assigned before the Firestore RUNNING write, so a failing write left `pending_run` non-`None`, skipped the object cleanup, and then re-attempted the same failing write inside a bare `except`. The result was two orphaned objects with no record at all, which breaks the stated invariant in both of its branches. A separate `run_recorded` flag is now set only after the RUNNING write returns. On failure the code now deletes the uploaded objects when no record exists, and keeps them when a record does exist, because deleting them would strand a run document that references them. `_record_failed_run` retries the FAILED write once and returns whether it landed. `test_audit_deletes_uploaded_objects_when_the_run_record_cannot_be_written` and `test_audit_keeps_recorded_objects_when_the_failed_write_cannot_land` pin both branches.
+
+Disclosed residue: if the RUNNING write lands and both FAILED writes fail, the run keeps reporting RUNNING. Its objects stay referenced and discoverable, and its detail page states that the run has not finished. This is not claimed away.
+
+**LOW, fixed — the registered `verify_quote` tool disclosed the bound ephemeral path.** Its docstring said the result "does not disclose the bound path", while it returned the gate verdict unchanged, including `pdf_path`. The tool now removes `pdf_path` from the returned dictionary. `specguard/gate.py` is untouched and the gate still records the path it read; only the model-facing tool result loses it. `test_verify_quote_tool_never_returns_the_bound_document_path` asserts the gate still carries the path and that no bound path, and no temporary directory, appears anywhere in the tool result. Role binding already blocked arbitrary file selection, so this was disclosure of a known path, not a path-traversal hole.
+
+**LOW, recorded and not actioned — duplicate prevention is page-local.** The `submitting` flag stops repeat clicks and repeat Enter presses in one document. It cannot stop a POST replay, a second tab, or a scripted `form.submit()`. Each accepted POST still mints a fresh run ID. Server-side deduplication needs an idempotency key held in shared state, which is the architecture change this pass was told to stop on rather than attempt. The work order also required server-side duplicate protection to stay unchanged. Recommended follow-up before any multi-user use.
+
+**Invariant 7, recorded as an honest limit.** Cloud Run concurrency is 2 per instance and the process semaphore is 2, so the per-instance control holds exactly as required. With `--max-instances 2`, aggregate service concurrency can reach four, not two. Nothing was changed; `--max-instances` is Mason's call.
+
+Invariants 1, 4, and 6 hold as written. Codex separately confirmed that Jinja autoescaping is active with no `safe` or `Markup` bypass, that filenames reach the page through `textContent`, that `AuditFailedError` leaks no internal exception and no temporary path, and that the transparent file overlay does not break native constraint validation, because validation runs before the submit event and `inert` is applied only after it.
+
+#### Named follow-up, not done here
+
+`draft_rfi` returns `rfi_path`, an absolute ephemeral path, and it is a registered model tool. Unlike `verify_quote`, its return shape is load-bearing: `AuditRuntime` reads `rfi_result["rfi_path"]` at `specguard/agent.py:185` and `specguard/agent.py:248`. Removing the key needs a second return channel for the runtime, which is a tool-contract change outside a UI pass. Bind it before the repo goes public on 2026-08-30.
+
+#### Receipts after the corrections
+
+All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code below is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `189 passed, 2 warnings in 8.35s`. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `34 files already formatted`. |
+| `git diff --check` | 0 | No whitespace error. |
+| `.\deploy-specguard.ps1` | 0 | `Service [specguard] revision [specguard-00005-9p7] has been deployed and is serving 100 percent of traffic.` |
+| `gcloud run services describe specguard --region us-central1 --project specguard-hack` | 0 | `containerConcurrency = 2`, `specguard-00005-9p7`, `percent = 100`. |
+| `Invoke-WebRequest https://specguard-108657628939.us-central1.run.app/` | 0 | `StatusCode = 200`. The retired `recorded as FAILED` wording is gone. |
+| `Invoke-WebRequest .../runs/c3a307abec1143bd92d11011b59834d9` | 0 | `StatusCode = 200`. The live audit receipt above still renders unchanged on the corrected revision. |
+
+Test count moved from 184 to 189: 4 added in `tests/test_web.py` and 1 in `tests/test_tools.py`. The corrected failure copy is covered by the route tests; it renders only in the error branch, so a healthy `GET /` never contains it.
+
+Deployed revision: `specguard-00005-9p7`, 100 percent of traffic. Live URL: `https://specguard-108657628939.us-central1.run.app`.

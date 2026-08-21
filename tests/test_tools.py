@@ -126,7 +126,24 @@ def test_verify_quote_tool_returns_the_gate_result_for_a_bound_role(tmp_path: Pa
     spec, cut_sheet = _source_pdfs(tmp_path)
     tools = _tools(tmp_path, client, spec, cut_sheet)
     expected = verify_quote("Requirement alpha.", 1, spec).model_dump(mode="json")
+    expected.pop("pdf_path")
     assert tools.verify_quote("Requirement alpha.", 1, "specification") == expected
+
+
+def test_verify_quote_tool_never_returns_the_bound_document_path(tmp_path: Path) -> None:
+    """The gate records the path it read. The model must never be told it."""
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    tools = _tools(tmp_path, client, spec, cut_sheet)
+    gate_result = verify_quote("Requirement alpha.", 1, spec).model_dump(mode="json")
+    assert gate_result["pdf_path"] == str(spec)
+
+    for role, quote in (("specification", "Requirement alpha."), ("submitted_document", "nope")):
+        result = tools.verify_quote(quote, 1, role)
+        assert "pdf_path" not in result
+        assert str(spec) not in str(result)
+        assert str(cut_sheet) not in str(result)
+        assert str(tmp_path) not in str(result)
 
 
 def test_verify_quote_tool_refuses_a_path_or_unknown_role(tmp_path: Path) -> None:

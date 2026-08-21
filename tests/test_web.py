@@ -19,18 +19,24 @@ RUN_ID = "web-run-1234"
 SPEC_BYTES = b"%PDF-1.7\nfictional specification\n"
 CUT_SHEET_BYTES = b"%PDF-1.7\nfictional cut sheet\n"
 RFI_BYTES = b"%PDF-1.7\nfictional rfi\n"
+EXTRA_BYTES = b"%PDF-1.7\nfictional extra part\n"
 
 
 class FakeRunRepository:
     """Small in-memory run repository for route tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, failing_create_calls: frozenset[int] = frozenset()) -> None:
         self.runs: dict[str, dict[str, Any]] = {}
         self.findings: dict[str, list[dict[str, Any]]] = {}
         self.rejections: dict[str, list[dict[str, Any]]] = {}
         self.integrity_records: dict[str, list[dict[str, Any]]] = {}
+        self.failing_create_calls = failing_create_calls
+        self.create_calls = 0
 
     def create_run(self, run: Mapping[str, Any]) -> None:
+        self.create_calls += 1
+        if self.create_calls in self.failing_create_calls:
+            raise RuntimeError("firestore write failed")
         self.runs[str(run["run_id"])] = dict(run)
 
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -116,8 +122,9 @@ def _client(
     summary: AuditRunSummary | None = None,
     failure: Exception | None = None,
     fail_upload_at: int | None = None,
+    failing_create_calls: frozenset[int] = frozenset(),
 ) -> tuple[TestClient, FakeRunRepository, FakeObjectStorage, FakeAuditRunner]:
-    repository = FakeRunRepository()
+    repository = FakeRunRepository(failing_create_calls=failing_create_calls)
     storage = FakeObjectStorage(fail_upload_at=fail_upload_at)
     runner = FakeAuditRunner(summary=summary, failure=failure)
     app = create_app(
@@ -336,7 +343,7 @@ def test_audit_cleans_up_objects_when_uploads_cannot_be_recorded() -> None:
     assert runner.calls == []
     assert "text/html" in response.headers["content-type"]
     assert "The audit did not complete." in response.text
-    assert "recorded as FAILED" not in response.text
+    assert "Open run" not in response.text
 
 
 def test_audit_records_a_failed_run_after_durable_inputs_are_stored() -> None:
@@ -357,6 +364,70 @@ def test_audit_records_a_failed_run_after_durable_inputs_are_stored() -> None:
     detail = client.get(f"/runs/{run_id}")
     assert detail.status_code == 200
     assert "The audit did not complete." in detail.text
+
+
+def test_audit_rejects_a_submission_carrying_an_unexpected_file() -> None:
+    client, repository, storage, runner = _client()
+    files = [
+        ("spec_pdf", ("specification.pdf", SPEC_BYTES, "application/pdf")),
+        ("cut_sheet_pdf", ("cut-sheet.pdf", CUT_SHEET_BYTES, "application/pdf")),
+        ("extra_pdf", ("extra.pdf", EXTRA_BYTES, "application/pdf")),
+    ]
+
+    response = client.post("/audit", data={"demo_passphrase": "test-passphrase"}, files=files)
+
+    assert response.status_code == 400
+    assert "unexpected file" in response.text
+    assert runner.calls == []
+    assert repository.runs == {}
+    assert storage.objects == {}
+
+
+def test_audit_rejects_a_submission_carrying_two_files_for_one_document() -> None:
+    client, repository, storage, runner = _client()
+    files = [
+        ("spec_pdf", ("specification.pdf", SPEC_BYTES, "application/pdf")),
+        ("spec_pdf", ("second.pdf", EXTRA_BYTES, "application/pdf")),
+        ("cut_sheet_pdf", ("cut-sheet.pdf", CUT_SHEET_BYTES, "application/pdf")),
+    ]
+
+    response = client.post("/audit", data={"demo_passphrase": "test-passphrase"}, files=files)
+
+    assert response.status_code == 400
+    assert "more than one file for the same document" in response.text
+    assert runner.calls == []
+    assert repository.runs == {}
+    assert storage.objects == {}
+
+
+def test_audit_deletes_uploaded_objects_when_the_run_record_cannot_be_written() -> None:
+    client, repository, storage, runner = _client(failing_create_calls=frozenset({1}))
+
+    response = client.post("/audit", data={"demo_passphrase": "test-passphrase"}, files=_files())
+
+    assert response.status_code == 500
+    assert repository.runs == {}
+    assert storage.objects == {}
+    assert runner.calls == []
+    assert "The audit did not complete." in response.text
+    assert "Open run" not in response.text
+
+
+def test_audit_keeps_recorded_objects_when_the_failed_write_cannot_land() -> None:
+    client, repository, storage, runner = _client(
+        failure=RuntimeError("model failed"), failing_create_calls=frozenset({2, 3})
+    )
+
+    response = client.post("/audit", data={"demo_passphrase": "test-passphrase"}, files=_files())
+
+    assert response.status_code == 500
+    assert len(runner.calls) == 1
+    run_id, run = next(iter(repository.runs.items()))
+    assert run["status"] == "RUNNING"
+    assert repository.create_calls == 3
+    assert storage.objects[f"{run_id}/specification.pdf"] == SPEC_BYTES
+    assert storage.objects[f"{run_id}/submitted-document.pdf"] == CUT_SHEET_BYTES
+    assert f'href="/runs/{run_id}"' in response.text
 
 
 def test_run_view_tells_a_reviewer_that_a_running_run_has_not_finished() -> None:

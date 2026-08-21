@@ -133,13 +133,17 @@ class AuditTools:
     def verify_quote(self, quote: str, page_number: int, document_role: str) -> dict[str, Any]:
         """Verify a quote on a page of a bound document.
 
-        The model names a role, never a path. The result is the unchanged gate
-        result and does not disclose the bound path.
+        The model names a role, never a path. The gate verdict is returned
+        unchanged except that ``pdf_path`` is removed, so the ephemeral request
+        path of the bound document never reaches the model. The gate itself is
+        untouched, and every other verdict field is passed through.
         """
         _, path = self._path_for_role(document_role)
         if path is None:
             return {"verified": False, "error_code": "unknown_document_role"}
-        return gate.verify_quote(quote, page_number, path).model_dump(mode="json")
+        result = gate.verify_quote(quote, page_number, path).model_dump(mode="json")
+        result.pop("pdf_path", None)
+        return result
 
     def persist_finding(self, finding: Finding) -> dict[str, Any]:
         """Re-verify both bound source quotes before one atomic Firestore write."""
