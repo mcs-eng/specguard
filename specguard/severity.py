@@ -249,7 +249,7 @@ class VertexEndpointSeverityClassifier:
         *,
         endpoint_resource_name: str,
         endpoint_dns: str | None = None,
-        model_id: str = "google-gemma2-gemma-2-2b-it",
+        model_id: str | None = None,
         project_id: str | None = None,
         location: str = "us-central1",
         timeout_seconds: float = 15.0,
@@ -257,7 +257,9 @@ class VertexEndpointSeverityClassifier:
     ) -> None:
         self.endpoint_resource_name = endpoint_resource_name
         self.endpoint_dns = endpoint_dns or os.environ.get("SPECGUARD_GEMMA_ENDPOINT_DNS")
-        self.model_id = model_id
+        self.model_id = (
+            model_id or os.environ.get("SPECGUARD_GEMMA_MODEL") or "google-gemma3-gemma-3-1b-it"
+        )
         self.project_id = project_id or os.environ.get("SPECGUARD_PROJECT", "specguard-hack")
         self.location = location
         self.timeout_seconds = timeout_seconds
@@ -328,14 +330,24 @@ class VertexEndpointSeverityClassifier:
             }
             url = self._get_predict_url()
             headers = {"X-Goog-User-Project": self.project_id}
-            response = session.post(
-                url,
-                json=body,
-                headers=headers,
-                timeout=self.timeout_seconds,
-            )
-            if response.status_code != 200:
-                error_msg = f"HTTP {response.status_code}: {response.text[:200].strip()}"
+            response = None
+            for _attempt in range(3):
+                response = session.post(
+                    url,
+                    json=body,
+                    headers=headers,
+                    timeout=self.timeout_seconds,
+                )
+                if response.status_code == 200 or response.status_code not in (502, 503, 504):
+                    break
+                import time
+
+                time.sleep(2.0)
+
+            if response is None or response.status_code != 200:
+                status_str = str(response.status_code) if response is not None else "ERR"
+                error_text = response.text[:200].strip() if response is not None else "No response"
+                error_msg = f"HTTP {status_str}: {error_text}"
                 logger.warning("Vertex endpoint classification returned error: %s", error_msg)
                 return SeverityResult(
                     severity=Severity.UNCLASSIFIED,

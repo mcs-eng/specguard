@@ -73,7 +73,7 @@ The runtime and its tools must be bound to the same two documents; a split bindi
 
 ## Gemma severity classification
 
-SpecGuard uses Gemma deployed on a Vertex AI endpoint (`google-gemma2-gemma-2-2b-it` via Vertex Model Garden) to classify the technical severity (LOW, MEDIUM, HIGH) of verified discrepancy claims. Gemma runs strictly as a post-verification advisory annotation on findings that have already passed the deterministic verification gate and been persisted to the Firestore ledger. Severity classification is an advisory annotation only: it is not a path into the ledger, it never modifies verification status or rejection reasons, and when the endpoint is offline or unavailable, classification gracefully falls back to `UNCLASSIFIED` with the raw reason recorded on the finding and run summary without blocking or failing the audit.
+SpecGuard uses Gemma deployed on a Vertex AI endpoint (`google-gemma3-gemma-3-1b-it` via Vertex Model Garden) to classify the technical severity (LOW, MEDIUM, HIGH) of verified discrepancy claims. Gemma runs strictly as a post-verification advisory annotation on findings that have already passed the deterministic verification gate and been persisted to the Firestore ledger. Severity classification is an advisory annotation only: it is not a path into the ledger, it never modifies verification status or rejection reasons, and when the endpoint is offline or unavailable, classification gracefully falls back to `UNCLASSIFIED` with the raw reason recorded on the finding and run summary without blocking or failing the audit.
 
 ## What the test suite proves
 
