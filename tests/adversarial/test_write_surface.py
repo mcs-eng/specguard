@@ -37,10 +37,6 @@ def test_only_the_entry_point_imports_the_firestore_client() -> None:
     assert importers == ["run_audit.py"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="REVIEW-P3 finding F1: draft_rfi renders quote text it never verified through the gate",
-)
 def test_draft_rfi_refuses_a_fabricated_quote_even_with_correct_hashes(tmp_path: Path) -> None:
     """A forged PersistedFinding with correct document hashes must be refused.
 

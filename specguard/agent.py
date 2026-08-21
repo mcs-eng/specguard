@@ -11,6 +11,7 @@ from google.adk.models.google_llm import Gemini
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
+from pydantic import ValidationError
 
 from specguard import gate
 from specguard.models import (
@@ -26,6 +27,7 @@ from specguard.tools import AuditTools
 MODEL_ID = "gemini-3.7-flash"
 MODEL_LOCATION = "global"
 APP_NAME = "specguard"
+MODEL_OUTPUT_INVALID_REASON = "model_output_invalid"
 PROMPT_PATH = Path(__file__).parent / "prompts" / "audit_claims_v1.txt"
 
 
@@ -134,7 +136,20 @@ class AuditRuntime:
 
     async def run(self) -> AuditRunSummary:
         initial_message = self._build_document_message()
-        initial_batch = await self._claim_generator.generate_claims(initial_message)
+        try:
+            initial_batch = await self._claim_generator.generate_claims(initial_message)
+        except (ValidationError, RuntimeError):
+            self._tools.record_rejection("Initial model output", MODEL_OUTPUT_INVALID_REASON)
+            rfi_result = self._tools.draft_rfi([])
+            return AuditRunSummary(
+                run_id=self._run_id,
+                claims_made=0,
+                rejected=1,
+                retried=0,
+                findings_persisted=0,
+                rfi_path=rfi_result["rfi_path"],
+            )
+
         persisted_findings: list[PersistedFinding] = []
         retried = 0
         rejected = 0
@@ -146,9 +161,17 @@ class AuditRuntime:
 
             if failed:
                 retried += 1
-                retry_batch = await self._claim_generator.generate_claims(
-                    self._build_retry_message(current_claim, failed)
-                )
+                try:
+                    retry_batch = await self._claim_generator.generate_claims(
+                        self._build_retry_message(current_claim, failed)
+                    )
+                except (ValidationError, RuntimeError):
+                    rejected += 1
+                    self._tools.record_rejection(
+                        current_claim.claim_description,
+                        MODEL_OUTPUT_INVALID_REASON,
+                    )
+                    continue
                 if len(retry_batch.claims) != 1:
                     rejected += 1
                     self._tools.record_rejection(
@@ -184,7 +207,6 @@ class AuditRuntime:
         return AuditRunSummary(
             run_id=self._run_id,
             claims_made=len(initial_batch.claims),
-            verified=len(persisted_findings),
             rejected=rejected,
             retried=retried,
             findings_persisted=len(persisted_findings),

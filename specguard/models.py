@@ -193,8 +193,12 @@ class AuditRunSummary(BaseModel):
 
     run_id: str = Field(min_length=1)
     claims_made: int = Field(ge=0)
-    verified: int = Field(ge=0)
     rejected: int = Field(ge=0)
     retried: int = Field(ge=0)
     findings_persisted: int = Field(ge=0)
     rfi_path: str = Field(min_length=1)
+
+    @property
+    def verified(self) -> int:
+        """Return the former counter name for read-only compatibility."""
+        return self.findings_persisted

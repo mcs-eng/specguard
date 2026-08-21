@@ -15,7 +15,7 @@ from tests.fixtures_pdf import write_pdf
 
 
 class FakeClaimGenerator:
-    def __init__(self, *responses: AuditClaimBatch) -> None:
+    def __init__(self, *responses: object) -> None:
         self._responses = list(responses)
         self.messages: list[str] = []
 
@@ -23,7 +23,10 @@ class FakeClaimGenerator:
         self.messages.append(message)
         if not self._responses:
             raise AssertionError("the runtime exceeded the configured model-turn cap")
-        return self._responses.pop(0)
+        response = self._responses.pop(0)
+        if isinstance(response, RuntimeError):
+            raise response
+        return AuditClaimBatch.model_validate(response)
 
 
 def _claim(
@@ -170,3 +173,52 @@ def test_empty_model_output_persists_no_findings_and_still_drafts_rfi(tmp_path: 
     with pymupdf.open(summary.rfi_path) as document:
         text = "\n".join(page.get_text() for page in document)
     assert "No findings were persisted for this run." in text
+
+
+def test_invalid_initial_model_output_records_rejection_and_drafts_empty_rfi(
+    tmp_path: Path,
+) -> None:
+    generator = FakeClaimGenerator(
+        {"claims": [{"claim_description": "Incomplete structured output."}]}
+    )
+    runtime, client, _, _ = _runtime(tmp_path, generator)
+
+    summary = asyncio.run(runtime.run())
+
+    assert len(generator.messages) == 1
+    assert summary.claims_made == 0
+    assert summary.rejected == 1
+    assert summary.retried == 0
+    assert summary.findings_persisted == 0
+    assert FINDINGS_COLLECTION not in client.data
+    rejection = next(iter(client.data[REJECTIONS_COLLECTION].values()))
+    assert rejection["claim_text"] == "Initial model output"
+    assert rejection["reason"] == "model_output_invalid"
+    with pymupdf.open(summary.rfi_path) as document:
+        text = "\n".join(page.get_text() for page in document)
+    assert "No findings were persisted for this run." in text
+
+
+def test_invalid_retry_model_output_rejects_that_claim_and_continues(tmp_path: Path) -> None:
+    invalid_claim = _claim(
+        cut_sheet_quote="Invented quote.",
+        description="The first claim has an invalid quote.",
+    )
+    valid_claim = _claim(description="The second claim has valid source quotes.")
+    generator = FakeClaimGenerator(
+        AuditClaimBatch(claims=[invalid_claim, valid_claim]),
+        {"claims": [{"claim_description": "Incomplete retry output."}]},
+    )
+    runtime, client, _, _ = _runtime(tmp_path, generator)
+
+    summary = asyncio.run(runtime.run())
+
+    assert len(generator.messages) == 2
+    assert summary.claims_made == 2
+    assert summary.rejected == 1
+    assert summary.retried == 1
+    assert summary.findings_persisted == 1
+    assert len(client.data[FINDINGS_COLLECTION]) == 1
+    rejection = next(iter(client.data[REJECTIONS_COLLECTION].values()))
+    assert rejection["claim_text"] == invalid_claim.claim_description
+    assert rejection["reason"] == "model_output_invalid"

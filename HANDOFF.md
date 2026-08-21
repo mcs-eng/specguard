@@ -405,3 +405,20 @@ No Vertex cost value was visible in the three command outputs. Actual spend is t
 ADK 2.7.1 supported the specified structured output, four function tools, Vertex global location, and bounded multi-turn session. It emitted an experimental-feature warning for JSON-schema function declarations, but no specified behavior proved impossible and no version deviation was made.
 
 The one authorized Codex review invocation returned a trust-boundary warning instead of a review result. The invocation reported zero reviewer tokens and produced no findings or correction iteration. The planned Fable-tier adversarial review must therefore treat the persistence attack map above as unreviewed, not as independently confirmed.
+
+## Phase 3 fixes
+
+Date: 2026-08-21. Scope: close REVIEW-P3 findings F1, F2, F4, and F8 without changing the ledger invariant.
+
+- `draft_rfi` now re-runs the verification gate for both quotes in every finding against the two bound source PDFs. It raises before rendering if either quote rejects. The F1 adversarial test now passes without an xfail marker.
+- README now limits the guarantee to writes through the SpecGuard persistence tool. It also records concurrent source-file modification during a run as outside the guarantee.
+- `AuditRuntime.run` now records `model_output_invalid` for malformed or absent model output. An invalid initial turn drafts a no-findings RFI and returns a summary. An invalid retry rejects that claim and continues with the remaining claims.
+- The run summary now reports `findings persisted` instead of printing the duplicate `verified` label. `AuditRunSummary.verified` remains a read-only compatibility property backed by `findings_persisted`.
+
+All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code below is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `116 passed, 1 warning in 5.09s`; zero xfails. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/veylan_arcworks_208v_switchboard.pdf` | 0 | Run `39e0c11f3af84c16a6a6d126817f5e20` made one claim, rejected none, persisted one finding, and generated `artifacts/rfi-39e0c11f3af84c16a6a6d126817f5e20.pdf`. |

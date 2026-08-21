@@ -71,7 +71,6 @@ def _print_summary(summary: AuditRunSummary) -> None:
     print("RUN SUMMARY")
     print(f"run id: {summary.run_id}")
     print(f"claims made: {summary.claims_made}")
-    print(f"verified: {summary.verified}")
     print(f"rejected: {summary.rejected}")
     print(f"retried: {summary.retried}")
     print(f"findings persisted: {summary.findings_persisted}")

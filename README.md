@@ -10,6 +10,8 @@ This repository is at Phase 3. It includes one Google ADK agent, the determinist
 
 This is the exact claim SpecGuard defends. `specguard/gate.py` implements it and `tests/test_gate.py` proves it.
 
+The scope of this construction is the SpecGuard application path. A separate process with direct Firestore write credentials is outside the Python API guarantee and can write to Firestore independently. Concurrent modification of the source files during a run is outside the guarantee for the same reason.
+
 1. **Extraction.** The gate extracts the text of the cited page with PyMuPDF (pinned version). It reads that page and no other page.
 2. **Normalization.** The gate normalizes the quote and the page text with the same steps, in this order:
    a. Unicode NFKC normalization.
@@ -86,7 +88,7 @@ Run a complete audit with local Application Default Credentials:
 uv run python run_audit.py --spec path\to\specification.pdf --cutsheet path\to\cut-sheet.pdf
 ```
 
-The command prints claims made, verified, rejected, retried, findings persisted, and the generated RFI path. The model receives only extracted PDF text with one-based page markers. It does not receive fixture manifests or source file names.
+The command prints claims made, rejected, retried, findings persisted, and the generated RFI path. The model receives only extracted PDF text with one-based page markers. It does not receive fixture manifests or source file names.
 
 ## Development
 

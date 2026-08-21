@@ -167,6 +167,21 @@ class AuditTools:
             for finding in findings
         ):
             raise ValueError("finding document hashes do not match the bound source PDFs")
+        for finding in findings:
+            verification_results = [
+                gate.verify_quote(
+                    finding.spec_quote.text,
+                    finding.spec_quote.page_number,
+                    self._spec_path,
+                ),
+                gate.verify_quote(
+                    finding.cut_sheet_quote.text,
+                    finding.cut_sheet_quote.page_number,
+                    self._cut_sheet_path,
+                ),
+            ]
+            if any(not result.verified for result in verification_results):
+                raise ValueError("finding contains a quote rejected by the verification gate")
         project, owner = self._read_project_header()
         self._output_directory.mkdir(parents=True, exist_ok=True)
         output_path = self._output_directory / f"rfi-{self._run_id}.pdf"
