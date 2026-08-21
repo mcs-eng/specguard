@@ -95,6 +95,10 @@ def _print_summary(summary: AuditRunSummary) -> None:
     print(f"rejected: {summary.rejected}")
     print(f"retried: {summary.retried}")
     print(f"findings persisted: {summary.findings_persisted}")
+    if summary.severity_status is not None:
+        print(f"severity status: {summary.severity_status}")
+        if summary.severity_reason is not None:
+            print(f"severity fallback reason: {summary.severity_reason}")
     print(f"RFI path: {summary.rfi_path or 'not generated'}")
 
 

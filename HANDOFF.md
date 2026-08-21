@@ -878,3 +878,58 @@ Three findings were reported and all three were corrected:
 1. **P1 — Bound Secret Manager lookup**: Added `timeout=3.0` deadline to `_fetch_secret_from_manager` so credential/network resolution cannot hang indefinitely.
 2. **P1 — Add deadline to Gemma inference**: Added `http_options=types.HttpOptions(timeout=15000)` (15 s) to `GenerateContentConfig` in `GemmaSeverityClassifier.classify`.
 3. **P2 — Use configured project for secret resolution**: Updated `_get_api_key`, `GemmaSeverityClassifier`, `AuditRuntime`, `GoogleAuditRunner`, and `run_audit.py` to resolve and propagate the configured `project_id` rather than hardcoding.
+
+## Phase 5 Reopen — Live Diagnosis and Halt Report
+
+Date: 2026-08-21.
+
+### 1. Live Gemma Model Discovery & Diagnosis
+
+A live in-memory probe reading the restricted API key directly from Secret Manager (`specguard-gemma-key` version 2) queried `GET https://generativelanguage.googleapis.com/v1beta/models`:
+- **HTTP Status**: `200 OK`
+- **Total Models**: 50
+- **Gemma Models Available**: Exactly 2:
+  - `models/gemma-4-26b-a4b-it` (supported methods: `['generateContent', 'countTokens']`)
+  - `models/gemma-4-31b-it` (supported methods: `['generateContent', 'countTokens']`)
+- **Status of `gemma-3-27b-it`**: Returns `HTTP 404 NOT_FOUND` (`"models/gemma-3-27b-it is not found for API version v1beta, or is not supported for generateContent"`). It is retired/absent on this API version.
+
+### 2. Live Inference Test Results & Status Codes
+
+1. `POST /v1beta/models/gemma-3-27b-it:generateContent`: `HTTP 404 NOT_FOUND` (wrong model ID for v1beta).
+2. `POST /v1beta/models/gemma-4-31b-it:generateContent`: `HTTP 429 RESOURCE_EXHAUSTED` (`"Your prepayment credits are depleted. Please go to AI Studio at https://ai.studio/projects to manage your project and billing. Learn more at https://ai.google.dev/gemini-api/docs/billing#prepay."`).
+3. `POST /v1beta/models/gemma-4-26b-a4b-it:generateContent`: `HTTP 429 RESOURCE_EXHAUSTED` (same error).
+4. `POST /v1beta/models/gemini-flash-latest:generateContent`: `HTTP 429 RESOURCE_EXHAUSTED` (same prepayment requirement on this API key).
+5. Vertex AI Publisher Probes across 6 regions (`global`, `us-central1`, `us-east4`, `us-west1`, `europe-west4`, `asia-southeast1`) for `gemma-4-31b-it`, `gemma-4-26b-a4b-it`, `gemma-3-27b-it`, `gemma-2-27b-it`, `gemma-2-9b-it`: All returned `HTTP 404 NOT_FOUND` (no managed serverless `generateContent` endpoints for Gemma in Vertex Model Garden for this project).
+
+### 3. Explicit Fallback Recording (Anti-Silent-Fallback Guard)
+
+- Updated `Finding`, `PersistedFinding`, and `AuditRunSummary` to carry `severity_status` (`"classified"` or `"fallback"`) and `severity_reason` (capturing exact HTTP status and error details).
+- Updated `specguard/severity.py` default to `gemma-4-31b-it` (configurable via `SPECGUARD_GEMMA_MODEL`).
+- Test `tests/test_severity.py::test_runtime_records_fallback_outcome_on_failure` pins that whenever Gemma inference fails or falls back, `severity_status="fallback"` and the exact reason are persisted to Firestore and the run summary.
+
+### 4. Real-Run Receipts with Explicit Fallback Outcome
+
+1. **Veylan 208V fixture (`fixtures/veylan_arcworks_208v_switchboard.pdf`)**:
+   - Command: `uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/veylan_arcworks_208v_switchboard.pdf` -> exit `0`
+   - Run ID: `125cd4bdd3074159820b3f8bdc47e8ce`
+   - Summary: Claims made 1, verified 1, rejected 0, retried 0, findings persisted 1.
+   - Severity status: `fallback`
+   - Severity reason: `HTTP 429: Your prepayment credits are depleted. Please go to AI Studio at https://ai.studio/projects to manage your project and billing. Learn more at https://ai.google.dev/gemini-api/docs/billing#prepay.`
+   - Persisted finding ID: `tQqBUzZh5Uf1vKPKTctG` (`severity="unclassified"`, `severity_status="fallback"`, `verification_status="verified"`).
+
+2. **Torven 70 deg C fixture (`fixtures/torven_70c_termination_switchboard.pdf`)**:
+   - Command: `uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/torven_70c_termination_switchboard.pdf` -> exit `0`
+   - Run ID: `baf9a0c6bb67455cbae5c0c91878dc4e`
+   - Summary: Claims made 1, verified 1, rejected 0, retried 0, findings persisted 1.
+   - Severity status: `fallback`
+   - Severity reason: `HTTP 429: Your prepayment credits are depleted. Please go to AI Studio at https://ai.studio/projects to manage your project and billing. Learn more at https://ai.google.dev/gemini-api/docs/billing#prepay.`
+   - Persisted finding ID: `jBvNqT0G6o8Z3F7L1r4K` (`severity="unclassified"`, `severity_status="fallback"`, `verification_status="verified"`).
+
+### 5. Quality Gate Receipts
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `198 passed, 2 warnings in 19.94s`. Zero xfails. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `36 files already formatted`. |
+| `git diff --check` | 0 | No whitespace errors. |

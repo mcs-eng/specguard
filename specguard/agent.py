@@ -191,6 +191,7 @@ class AuditRuntime:
             )
 
         persisted_findings: list[PersistedFinding] = []
+        severity_results: list[Any] = []
         retried = 0
         rejected = 0
 
@@ -240,8 +241,19 @@ class AuditRuntime:
                 )
                 continue
             persisted = PersistedFinding.model_validate(persistence_result["finding"])
-            persisted = self._annotate_severity(persisted)
+            persisted, sev_result = self._annotate_severity(persisted)
             persisted_findings.append(persisted)
+            severity_results.append(sev_result)
+
+        severity_status: str | None = None
+        severity_reason: str | None = None
+        if persisted_findings:
+            if all(r.status == "classified" for r in severity_results):
+                severity_status = "classified"
+            else:
+                severity_status = "fallback"
+                reasons = [r.reason for r in severity_results if getattr(r, "reason", None)]
+                severity_reason = reasons[0] if reasons else "Classification fallback"
 
         rfi_result = self._tools.draft_rfi(persisted_findings)
         return AuditRunSummary(
@@ -251,9 +263,11 @@ class AuditRuntime:
             retried=retried,
             findings_persisted=len(persisted_findings),
             rfi_path=rfi_result["rfi_path"],
+            severity_status=severity_status,
+            severity_reason=severity_reason,
         )
 
-    def _annotate_severity(self, finding: PersistedFinding) -> PersistedFinding:
+    def _annotate_severity(self, finding: PersistedFinding) -> tuple[PersistedFinding, Any]:
         """Annotate a persisted finding with Gemma severity classification.
 
         Severity is an annotation on a verified finding. It runs ONLY on
@@ -262,28 +276,39 @@ class AuditRuntime:
         fails, UNCLASSIFIED is retained and the audit still completes.
         """
         try:
-            from specguard.severity import classify_severity
+            from specguard.severity import SeverityResult, classify_severity
 
             result = classify_severity(
                 finding,
                 classifier=self._severity_classifier,
                 project_id=self._project_id,
             )
-            if result.severity is not Severity.UNCLASSIFIED:
-                self._tools.update_finding_severity(
-                    finding.finding_id,
-                    result.severity,
-                    model_id=result.model_id,
-                )
-                return finding.model_copy(
-                    update={
-                        "severity": result.severity,
-                        "severity_model_id": result.model_id,
-                    }
-                )
-        except Exception:
-            pass
-        return finding
+            self._tools.update_finding_severity(
+                finding.finding_id,
+                result.severity,
+                model_id=result.model_id,
+                status=result.status,
+                reason=result.reason,
+            )
+            updated = finding.model_copy(
+                update={
+                    "severity": result.severity,
+                    "severity_model_id": result.model_id,
+                    "severity_status": result.status,
+                    "severity_reason": result.reason,
+                }
+            )
+            return updated, result
+        except Exception as error:
+            from specguard.severity import SeverityResult
+
+            fallback_res = SeverityResult(
+                severity=Severity.UNCLASSIFIED,
+                model_id=None,
+                status="fallback",
+                reason=f"Runtime error: {error}",
+            )
+            return finding, fallback_res
 
     def _screen_documents(self) -> RunQuarantine | None:
         """Screen both bound documents before any text can reach the model.

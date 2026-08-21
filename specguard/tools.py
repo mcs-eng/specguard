@@ -230,11 +230,14 @@ class AuditTools:
         severity: Severity,
         *,
         model_id: str | None = None,
+        status: str | None = None,
+        reason: str | None = None,
     ) -> dict[str, Any]:
-        """Update only severity and provenance on a persisted finding.
+        """Update only severity, provenance, and classification status on a persisted finding.
 
-        This method updates severity and severity_model_id only. It cannot
-        modify verification_status, rejection_reason, quotes, or claims.
+        This method updates severity, severity_model_id, severity_status, and
+        severity_reason only. It cannot modify verification_status, rejection_reason,
+        quotes, or claims.
         """
         finding_ref = self._firestore.collection(FINDINGS_COLLECTION).document(finding_id)
         update_data: dict[str, Any] = {
@@ -242,6 +245,8 @@ class AuditTools:
                 severity.value if isinstance(severity, Severity) else str(severity).lower()
             ),
             "severity_model_id": model_id,
+            "severity_status": status,
+            "severity_reason": reason,
         }
         if hasattr(finding_ref, "update"):
             finding_ref.update(update_data)
@@ -252,6 +257,8 @@ class AuditTools:
             "finding_id": finding_id,
             "severity": update_data["severity"],
             "severity_model_id": model_id,
+            "severity_status": status,
+            "severity_reason": reason,
         }
 
     def persist_integrity_finding(self, document_role: str) -> dict[str, Any]:

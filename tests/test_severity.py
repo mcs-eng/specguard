@@ -42,10 +42,12 @@ class FakeSeverityClassifier:
         model_id: str = GEMMA_MODEL_ID,
         *,
         should_fail: bool = False,
+        fail_message: str = "HTTP 429: RESOURCE_EXHAUSTED - prepayment credits depleted",
     ) -> None:
         self.severity = severity
         self.model_id = model_id
         self.should_fail = should_fail
+        self.fail_message = fail_message
         self.calls: list[tuple[str, str, str]] = []
 
     def classify(
@@ -56,11 +58,18 @@ class FakeSeverityClassifier:
     ) -> SeverityResult:
         self.calls.append((claim_text, spec_quote, cut_sheet_quote))
         if self.should_fail:
-            raise RuntimeError("Simulated Gemma API network failure")
+            return SeverityResult(
+                severity=Severity.UNCLASSIFIED,
+                model_id=None,
+                status="fallback",
+                reason=self.fail_message,
+            )
         return SeverityResult(
             severity=self.severity,
             model_id=self.model_id,
             rationale="Test rationale for severity assignment.",
+            status="classified",
+            reason=None,
         )
 
 
@@ -162,7 +171,7 @@ def test_severity_prompt_is_generic_and_contains_no_fixture_vocabulary() -> None
 
 def test_classifier_wiring_with_a_fake() -> None:
     """Classifying with a fake classifier returns assigned severity and model ID."""
-    fake = FakeSeverityClassifier(severity=Severity.HIGH, model_id="gemma-3-27b-it")
+    fake = FakeSeverityClassifier(severity=Severity.HIGH, model_id="gemma-4-31b-it")
     finding = PersistedFinding(
         finding_id="find-1",
         run_id="run-1",
@@ -174,13 +183,15 @@ def test_classifier_wiring_with_a_fake() -> None:
     result = classify_severity(finding, classifier=fake)
 
     assert result.severity is Severity.HIGH
-    assert result.model_id == "gemma-3-27b-it"
+    assert result.model_id == "gemma-4-31b-it"
+    assert result.status == "classified"
+    assert result.reason is None
     assert len(fake.calls) == 1
     assert fake.calls[0] == ("Parameter mismatch.", "Req A", "Sub B")
 
 
 def test_unclassified_retained_on_classifier_failure() -> None:
-    """If the classifier throws an exception, UNCLASSIFIED is retained and no error is raised."""
+    """If the classifier throws an exception, UNCLASSIFIED is retained and fallback recorded."""
     fake = FakeSeverityClassifier(should_fail=True)
     finding = PersistedFinding(
         finding_id="find-1",
@@ -194,6 +205,8 @@ def test_unclassified_retained_on_classifier_failure() -> None:
 
     assert result.severity is Severity.UNCLASSIFIED
     assert result.model_id is None
+    assert result.status == "fallback"
+    assert "RESOURCE_EXHAUSTED" in (result.reason or "")
 
 
 def test_unclassified_retained_when_no_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -206,6 +219,7 @@ def test_unclassified_retained_when_no_api_key(monkeypatch: pytest.MonkeyPatch) 
 
     assert result.severity is Severity.UNCLASSIFIED
     assert result.model_id is None
+    assert result.status == "fallback"
 
 
 def test_gemma_severity_classifier_parses_valid_structured_response() -> None:
@@ -218,18 +232,19 @@ def test_gemma_severity_classifier_parses_valid_structured_response() -> None:
     mock_client.models.generate_content.return_value = mock_response
 
     classifier = GemmaSeverityClassifier(
-        model_id="gemma-3-27b-it",
+        model_id="gemma-4-31b-it",
         client=mock_client,
     )
     result = classifier.classify("Discrepancy", "Spec quote", "Cut sheet quote")
 
     assert result.severity is Severity.MEDIUM
-    assert result.model_id == "gemma-3-27b-it"
+    assert result.model_id == "gemma-4-31b-it"
+    assert result.status == "classified"
     assert "requiring review" in result.rationale
 
 
 def test_severity_update_cannot_alter_verification_status(tmp_path: Path) -> None:
-    """Pin: update_finding_severity modifies only severity and model_id; status is untouched."""
+    """Pin: update_finding_severity modifies only severity metadata; status is untouched."""
     client = FakeFirestoreClient()
     spec = write_pdf(tmp_path / "spec.pdf", [["Req A"]])
     cut = write_pdf(tmp_path / "cut.pdf", [["Sub B"]])
@@ -262,17 +277,21 @@ def test_severity_update_cannot_alter_verification_status(tmp_path: Path) -> Non
     assert stored_before["severity"] == "unclassified"
     assert stored_before.get("severity_model_id") is None
 
-    # Update severity
+    # Update severity with classification outcome
     update_res = tools.update_finding_severity(
         finding_id,
         Severity.HIGH,
-        model_id="gemma-3-27b-it",
+        model_id="gemma-4-31b-it",
+        status="classified",
+        reason=None,
     )
     assert update_res["updated"] is True
 
     stored_after = client.data[FINDINGS_COLLECTION][finding_id]
     assert stored_after["severity"] == "high"
-    assert stored_after["severity_model_id"] == "gemma-3-27b-it"
+    assert stored_after["severity_model_id"] == "gemma-4-31b-it"
+    assert stored_after["severity_status"] == "classified"
+    assert stored_after["severity_reason"] is None
     # Verification status and rejection reason remain exactly untouched
     assert stored_after["verification_status"] == "verified"
     assert stored_after.get("rejection_reason") is None
@@ -282,41 +301,52 @@ def test_severity_update_cannot_alter_verification_status(tmp_path: Path) -> Non
 
 
 def test_runtime_annotates_persisted_finding_with_severity(tmp_path: Path) -> None:
-    """When a claim is verified and persisted, AuditRuntime classifies severity via Gemma fake."""
-    fake_classifier = FakeSeverityClassifier(severity=Severity.HIGH, model_id="gemma-3-27b-it")
+    """When a claim is verified and persisted, AuditRuntime classifies severity via fake."""
+    fake_classifier = FakeSeverityClassifier(severity=Severity.HIGH, model_id="gemma-4-31b-it")
     generator = FakeClaimGenerator(AuditClaimBatch(claims=[_claim()]))
     runtime, client, _, _ = _runtime(tmp_path, generator, classifier=fake_classifier)
 
     summary = asyncio.run(runtime.run())
 
     assert summary.findings_persisted == 1
+    assert summary.severity_status == "classified"
+    assert summary.severity_reason is None
     assert len(fake_classifier.calls) == 1
 
     stored_finding = next(iter(client.data[FINDINGS_COLLECTION].values()))
     assert stored_finding["severity"] == "high"
-    assert stored_finding["severity_model_id"] == "gemma-3-27b-it"
+    assert stored_finding["severity_model_id"] == "gemma-4-31b-it"
+    assert stored_finding["severity_status"] == "classified"
     assert stored_finding["verification_status"] == "verified"
 
     # Verify RFI carries classified severity and model
     with pymupdf.open(summary.rfi_path) as document:
         text = "\n".join(page.get_text() for page in document)
-    assert "Severity: HIGH (model: gemma-3-27b-it)" in text
+    assert "Severity: HIGH (model: gemma-4-31b-it)" in text
 
 
-def test_runtime_keeps_unclassified_on_severity_failure_and_audit_still_completes(
+def test_runtime_records_fallback_outcome_on_failure(
     tmp_path: Path,
 ) -> None:
-    """If severity classification fails, finding remains UNCLASSIFIED and audit finishes."""
-    failing_classifier = FakeSeverityClassifier(should_fail=True)
+    """Pin: if classification fails, fallback is explicitly recorded on finding and summary."""
+    failing_classifier = FakeSeverityClassifier(
+        should_fail=True,
+        fail_message="HTTP 429: RESOURCE_EXHAUSTED - prepayment credits depleted",
+    )
     generator = FakeClaimGenerator(AuditClaimBatch(claims=[_claim()]))
     runtime, client, _, _ = _runtime(tmp_path, generator, classifier=failing_classifier)
 
     summary = asyncio.run(runtime.run())
 
     assert summary.findings_persisted == 1
+    assert summary.severity_status == "fallback"
+    assert "HTTP 429" in (summary.severity_reason or "")
+
     stored_finding = next(iter(client.data[FINDINGS_COLLECTION].values()))
     assert stored_finding["severity"] == "unclassified"
     assert stored_finding.get("severity_model_id") is None
+    assert stored_finding["severity_status"] == "fallback"
+    assert "HTTP 429" in (stored_finding.get("severity_reason") or "")
     assert stored_finding["verification_status"] == "verified"
 
     with pymupdf.open(summary.rfi_path) as document:

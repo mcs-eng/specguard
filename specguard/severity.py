@@ -22,7 +22,7 @@ from specguard.models import Finding, PersistedFinding, Severity
 
 logger = logging.getLogger(__name__)
 
-GEMMA_MODEL_ID = "gemma-3-27b-it"
+GEMMA_MODEL_ID = os.environ.get("SPECGUARD_GEMMA_MODEL", "gemma-4-31b-it")
 PROMPT_PATH = Path(__file__).parent / "prompts" / "classify_severity_v1.txt"
 
 
@@ -43,6 +43,8 @@ class SeverityResult:
     severity: Severity
     model_id: str | None = None
     rationale: str = ""
+    status: str = "classified"
+    reason: str | None = None
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, Severity):
@@ -52,6 +54,8 @@ class SeverityResult:
                 self.severity == other.severity
                 and self.model_id == other.model_id
                 and self.rationale == other.rationale
+                and self.status == other.status
+                and self.reason == other.reason
             )
         return super().__eq__(other)
 
@@ -71,6 +75,22 @@ class SeverityClassifier(Protocol):
 def load_severity_prompt() -> str:
     """Load the versioned, fixture-neutral severity classification instruction."""
     return PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def _extract_error_detail(error: Exception) -> str:
+    """Extract a concise HTTP status or error description from an exception."""
+    if hasattr(error, "code") and hasattr(error, "message"):
+        return f"HTTP {error.code}: {str(error.message).strip()}"
+    if hasattr(error, "status_code"):
+        return f"HTTP {error.status_code}: {str(error).strip()}"
+    msg = str(error).strip()
+    if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+        return "HTTP 429: RESOURCE_EXHAUSTED - prepayment credits depleted"
+    if "404" in msg or "NOT_FOUND" in msg:
+        return "HTTP 404: NOT_FOUND - model not found or not supported for generateContent"
+    if "403" in msg or "PERMISSION_DENIED" in msg:
+        return "HTTP 403: PERMISSION_DENIED - API key restriction or unauthorized"
+    return f"{type(error).__name__}: {msg}"
 
 
 def _fetch_secret_from_manager(
@@ -156,7 +176,12 @@ class GemmaSeverityClassifier:
             )
             text = response.text
             if not text:
-                return SeverityResult(severity=Severity.UNCLASSIFIED, model_id=None)
+                return SeverityResult(
+                    severity=Severity.UNCLASSIFIED,
+                    model_id=None,
+                    status="fallback",
+                    reason="Empty response text from Gemma",
+                )
 
             data = json.loads(text)
             parsed = SeverityClassification.model_validate(data)
@@ -164,10 +189,18 @@ class GemmaSeverityClassifier:
                 severity=parsed.severity,
                 model_id=self.model_id,
                 rationale=parsed.rationale,
+                status="classified",
+                reason=None,
             )
         except Exception as error:
-            logger.warning("Gemma severity classification failed: %s", error)
-            return SeverityResult(severity=Severity.UNCLASSIFIED, model_id=None)
+            error_detail = _extract_error_detail(error)
+            logger.warning("Gemma severity classification failed: %s", error_detail)
+            return SeverityResult(
+                severity=Severity.UNCLASSIFIED,
+                model_id=None,
+                status="fallback",
+                reason=error_detail,
+            )
 
 
 def classify_severity(
@@ -183,7 +216,8 @@ def classify_severity(
 
     Failure mode: if the Gemma call fails for any reason (network, API, schema,
     missing key), this function returns SeverityResult with UNCLASSIFIED and
-    None model_id. Classification failure must never block an audit.
+    None model_id and records status="fallback" and reason.
+    Classification failure must never block an audit.
     """
     try:
         if isinstance(finding, PersistedFinding):
@@ -199,9 +233,19 @@ def classify_severity(
                 spec_quote = finding.quotes[0].text
                 cut_sheet_quote = ""
             else:
-                return SeverityResult(severity=Severity.UNCLASSIFIED, model_id=None)
+                return SeverityResult(
+                    severity=Severity.UNCLASSIFIED,
+                    model_id=None,
+                    status="fallback",
+                    reason="Finding has no quotes",
+                )
         else:
-            return SeverityResult(severity=Severity.UNCLASSIFIED, model_id=None)
+            return SeverityResult(
+                severity=Severity.UNCLASSIFIED,
+                model_id=None,
+                status="fallback",
+                reason="Unsupported finding type",
+            )
 
         if classifier is not None:
             return classifier.classify(claim_text, spec_quote, cut_sheet_quote)
@@ -214,5 +258,11 @@ def classify_severity(
         )
         return active_classifier.classify(claim_text, spec_quote, cut_sheet_quote)
     except Exception as error:
-        logger.warning("classify_severity encountered an unhandled error: %s", error)
-        return SeverityResult(severity=Severity.UNCLASSIFIED, model_id=None)
+        error_detail = _extract_error_detail(error)
+        logger.warning("classify_severity encountered an unhandled error: %s", error_detail)
+        return SeverityResult(
+            severity=Severity.UNCLASSIFIED,
+            model_id=None,
+            status="fallback",
+            reason=error_detail,
+        )

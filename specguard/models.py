@@ -118,6 +118,12 @@ class Finding(BaseModel):
     severity_model_id: str | None = Field(
         default=None, description="Provenance model ID that classified the severity."
     )
+    severity_status: str | None = Field(
+        default=None, description="Outcome of severity classification: classified or fallback."
+    )
+    severity_reason: str | None = Field(
+        default=None, description="Machine-readable fallback reason or HTTP error if fallback."
+    )
     verification_status: VerificationStatus = Field(
         default=VerificationStatus.PENDING, description="Gate outcome for this finding."
     )
@@ -187,6 +193,8 @@ class PersistedFinding(BaseModel):
     cut_sheet_quote: PersistedQuote
     severity: Severity = Severity.UNCLASSIFIED
     severity_model_id: str | None = None
+    severity_status: str | None = None
+    severity_reason: str | None = None
 
 
 class PdfTextResult(BaseModel):
@@ -259,6 +267,12 @@ class AuditRunSummary(BaseModel):
     rfi_path: str | None = Field(default=None, min_length=1)
     quarantine: RunQuarantine | None = Field(
         default=None, description="Set when the integrity screen stopped the run."
+    )
+    severity_status: str | None = Field(
+        default=None, description="Outcome of severity classification across findings."
+    )
+    severity_reason: str | None = Field(
+        default=None, description="Fallback reason if severity classification fell back."
     )
 
     @property
