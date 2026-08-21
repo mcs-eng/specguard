@@ -1,10 +1,10 @@
 # SpecGuard
 
-SpecGuard audits construction submittals against a specification and refuses to record a claim it cannot prove. Every claim carries a verbatim quote and a page locator. A deterministic gate checks the quote against the cited page before the claim reaches the ledger.
+SpecGuard audits a construction cut sheet against a specification. Every finding carries one verbatim quote and page locator from each source document. A deterministic gate must locate both quotes on their cited pages before the finding reaches the Firestore ledger.
 
 **Uncited claims are blocked from the ledger.**
 
-This repository is at Phase 1. What exists today is the verification gate, the data schema, and the test suite that proves the gate. There is no agent, no cloud service, and no user interface yet.
+This repository is at Phase 3. It includes one Google ADK agent, the deterministic verification gate, guarded Firestore persistence, a bounded one-retry loop, and RFI draft PDF generation. The gate establishes only that each quoted text anchor occurs on its cited page. It does not establish that the finding is accurate.
 
 ## Verification contract
 
@@ -32,7 +32,7 @@ The gate proves one narrow thing: the quoted characters appear on the page that 
   - NFKC folds superscripts and subscripts into plain digits. A page reading `10²` normalizes to `102`. Cut sheets use `mm²` often.
   - Whitespace collapse discards layout. Text from two columns, two table cells, or a header and a body can end up adjacent, so a quote can splice text that never appeared together on the page.
 - **It reads the text layer, not the visible page.** A PDF whose text layer disagrees with what a human sees — hidden text, or an OCR layer over a scan — verifies against text the reader cannot see. A pure image scan carries no text and cannot verify anything. The gate is proven against generated text-based PDFs only.
-- **The schema does not enforce that the gate ran.** `Finding.verification_status` is an ordinary field. The schema keeps the status and the rejection reason consistent, but a caller can construct a `VERIFIED` finding without calling `verify_quote`. Binding the two is the job of the persistence path, which does not exist yet.
+- **The schema does not enforce that the gate ran.** `Finding.verification_status` is an ordinary field. The schema keeps the status and the rejection reason consistent, but a caller can construct a `VERIFIED` finding without calling `verify_quote`. The Firestore persistence tool does not trust that field. It re-verifies both quotes against the two source PDFs and performs no write if either quote rejects.
 - SHA-256 in `DocumentRecord` is chain-of-custody metadata. It records which byte stream was read. It is not an accuracy mechanism and no part of the gate reads it.
 
 ## What the test suite proves
@@ -79,6 +79,14 @@ result = verify_quote("Receptacles shall be specification grade", 1, "spec.pdf")
 result.verified  # bool
 result.rejection_reason  # None, or a machine-readable reason
 ```
+
+Run a complete audit with local Application Default Credentials:
+
+```powershell
+uv run python run_audit.py --spec path\to\specification.pdf --cutsheet path\to\cut-sheet.pdf
+```
+
+The command prints claims made, verified, rejected, retried, findings persisted, and the generated RFI path. The model receives only extracted PDF text with one-based page markers. It does not receive fixture manifests or source file names.
 
 ## Development
 

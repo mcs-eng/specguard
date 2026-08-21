@@ -290,3 +290,118 @@ The visual layout remains unchanged. This correction restores explicit fictional
 | `uv run ruff format --check .` | 0 | `13 files already formatted`. |
 | `git diff --check` | 0 | No whitespace errors. |
 | `uv run python -c "from fixtures.build_fixtures import build_fixtures; from pathlib import Path; import hashlib; root=Path('fixtures'); before={path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in root.glob('*.pdf')}; build_fixtures(); after={path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in root.glob('*.pdf')}; print('byte-identical=' + str(before == after)); raise SystemExit(0 if before == after else 1)"` | 0 | `byte-identical=True`. |
+
+## Phase 3 — ADK agent, guarded Firestore persistence, and RFI draft
+
+Date: 2026-08-20. Scope: one Google ADK agent with exactly four tools, Gemini structured claim output, a one-retry verification loop, Firestore persistence, and RFI draft PDF generation. `google-adk==2.7.1` remained pinned. The model client used Vertex AI model `gemini-3.7-flash` at location `global`.
+
+### Delivered capability
+
+`run_audit.py --spec <pdf> --cutsheet <pdf>` now runs the complete audit against real Vertex AI and real Firestore. It prints claims made, verified, rejected, retried, findings persisted, and the RFI path. The model receives only extracted text under generic document labels and one-based page markers. The runtime does not read or pass `fixtures/MANIFEST.md`, source file names, or fixture-derived hints to the model.
+
+The versioned prompt is `specguard/prompts/audit_claims_v1.txt`. A unit test rejects the named forbidden hint classes and fixture names.
+
+### Persistence path for the adversarial reviewer
+
+The main attack question is whether a finding can reach the `findings` collection without both quotes passing the unchanged gate.
+
+1. `AuditRuntime` calls the public verification tool for both quotes at `specguard/agent.py:213-221`.
+2. That first result is not trusted for persistence. `AuditTools.persist_finding` binds exactly one quote to each of the two source paths, then independently calls `specguard.gate.verify_quote` for both at `specguard/tools.py:81-95`.
+3. Any gate rejection returns before a Firestore document reference or batch exists at `specguard/tools.py:96-102`.
+4. The tool hashes both documents before and after verification. A byte change in that interval returns before any write at `specguard/tools.py:104-114`.
+5. The first `findings` document reference is created only after both gate results pass and both hashes remain stable at `specguard/tools.py:115`.
+6. The two `DocumentRecord` values and the finding enter one Firestore batch at `specguard/tools.py:141-153`. Each stored quote references its document by SHA-256. The finding quote objects do not store a local path.
+7. A caller-set `verification_status=VERIFIED` has no authority. `test_persist_finding_ignores_a_hand_set_verified_status` proves the persistence tool re-runs the gate and writes nothing on rejection.
+8. `test_persist_finding_refuses_unverified_quote_without_any_write`, `test_persist_finding_refuses_an_unbound_document`, and `test_persist_finding_refuses_a_document_changed_during_verification` cover the other direct bypass attempts.
+9. Final rejected claims use `record_rejection`, which writes only `claim_text`, `reason`, `run_id`, and `timestamp` to the separate `rejections` collection.
+
+The scope of this construction is the SpecGuard application path. A separate process with direct Firestore write credentials is outside the Python API guarantee and can write to Firestore independently.
+
+### Quality-gate receipts
+
+All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code below is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `98 passed, 1 warning in 8.45s`. The warning is ADK's deprecation notice for `BaseAgentConfig`; no test failed. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `19 files already formatted`. |
+| `uv build` plus a wheel-content assertion for `specguard/prompts/audit_claims_v1.txt` | 0 | The source distribution and wheel built, and the versioned prompt was present in the wheel. |
+| `git diff --check` | 0 | No whitespace errors. Git printed only the repository's existing LF-to-CRLF working-copy warnings. |
+
+### Real run A — compliant cut sheet
+
+Command:
+
+`uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/caldra_meridian_480v_switchboard.pdf` → exit 0
+
+Summary:
+
+```text
+RUN SUMMARY
+run id: d238995ab2ed4ceb9767828cab0c5a07
+claims made: 0
+verified: 0
+rejected: 0
+retried: 0
+findings persisted: 0
+RFI path: C:\Users\mcspd\dev\specguard\artifacts\rfi-d238995ab2ed4ceb9767828cab0c5a07.pdf
+```
+
+Firestore verification for this run reported `findings=0 rejections=0` with exit 0. This is the required false-positive check.
+
+### Real run B — first direct mismatch
+
+Command:
+
+`uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/veylan_arcworks_208v_switchboard.pdf` → exit 0
+
+Summary:
+
+```text
+RUN SUMMARY
+run id: e7a1a49e70614591bc6a97da6936d0dd
+claims made: 1
+verified: 1
+rejected: 0
+retried: 0
+findings persisted: 1
+RFI path: C:\Users\mcspd\dev\specguard\artifacts\rfi-e7a1a49e70614591bc6a97da6936d0dd.pdf
+```
+
+The generated RFI contains the specification quote `Provide a 480V, 3-phase distribution switchboard for service distribution.` on page 3 and the submitted quote `Nominal system: 208V, 3-phase, 4-wire.` on page 1. The PyMuPDF content assertion returned `missing=[]` with exit 0. Firestore verification reported `findings=1 rejections=0` with exit 0.
+
+### Real run C — converted mismatch
+
+Command:
+
+`uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/torven_70c_termination_switchboard.pdf` → exit 0
+
+Summary:
+
+```text
+RUN SUMMARY
+run id: b4617edf4fc5403c9bf2fd5ca8004009
+claims made: 1
+verified: 1
+rejected: 0
+retried: 0
+findings persisted: 1
+RFI path: C:\Users\mcspd\dev\specguard\artifacts\rfi-b4617edf4fc5403c9bf2fd5ca8004009.pdf
+```
+
+The generated RFI contains the specification quote `Conductor terminations shall be rated 90 deg C minimum.` on page 5 and the submitted quote `Field conductor termination rating: 158 deg F.` on page 2. Its claim text states the conversion to `70 deg C`. The PyMuPDF content assertion returned `missing=[]` with exit 0. Firestore verification reported `findings=1 rejections=0` with exit 0.
+
+A separate Firestore assertion checked both persisted runs. It reported `document_refs_exist=[True, True]` and `finding_quotes_have_no_paths=True` for each run, with exit 0.
+
+### Retry and rejection observations
+
+The three real runs produced zero gate rejections and zero retries. The bounded retry path is covered without network calls by `test_rejected_claim_gets_exactly_one_retry_then_rejection`, `test_one_retry_can_correct_the_quote_and_persist`, and `test_retry_must_return_exactly_one_corrected_claim`. The retry message carries `rejection_reason`, `normalized_quote`, and `page_count` from the gate result.
+
+No Vertex cost value was visible in the three command outputs. Actual spend is therefore not available from these receipts.
+
+### ADK pin and review result
+
+ADK 2.7.1 supported the specified structured output, four function tools, Vertex global location, and bounded multi-turn session. It emitted an experimental-feature warning for JSON-schema function declarations, but no specified behavior proved impossible and no version deviation was made.
+
+The one authorized Codex review invocation returned a trust-boundary warning instead of a review result. The invocation reported zero reviewer tokens and produced no findings or correction iteration. The planned Fable-tier adversarial review must therefore treat the persistence attack map above as unreviewed, not as independently confirmed.
