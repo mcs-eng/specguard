@@ -203,6 +203,177 @@ class GemmaSeverityClassifier:
             )
 
 
+def _parse_severity_token(raw_output: Any, prompt: str | None = None) -> Severity:
+    """Strictly parse a severity token (LOW, MEDIUM, HIGH) from endpoint completion only."""
+    import re
+
+    if isinstance(raw_output, dict):
+        text = str(
+            raw_output.get("generated_text")
+            or raw_output.get("text")
+            or raw_output.get("content")
+            or raw_output
+        )
+    else:
+        text = str(raw_output)
+
+    if prompt and prompt in text:
+        text = text.split(prompt, 1)[1]
+
+    if "Output:" in text:
+        text = text.split("Output:")[-1]
+
+    text = text.strip()
+
+    json_match = re.search(
+        r'["\']severity["\']\s*:\s*["\']?(HIGH|MEDIUM|LOW)["\']?', text, re.IGNORECASE
+    )
+    if json_match:
+        return Severity(json_match.group(1).lower())
+    word_match = re.search(r"\b(HIGH|MEDIUM|LOW)\b", text, re.IGNORECASE)
+    if word_match:
+        return Severity(word_match.group(1).lower())
+    preview = str(raw_output)[:100]
+    raise ValueError(f"No valid severity token (LOW, MEDIUM, HIGH) found in: {preview}")
+
+
+class VertexEndpointSeverityClassifier:
+    """Gemma severity classifier calling a deployed Vertex AI Model Garden Endpoint.
+
+    Authenticates using Application Default Credentials (ADC) / the runtime SA.
+    Does not use an API key.
+    """
+
+    def __init__(
+        self,
+        *,
+        endpoint_resource_name: str,
+        endpoint_dns: str | None = None,
+        model_id: str = "google-gemma2-gemma-2-2b-it",
+        project_id: str | None = None,
+        location: str = "us-central1",
+        timeout_seconds: float = 15.0,
+        session: Any = None,
+    ) -> None:
+        self.endpoint_resource_name = endpoint_resource_name
+        self.endpoint_dns = endpoint_dns or os.environ.get("SPECGUARD_GEMMA_ENDPOINT_DNS")
+        self.model_id = model_id
+        self.project_id = project_id or os.environ.get("SPECGUARD_PROJECT", "specguard-hack")
+        self.location = location
+        self.timeout_seconds = timeout_seconds
+        self._session = session
+
+    def _get_session(self) -> Any:
+        if self._session is not None:
+            return self._session
+        import google.auth
+        from google.auth.transport.requests import AuthorizedSession
+
+        credentials, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        self._session = AuthorizedSession(credentials)
+        return self._session
+
+    def _get_predict_url(self) -> str:
+        endpoint_name = self.endpoint_resource_name
+        if not endpoint_name.startswith("projects/"):
+            endpoint_name = (
+                f"projects/{self.project_id}/locations/{self.location}/endpoints/{endpoint_name}"
+            )
+        if self.endpoint_dns:
+            return f"https://{self.endpoint_dns}/v1/{endpoint_name}:predict"
+
+        # Attempt to auto-discover dedicatedEndpointDns from endpoint resource
+        try:
+            session = self._get_session()
+            desc_url = f"https://{self.location}-aiplatform.googleapis.com/v1/{endpoint_name}"
+            headers = {"X-Goog-User-Project": self.project_id}
+            desc_resp = session.get(desc_url, headers=headers, timeout=5.0)
+            if desc_resp.status_code == 200:
+                data = desc_resp.json()
+                dedicated_dns = data.get("dedicatedEndpointDns")
+                if dedicated_dns:
+                    self.endpoint_dns = dedicated_dns
+                    return f"https://{self.endpoint_dns}/v1/{endpoint_name}:predict"
+        except Exception:
+            pass
+
+        return f"https://{self.location}-aiplatform.googleapis.com/v1/{endpoint_name}:predict"
+
+    def classify(
+        self,
+        claim_text: str,
+        spec_quote: str,
+        cut_sheet_quote: str,
+    ) -> SeverityResult:
+        """Call Vertex AI endpoint with prompt to classify severity."""
+        try:
+            session = self._get_session()
+            prompt = load_severity_prompt()
+            user_msg = (
+                f"{prompt}\n\n"
+                f"Discrepancy Claim:\n{claim_text}\n\n"
+                f"Specification Requirement Quote:\n{spec_quote}\n\n"
+                f"Submitted Document Quote:\n{cut_sheet_quote}\n\n"
+                "Respond with exactly one token: HIGH, MEDIUM, or LOW."
+            )
+            content = f"<start_of_turn>user\n{user_msg}<end_of_turn>\n<start_of_turn>model\n"
+            body = {
+                "instances": [{"prompt": content}],
+                "parameters": {
+                    "temperature": 0.0,
+                    "max_tokens": 50,
+                },
+            }
+            url = self._get_predict_url()
+            headers = {"X-Goog-User-Project": self.project_id}
+            response = session.post(
+                url,
+                json=body,
+                headers=headers,
+                timeout=self.timeout_seconds,
+            )
+            if response.status_code != 200:
+                error_msg = f"HTTP {response.status_code}: {response.text[:200].strip()}"
+                logger.warning("Vertex endpoint classification returned error: %s", error_msg)
+                return SeverityResult(
+                    severity=Severity.UNCLASSIFIED,
+                    model_id=None,
+                    status="fallback",
+                    reason=error_msg,
+                )
+
+            data = response.json()
+            predictions = data.get("predictions", [])
+            if not predictions:
+                return SeverityResult(
+                    severity=Severity.UNCLASSIFIED,
+                    model_id=None,
+                    status="fallback",
+                    reason="Empty predictions list from Vertex endpoint",
+                )
+
+            raw_prediction = predictions[0]
+            severity = _parse_severity_token(raw_prediction, prompt=content)
+            return SeverityResult(
+                severity=severity,
+                model_id=self.model_id,
+                rationale="Classified via Vertex AI Model Garden Endpoint",
+                status="classified",
+                reason=None,
+            )
+        except Exception as error:
+            error_detail = _extract_error_detail(error)
+            logger.warning("Vertex endpoint severity classification failed: %s", error_detail)
+            return SeverityResult(
+                severity=Severity.UNCLASSIFIED,
+                model_id=None,
+                status="fallback",
+                reason=error_detail,
+            )
+
+
 def classify_severity(
     finding: Finding | PersistedFinding,
     *,
@@ -211,12 +382,14 @@ def classify_severity(
     model_id: str = GEMMA_MODEL_ID,
     api_key: str | None = None,
     project_id: str | None = None,
+    endpoint_resource_name: str | None = None,
+    endpoint_dns: str | None = None,
 ) -> SeverityResult:
     """Classify the severity of a verified finding using Gemma.
 
     Failure mode: if the Gemma call fails for any reason (network, API, schema,
-    missing key), this function returns SeverityResult with UNCLASSIFIED and
-    None model_id and records status="fallback" and reason.
+    missing key, endpoint error), this function returns SeverityResult with UNCLASSIFIED
+    and None model_id and records status="fallback" and reason.
     Classification failure must never block an audit.
     """
     try:
@@ -249,6 +422,15 @@ def classify_severity(
 
         if classifier is not None:
             return classifier.classify(claim_text, spec_quote, cut_sheet_quote)
+
+        endpoint = endpoint_resource_name or os.environ.get("SPECGUARD_GEMMA_ENDPOINT")
+        if endpoint:
+            endpoint_classifier = VertexEndpointSeverityClassifier(
+                endpoint_resource_name=endpoint,
+                endpoint_dns=endpoint_dns,
+                project_id=project_id,
+            )
+            return endpoint_classifier.classify(claim_text, spec_quote, cut_sheet_quote)
 
         active_classifier = GemmaSeverityClassifier(
             model_id=model_id,

@@ -352,3 +352,151 @@ def test_runtime_records_fallback_outcome_on_failure(
     with pymupdf.open(summary.rfi_path) as document:
         text = "\n".join(page.get_text() for page in document)
     assert "Severity: UNCLASSIFIED" in text
+
+
+def test_vertex_endpoint_classifier_parses_single_token() -> None:
+    """VertexEndpointSeverityClassifier correctly parses single token HIGH/MEDIUM/LOW."""
+    mock_session = MagicMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"predictions": ["Prompt:\n...\nOutput:\nHIGH"]}
+    mock_session.post.return_value = mock_response
+
+    from specguard.severity import VertexEndpointSeverityClassifier
+
+    classifier = VertexEndpointSeverityClassifier(
+        endpoint_resource_name="mg-endpoint-123",
+        endpoint_dns="custom.vertexai.goog",
+        model_id="gemma-2-2b-it",
+        session=mock_session,
+    )
+    result = classifier.classify("Discrepancy", "Spec quote", "Cut quote")
+
+    assert result.severity is Severity.HIGH
+    assert result.model_id == "gemma-2-2b-it"
+    assert result.status == "classified"
+    assert result.reason is None
+
+
+def test_vertex_endpoint_classifier_parses_json_severity() -> None:
+    """VertexEndpointSeverityClassifier correctly parses JSON snippet output."""
+    mock_session = MagicMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "predictions": ['Output:\n```json\n{"severity": "medium"}\n```']
+    }
+    mock_session.post.return_value = mock_response
+
+    from specguard.severity import VertexEndpointSeverityClassifier
+
+    classifier = VertexEndpointSeverityClassifier(
+        endpoint_resource_name="mg-endpoint-123",
+        endpoint_dns="custom.vertexai.goog",
+        model_id="gemma-2-2b-it",
+        session=mock_session,
+    )
+    result = classifier.classify("Discrepancy", "Spec quote", "Cut quote")
+
+    assert result.severity is Severity.MEDIUM
+    assert result.model_id == "gemma-2-2b-it"
+    assert result.status == "classified"
+
+
+def test_vertex_endpoint_classifier_handles_invalid_output() -> None:
+    """VertexEndpointSeverityClassifier falls back gracefully when output cannot be parsed."""
+    mock_session = MagicMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"predictions": ["Output:\nI cannot determine the rating."]}
+    mock_session.post.return_value = mock_response
+
+    from specguard.severity import VertexEndpointSeverityClassifier
+
+    classifier = VertexEndpointSeverityClassifier(
+        endpoint_resource_name="mg-endpoint-123",
+        endpoint_dns="custom.vertexai.goog",
+        session=mock_session,
+    )
+    result = classifier.classify("Discrepancy", "Spec quote", "Cut quote")
+
+    assert result.severity is Severity.UNCLASSIFIED
+    assert result.status == "fallback"
+    assert "No valid severity token" in (result.reason or "")
+
+
+def test_vertex_endpoint_classifier_handles_http_error() -> None:
+    """VertexEndpointSeverityClassifier falls back when HTTP error occurs."""
+    mock_session = MagicMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 503
+    mock_response.text = "Service Unavailable"
+    mock_session.post.return_value = mock_response
+
+    from specguard.severity import VertexEndpointSeverityClassifier
+
+    classifier = VertexEndpointSeverityClassifier(
+        endpoint_resource_name="mg-endpoint-123",
+        endpoint_dns="custom.vertexai.goog",
+        session=mock_session,
+    )
+    result = classifier.classify("Discrepancy", "Spec quote", "Cut quote")
+
+    assert result.severity is Severity.UNCLASSIFIED
+    assert result.status == "fallback"
+    assert "HTTP 503" in (result.reason or "")
+
+
+def test_classify_severity_selects_vertex_endpoint_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """classify_severity selects Vertex endpoint when SPECGUARD_GEMMA_ENDPOINT is configured."""
+    monkeypatch.setenv("SPECGUARD_GEMMA_ENDPOINT", "projects/p/locations/l/endpoints/e123")
+    monkeypatch.setenv("SPECGUARD_GEMMA_ENDPOINT_DNS", "e123.vertexai.goog")
+
+    mock_session = MagicMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"predictions": ["Output:\nLOW"]}
+    mock_session.post.return_value = mock_response
+
+    finding = PersistedFinding(
+        finding_id="find-1",
+        run_id="run-1",
+        claim_text="Parameter mismatch.",
+        spec_quote=PersistedQuote(text="Req A", page_number=1, document_sha256="aa" * 32),
+        cut_sheet_quote=PersistedQuote(text="Sub B", page_number=1, document_sha256="bb" * 32),
+    )
+
+    from specguard.severity import VertexEndpointSeverityClassifier
+
+    # Patch _get_session on VertexEndpointSeverityClassifier
+    monkeypatch.setattr(VertexEndpointSeverityClassifier, "_get_session", lambda self: mock_session)
+
+    result = classify_severity(finding)
+    assert result.severity is Severity.LOW
+    assert result.status == "classified"
+
+
+def test_vertex_endpoint_classifier_does_not_falsely_match_prompt_rubric() -> None:
+    """Prompt echo containing 'HIGH' in rubric must not override a 'LOW' completion."""
+    mock_session = MagicMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    # Simulate an echoed prompt containing HIGH/MEDIUM/LOW rubric followed by actual Output: LOW
+    echoed_prediction = "Prompt:\nAssign severity: HIGH (critical), MEDIUM, or LOW.\nOutput:\nLOW"
+    mock_response.json.return_value = {"predictions": [echoed_prediction]}
+    mock_session.post.return_value = mock_response
+
+    from specguard.severity import VertexEndpointSeverityClassifier
+
+    classifier = VertexEndpointSeverityClassifier(
+        endpoint_resource_name="mg-endpoint-123",
+        endpoint_dns="custom.vertexai.goog",
+        model_id="gemma-2-2b-it",
+        session=mock_session,
+    )
+    result = classifier.classify("Discrepancy", "Spec quote", "Cut quote")
+
+    assert result.severity is Severity.LOW
+    assert result.status == "classified"

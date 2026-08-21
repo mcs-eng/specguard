@@ -933,3 +933,71 @@ A live in-memory probe reading the restricted API key directly from Secret Manag
 | `uv run ruff check .` | 0 | `All checks passed!` |
 | `uv run ruff format --check .` | 0 | `36 files already formatted`. |
 | `git diff --check` | 0 | No whitespace errors. |
+
+## Phase 5 Close — Vertex AI Model Garden Endpoint
+
+Date: 2026-08-21. Host: arya (Windows PowerShell).
+
+### 1. Model Garden Deployment
+
+Model: `google/gemma2@gemma-2-2b-it`
+Machine type: `g2-standard-12` (1x `NVIDIA_L4` GPU)
+Endpoint display name: `specguard-gemma`
+Endpoint resource name: `projects/108657628939/locations/us-central1/endpoints/mg-endpoint-9e5e78fc-2f74-4272-b908-4980dfc67cde`
+Dedicated DNS: `mg-endpoint-9e5e78fc-2f74-4272-b908-4980dfc67cde.us-central1-131658903880.prediction.vertexai.goog`
+Deployment duration: 13m 38s (operation `6763868949059731456`).
+
+Backend: `VertexEndpointSeverityClassifier` in `specguard/severity.py` authenticates via ADC / the runtime SA (no API keys), queries the endpoint via dedicated DNS, formats prompts using Gemma instruction turn tokens `<start_of_turn>user\n...<end_of_turn>\n<start_of_turn>model\n`, strictly parses the completion token (HIGH, MEDIUM, LOW), and records fallback on any error.
+
+### 2. Live Classified Runs
+
+1. **Veylan 208V fixture (`fixtures/veylan_arcworks_208v_switchboard.pdf`)**:
+   - Command: `$env:SPECGUARD_GEMMA_ENDPOINT = "..."; uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/veylan_arcworks_208v_switchboard.pdf` -> exit `0`
+   - Run ID: `06498a42c34242d292330ef7e187139c`
+   - Severity status: `classified`
+   - Persisted finding ID: `vyrMpZh1LvlhFDRMJUW3`
+   - Severity: `medium`
+   - Model ID: `google-gemma2-gemma-2-2b-it`
+   - Verification status: `verified`
+
+2. **Torven 70 deg C fixture (`fixtures/torven_70c_termination_switchboard.pdf`)**:
+   - Command: `$env:SPECGUARD_GEMMA_ENDPOINT = "..."; uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/torven_70c_termination_switchboard.pdf` -> exit `0`
+   - Run ID: `85cfdda639b24a4aada057900df70651`
+   - Severity status: `classified`
+   - Persisted finding ID: `Xmhr5qzLvvXXFVrnDfCx`
+   - Severity: `low`
+   - Model ID: `google-gemma2-gemma-2-2b-it`
+   - Verification status: `verified`
+
+3. **Deployed Web UI live audit run**:
+   - Service URL: `https://specguard-108657628939.us-central1.run.app` (revision `specguard-00006-x5k`)
+   - Run ID: `72e1e43940724ba189a5780affb19970`
+   - Status: `COMPLETED`
+   - Rendered HTML findings row:
+     `<tr><td>The specification requires a 480V distribution switchboard, but the submitted cut sheet specifies a 208V nominal system.</td><td><span class="locator">Specification page 3</span><q class="quote">Provide a 480V, 3-phase distribution switchboard for service distribution.</q></td><td><span class="locator">Submitted page 1</span><q class="quote">Nominal system: 208V, 3-phase, 4-wire.</q></td><td><span class="badge severity-medium">MEDIUM</span><span class="locator">google-gemma2-gemma-2-2b-it</span></td></tr>`
+   - Badge seen: `<span class="badge severity-medium">MEDIUM</span><span class="locator">google-gemma2-gemma-2-2b-it</span>`
+
+### 3. Codex Review and Correction
+
+One authorized Codex review ran against uncommitted changes (session `01a02611-485f-7972-8a8f-c22728076496`, exit 0).
+Finding:
+- **[P1] Parse only the generated completion**: When a Vertex prediction echoes the prompt alongside the completion, matching against the entire string could match the prompt's rubric token `HIGH` before the model's actual answer.
+Correction applied: `_parse_severity_token` accepts `prompt: str | None`, strips echoed prompt text, isolates the text after `Output:`, and parses the generated completion only. Added unit test `test_vertex_endpoint_classifier_does_not_falsely_match_prompt_rubric`.
+
+### 4. Teardown Receipts
+
+All compute and endpoint resources torn down with exit 0:
+- `gcloud ai endpoints undeploy-model mg-endpoint-9e5e78fc-2f74-4272-b908-4980dfc67cde --deployed-model-id=7691247113769844736 --region=us-central1 --project=specguard-hack --billing-project=specguard-hack` -> exit `0`
+- `gcloud ai endpoints delete mg-endpoint-9e5e78fc-2f74-4272-b908-4980dfc67cde --region=us-central1 --project=specguard-hack --billing-project=specguard-hack --quiet` -> exit `0`
+- `gcloud ai models delete google-gemma2-gemma-2-2b-it-1787343954 --region=us-central1 --project=specguard-hack --billing-project=specguard-hack --quiet` -> exit `0`
+- `gcloud ai endpoints list --region=us-central1 --project=specguard-hack --billing-project=specguard-hack` -> `Listed 0 items` (exit `0`)
+- `gcloud ai models list --region=us-central1 --project=specguard-hack --billing-project=specguard-hack` -> `Listed 0 items` (exit `0`)
+
+### 5. Quality Gate Receipts
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `204 passed, 2 warnings in 19.26s`. Zero xfails. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `36 files already formatted`. |
+| `git diff --check` | 0 | No whitespace errors. |
