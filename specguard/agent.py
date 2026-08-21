@@ -128,9 +128,13 @@ class AuditRuntime:
 
     1. The text-layer integrity screen runs first, on both bound documents,
        before any extracted text is assembled into a model message. A flagged
-       document quarantines the run: no model call is made, a deterministic
-       integrity record is persisted, and the summary discloses the quarantine.
-       :meth:`run` takes no argument that can skip this screen.
+       document quarantines the run: no model call is made, the runtime
+       attempts one deterministic integrity record per flagged document, and
+       the summary discloses the quarantine together with any refusal to write
+       that record. :meth:`run` takes no argument that can skip this screen.
+       The runtime and its tools must be bound to the same two documents, and
+       the runtime refuses to send text from a document that changed after the
+       screen read it.
     2. The verification gate runs on every quoted anchor, and again at write
        time inside the persistence tool.
     """
@@ -149,6 +153,9 @@ class AuditRuntime:
         self._spec_path = Path(spec_path).resolve(strict=True)
         self._cut_sheet_path = Path(cut_sheet_path).resolve(strict=True)
         self._run_id = run_id
+        if self._spec_path != tools.spec_path or self._cut_sheet_path != tools.cut_sheet_path:
+            raise ValueError("the runtime and its tools must be bound to the same two documents")
+        self._screened_hashes: dict[Path, str] = {}
 
     async def run(self) -> AuditRunSummary:
         quarantine = self._screen_documents()
@@ -250,15 +257,21 @@ class AuditRuntime:
         model message carries the text of both.
         """
         quarantined: list[QuarantinedDocument] = []
+        self._screened_hashes = {}
         for role, path in (
             (DocumentRole.SPECIFICATION, self._spec_path),
             (DocumentRole.SUBMITTED_DOCUMENT, self._cut_sheet_path),
         ):
             report = integrity.check_text_layer(path)
+            self._screened_hashes[path] = report.sha256
             if report.clean:
                 continue
             result = self._tools.persist_integrity_finding(role.value)
-            persisted = bool(result.get("persisted"))
+            record = result.get("integrity_finding") if result.get("persisted") else None
+            # A record whose evidence describes different bytes than the screen
+            # read is not this document's record, so its identifier is not
+            # attached and the mismatch is disclosed instead.
+            matched = record is not None and record["document_sha256"] == report.sha256
             quarantined.append(
                 QuarantinedDocument(
                     document_role=role,
@@ -266,13 +279,15 @@ class AuditRuntime:
                     page_count=report.page_count,
                     flagged_pages=report.flagged_pages,
                     hidden_span_count=len(report.hidden_spans),
-                    integrity_finding_id=(
-                        str(result["integrity_finding"]["integrity_finding_id"])
-                        if persisted
-                        else None
-                    ),
+                    integrity_finding_id=(str(record["integrity_finding_id"]) if matched else None),
                     persistence_reason=(
-                        None if persisted else str(result.get("reason", "persistence_refused"))
+                        None
+                        if matched
+                        else str(
+                            result.get("reason", "persisted_record_describes_other_bytes")
+                            if record is None
+                            else "persisted_record_describes_other_bytes"
+                        )
                     ),
                 )
             )
@@ -281,9 +296,23 @@ class AuditRuntime:
             return None
         return RunQuarantine(reason=integrity.QUARANTINE_REASON, documents=quarantined)
 
+    def _assert_documents_still_match_the_screen(self) -> None:
+        """Refuse to send text that the integrity screen did not read.
+
+        The screen and the extraction step read the file separately. Re-reading
+        the hashes after extraction closes the plain case where a screened
+        document is replaced before its text is assembled for the model. A
+        writer that replaces a document and restores it inside this window is
+        outside the guarantee, as README already records for the gate.
+        """
+        for path, screened_hash in self._screened_hashes.items():
+            if gate.build_document_record(path).sha256 != screened_hash:
+                raise RuntimeError("a source document changed after the integrity screen read it")
+
     def _build_document_message(self) -> str:
         specification = self._extract_document(self._spec_path, "SPECIFICATION")
         submitted = self._extract_document(self._cut_sheet_path, "SUBMITTED DOCUMENT")
+        self._assert_documents_still_match_the_screen()
         return (
             "Audit the two extracted documents below. "
             "The labels and page markers are context, not source text.\n\n"

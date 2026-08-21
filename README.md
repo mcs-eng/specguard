@@ -41,7 +41,7 @@ The gate proves one narrow thing: the quoted characters appear on the page that 
 
 A document from a third party is untrusted input. The known limitation above — the gate reads the text layer, not the visible page — describes a real gap between what a human reviewer reads and what an automated reviewer ingests. This screen discloses one way that gap opens. It narrows it. It does not close it.
 
-`specguard/integrity.py` reads PyMuPDF span data for every page of a document. It renders no image, runs no OCR, and compares no pixels. A PDF text-showing operator carries a render mode, and MuPDF records the outcome of that mode on every character. The screen reports a span whose characters are neither filled nor stroked: nothing is painted for the reader, and the text layer still carries the characters. That is render mode 3, the mode an OCR layer uses over a scanned image.
+`specguard/integrity.py` reads the file's bytes once, into one immutable snapshot, and derives the SHA-256, the page count, and the span evidence from that snapshot, so a replacement during a screen cannot make the hash describe one byte stream while the evidence describes another. It reads PyMuPDF span data only. It renders no image, runs no OCR, and compares no pixels. A PDF text-showing operator carries a render mode, and MuPDF records the outcome of that mode on every character. The screen reports a span whose characters are neither filled nor stroked: nothing is painted for the reader, and the text layer still carries the characters. That is render mode 3, the mode an OCR layer uses over a scanned image.
 
 ### What it detects
 
@@ -62,11 +62,16 @@ The screen runs first, on both bound documents, before any extracted text is ass
 When either bound document carries at least one invisible span, the run is quarantined:
 
 - No model call is made. The model receives no text from either document, because the model message carries both.
-- A deterministic integrity record is written to its own `integrity_findings` collection, holding the span text, the page numbers, the document SHA-256, and the screen identity. The persistence tool takes one role name and reads the file again itself, so no caller and no model can author or edit that record. It is not a claim finding and it never passes through the verification gate.
+- The runtime attempts to write one deterministic integrity record per flagged document, into its own `integrity_findings` collection, holding the span text, the page numbers, the document SHA-256, and the screen identity. The persistence tool takes one role name and reads the file again itself, so no caller and no model can author or edit that record. It is not a claim finding and it never passes through the verification gate.
+- If that write is refused, or if the written record's hash does not match the hash the screen read, the summary reports the refusal reason instead of a record identifier. The quarantine still stands; only the record is missing.
 - No claim finding is persisted and no RFI is drafted.
 - The run summary reports the quarantine: the reason, each flagged document, its flagged pages, its hidden-span count, and its SHA-256.
 
-`check_text_integrity` is also the first of the agent's five tools, so the same screen is available on request. The runtime does not depend on the model calling it.
+The runtime and its tools must be bound to the same two documents; a split binding is refused when the runtime is constructed. After extraction, the runtime re-reads both hashes and refuses to send text if either document changed since the screen read it. A writer that replaces a document and restores it inside that window is outside the guarantee, exactly as recorded above for the gate.
+
+`check_text_integrity` is the first of the agent's five tools, so the screen is available to the agent on request. That tool takes a bound role rather than a path, and it returns the flag summary only — never the hidden span text — because handing that text back to a model would reopen the disclosure the screen exists to close. The runtime does not depend on the model calling it.
+
+One tool surface is deliberately unchanged and is disclosed here rather than claimed away: `extract_pdf_text` accepts a path argument and returns raw page text, which for an unscreened file would include text hidden by render mode. The quarantine does not rest on that tool refusing; it rests on the runtime stopping the run before any extraction happens. Binding `extract_pdf_text` to roles is recorded as a follow-up in `HANDOFF.md`, not done here.
 
 ## What the test suite proves
 
@@ -108,7 +113,12 @@ Text-layer integrity screen:
 - A quarantined document produces no model call and no model-visible message carrying the hidden text.
 - The persisted integrity record carries the span evidence, the page numbers, and the document SHA-256, and two runs over one file store the same evidence.
 - `AuditRuntime.run` accepts no argument that could skip the screen.
-- Clip-only render mode 7 is not detected, pinned by its own test.
+- Replacing the file mid-screen cannot split the reported hash from the reported evidence.
+- The same bytes screen identically through a relative and an absolute path.
+- A document replaced after the screen and before extraction never reaches the model.
+- A runtime whose tools are bound to a different document pair is refused at construction.
+- No registered agent tool except `extract_pdf_text` returns hidden span text.
+- Clip-only render mode 7 is not detected, pinned by its own test. White-on-white text, zero fill alpha, and text outside the crop box are likewise not detected, each pinned by its own test.
 
 Mutation testing is not automated. Two mutations were run by hand once and both were caught: reading page 2 for every later citation (`document[min(page_number - 1, 1)]`) failed 2 tests, and replacing `casefold()` with `lower()` failed 1. The receipts are in `HANDOFF.md`; re-run them by hand if the gate changes.
 

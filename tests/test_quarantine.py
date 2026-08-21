@@ -1,9 +1,12 @@
 """Tests for the integrity screen that the runtime enforces around the model.
 
 The screen runs before any extracted text is assembled into a model message.
-These tests prove that a flagged document produces no model call, no
-model-visible text, a deterministic integrity record, and a summary that
+These tests prove that a flagged document produces no model call, no message
+carrying its hidden text, a deterministic integrity record, and a summary that
 discloses the quarantine.
+
+Scope: these tests exercise the runtime's bound-document path. The agent's
+registered tool surface is covered separately in ``tests/test_tools.py``.
 """
 
 from __future__ import annotations
@@ -11,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 from pathlib import Path
+
+import pytest
 
 from specguard import integrity
 from specguard.agent import AuditRuntime
@@ -111,19 +116,34 @@ def test_a_quarantined_document_produces_no_model_call(tmp_path: Path) -> None:
     assert summary.quarantined is True
 
 
-def test_no_model_visible_message_contains_the_hidden_span_text(tmp_path: Path) -> None:
-    """The sentinel hidden line must reach no message the model could read."""
-    generator = CountingClaimGenerator(AuditClaimBatch(claims=[_claim()]))
-    runtime, _, _, _ = _build(
-        tmp_path,
-        generator,
+def test_no_model_message_carries_the_hidden_span_text(tmp_path: Path) -> None:
+    """The sentinel hidden line must reach no message the runtime builds.
+
+    Both halves matter. The flagged run must produce no message at all, and a
+    clean run over documents that never carried the sentinel must produce a
+    real, non-empty message that also lacks it. Without the second half the
+    sentinel assertion would be vacuously true on an empty message list.
+    """
+    flagged_generator = CountingClaimGenerator(AuditClaimBatch(claims=[_claim()]))
+    flagged_runtime, _, _, _ = _build(
+        tmp_path / "flagged",
+        flagged_generator,
         cut_sheet_hidden={2: [HIDDEN_SENTINEL]},
     )
+    asyncio.run(flagged_runtime.run())
 
-    asyncio.run(runtime.run())
+    assert flagged_generator.messages == []
 
-    assert generator.messages == []
-    assert all(HIDDEN_SENTINEL not in message for message in generator.messages)
+    clean_generator = CountingClaimGenerator(AuditClaimBatch(claims=[_claim()]))
+    clean_runtime, _, _, _ = _build(tmp_path / "clean", clean_generator)
+    asyncio.run(clean_runtime.run())
+
+    assert len(clean_generator.messages) == 1
+    assert clean_generator.messages[0].strip() != ""
+    assert all(
+        HIDDEN_SENTINEL not in message
+        for message in flagged_generator.messages + clean_generator.messages
+    )
 
 
 def test_a_clean_pair_still_reaches_the_model_and_persists(tmp_path: Path) -> None:
@@ -321,3 +341,87 @@ def test_the_screen_runs_before_any_text_is_extracted_for_the_model(
 
     assert summary.quarantined is True
     assert built == []
+
+
+def test_the_runtime_refuses_a_binding_its_tools_do_not_share(tmp_path: Path) -> None:
+    """One run, one pair of documents. A split binding is refused at construction.
+
+    Without this check a caller could screen and report one document while the
+    persistence tool wrote evidence about another.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    spec = write_pdf(tmp_path / "governing.pdf", [[SPEC_LINE]])
+    bound_cut_sheet = write_pdf(tmp_path / "submitted.pdf", [[CUT_LINE]])
+    other_cut_sheet = write_pdf(tmp_path / "other.pdf", [[CUT_LINE]])
+    tools = AuditTools(
+        firestore_client=FakeFirestoreClient(),
+        spec_path=spec,
+        cut_sheet_path=bound_cut_sheet,
+        run_id=RUN_ID,
+        output_directory=tmp_path / "artifacts",
+    )
+
+    with pytest.raises(ValueError, match="bound to the same two documents"):
+        AuditRuntime(
+            claim_generator=CountingClaimGenerator(),
+            tools=tools,
+            spec_path=spec,
+            cut_sheet_path=other_cut_sheet,
+            run_id=RUN_ID,
+        )
+
+
+def test_a_document_replaced_after_the_screen_never_reaches_the_model(
+    tmp_path: Path,
+) -> None:
+    """Text the screen did not read must not be sent to the model.
+
+    The screen and the extraction step read the file separately. This test
+    replaces a clean screened document with a hidden-text document in that
+    window, which is the plain bypass of the quarantine.
+    """
+    generator = CountingClaimGenerator(AuditClaimBatch(claims=[_claim()]))
+    runtime, _, _, cut_sheet = _build(tmp_path, generator)
+    original_build = runtime._build_document_message
+
+    def replace_then_build() -> str:
+        write_pdf(
+            cut_sheet,
+            [[CUT_LINE], ["Second submitted page."]],
+            hidden={1: [HIDDEN_SENTINEL]},
+        )
+        return original_build()
+
+    runtime._build_document_message = replace_then_build  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="changed after the integrity screen"):
+        asyncio.run(runtime.run())
+
+    assert generator.call_count == 0
+    assert generator.messages == []
+
+
+def test_an_integrity_record_describing_other_bytes_is_not_attached(
+    tmp_path: Path,
+) -> None:
+    """A record whose hash differs from the screen's is disclosed, not claimed."""
+    generator = CountingClaimGenerator(AuditClaimBatch(claims=[_claim()]))
+    runtime, _, _, _ = _build(
+        tmp_path,
+        generator,
+        cut_sheet_hidden={1: [HIDDEN_SENTINEL]},
+    )
+    runtime._tools.persist_integrity_finding = lambda role: {  # type: ignore[method-assign]
+        "persisted": True,
+        "integrity_finding": {
+            "integrity_finding_id": "record-for-other-bytes",
+            "document_sha256": "ab" * 32,
+        },
+    }
+
+    summary = asyncio.run(runtime.run())
+
+    assert summary.quarantine is not None
+    document = summary.quarantine.documents[0]
+    assert document.integrity_finding_id is None
+    assert document.persistence_reason == "persisted_record_describes_other_bytes"

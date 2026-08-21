@@ -58,26 +58,50 @@ class AuditTools:
         self._output_directory = Path(output_directory)
         self._now = now or (lambda: datetime.now(UTC))
 
-    def check_text_integrity(self, pdf_path: str) -> dict[str, Any]:
-        """Screen one PDF's text layer for text hidden by render mode.
+    @property
+    def spec_path(self) -> Path:
+        """The resolved specification path this tool set is bound to."""
+        return self._spec_path
 
-        The screen reads span data only. It renders nothing and calls no model.
-        An unreadable document returns an error rather than raising, so a
-        caller sees a screening failure instead of a crash.
+    @property
+    def cut_sheet_path(self) -> Path:
+        """The resolved submitted-document path this tool set is bound to."""
+        return self._cut_sheet_path
+
+    def check_text_integrity(self, document_role: str) -> dict[str, Any]:
+        """Screen one bound document's text layer and return the flag summary.
+
+        This tool is model-callable, so two limits apply to it and to nothing
+        else in :mod:`specguard.integrity`. It accepts a bound role rather than
+        a path, so it cannot be pointed at a file this run is not bound to. It
+        returns the flag summary only — never the hidden span text — because
+        returning that text to a model would reopen the disclosure the screen
+        exists to close. The full evidence goes to the deterministic integrity
+        record, which no model reads.
         """
         try:
-            report = integrity.check_text_layer(pdf_path)
+            role = DocumentRole(document_role)
+        except ValueError:
+            return {"ok": False, "error_code": "unknown_document_role"}
+
+        path = self._spec_path if role is DocumentRole.SPECIFICATION else self._cut_sheet_path
+        try:
+            report = integrity.check_text_layer(path)
         except (FileNotFoundError, OSError, RuntimeError) as error:
             return {
                 "ok": False,
-                "pdf_path": str(pdf_path),
                 "error_code": "document_unreadable",
                 "error_message": str(error),
             }
         return {
             "ok": True,
             "screen_id": integrity.SCREEN_ID,
-            "report": report.model_dump(mode="json"),
+            "document_role": role.value,
+            "document_sha256": report.sha256,
+            "page_count": report.page_count,
+            "clean": report.clean,
+            "flagged_pages": report.flagged_pages,
+            "hidden_span_count": len(report.hidden_spans),
         }
 
     def extract_pdf_text(self, pdf_path: str, page: int) -> dict[str, Any]:

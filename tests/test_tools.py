@@ -323,45 +323,90 @@ def test_draft_rfi_with_no_findings_avoids_a_compliance_claim(tmp_path: Path) ->
     assert "not a compliance determination" in text
 
 
-def test_check_text_integrity_tool_returns_the_screen_report(tmp_path: Path) -> None:
-    """The tool hands back the deterministic screen report for one document."""
+def test_check_text_integrity_tool_returns_the_flag_summary(tmp_path: Path) -> None:
+    """The tool reports the screen result for one bound document."""
     client = FakeFirestoreClient()
     spec, cut_sheet = _source_pdfs(tmp_path)
-    result = _tools(tmp_path, client, spec, cut_sheet).check_text_integrity(str(spec))
+    result = _tools(tmp_path, client, spec, cut_sheet).check_text_integrity("specification")
 
-    assert result["ok"] is True
-    assert result["screen_id"] == integrity.SCREEN_ID
-    assert result["report"] == check_text_layer(spec).model_dump(mode="json")
-    assert result["report"]["clean"] is True
+    assert result == {
+        "ok": True,
+        "screen_id": integrity.SCREEN_ID,
+        "document_role": "specification",
+        "document_sha256": check_text_layer(spec).sha256,
+        "page_count": 1,
+        "clean": True,
+        "flagged_pages": [],
+        "hidden_span_count": 0,
+    }
 
 
-def test_check_text_integrity_tool_reports_an_unreadable_document(tmp_path: Path) -> None:
-    """A missing document returns a screening error rather than raising."""
+def test_check_text_integrity_tool_refuses_an_unknown_role(tmp_path: Path) -> None:
+    """The tool takes a bound role, so it cannot be aimed at another file."""
     client = FakeFirestoreClient()
     spec, cut_sheet = _source_pdfs(tmp_path)
-    result = _tools(tmp_path, client, spec, cut_sheet).check_text_integrity(
-        str(tmp_path / "absent.pdf")
-    )
+    tools = _tools(tmp_path, client, spec, cut_sheet)
 
-    assert result["ok"] is False
-    assert result["error_code"] == "document_unreadable"
+    assert tools.check_text_integrity(str(spec)) == {
+        "ok": False,
+        "error_code": "unknown_document_role",
+    }
+    assert tools.check_text_integrity("") == {
+        "ok": False,
+        "error_code": "unknown_document_role",
+    }
 
 
-def test_check_text_integrity_tool_flags_a_hidden_span(tmp_path: Path) -> None:
-    """A document with an invisible span is reported with its span text."""
+def test_check_text_integrity_tool_never_returns_hidden_span_text(tmp_path: Path) -> None:
+    """A model-callable tool must not hand hidden text back to the model.
+
+    Returning the span text here would reopen the exact disclosure the screen
+    exists to close, so the tool returns counts and page numbers only.
+    """
     client = FakeFirestoreClient()
     spec, _ = _source_pdfs(tmp_path)
+    hidden_line = "Submitted characteristic gamma."
     altered = write_pdf(
         tmp_path / "altered.pdf",
         [["Submitted characteristic beta."]],
-        hidden={1: ["Submitted characteristic gamma."]},
+        hidden={1: [hidden_line]},
     )
-    result = _tools(tmp_path, client, spec, altered).check_text_integrity(str(altered))
+    result = _tools(tmp_path, client, spec, altered).check_text_integrity("submitted_document")
 
-    assert result["report"]["clean"] is False
-    assert result["report"]["flagged_pages"] == [1]
-    span = result["report"]["pages"][0]["hidden_spans"][0]
-    assert span["text"] == "Submitted characteristic gamma."
+    assert result["clean"] is False
+    assert result["flagged_pages"] == [1]
+    assert result["hidden_span_count"] == 1
+    assert hidden_line not in str(result)
+    assert check_text_layer(altered).hidden_spans[0].text == hidden_line
+
+
+def test_no_model_registered_tool_returns_hidden_span_text(tmp_path: Path) -> None:
+    """Scan the agent's whole tool surface for the hidden line.
+
+    ``extract_pdf_text`` is exempt and disclosed: it returns raw page text by
+    design, which is why the runtime quarantines a flagged document before any
+    extraction happens rather than relying on the tool surface.
+    """
+    client = FakeFirestoreClient()
+    spec, _ = _source_pdfs(tmp_path)
+    hidden_line = "Submitted characteristic gamma."
+    altered = write_pdf(
+        tmp_path / "altered.pdf",
+        [["Submitted characteristic beta."]],
+        hidden={1: [hidden_line]},
+    )
+    tools = _tools(tmp_path, client, spec, altered)
+    agent = create_adk_agent(tools, project_id="test-project")
+    scanned = [tool.__name__ for tool in agent.tools if tool.__name__ != "extract_pdf_text"]
+
+    assert scanned == [
+        "check_text_integrity",
+        "verify_quote",
+        "persist_finding",
+        "draft_rfi",
+    ]
+    assert hidden_line not in str(tools.check_text_integrity("submitted_document"))
+    assert hidden_line not in str(tools.verify_quote("Requirement alpha.", 1, str(spec)))
 
 
 def test_persist_integrity_finding_refuses_a_clean_document(tmp_path: Path) -> None:

@@ -429,11 +429,11 @@ Date: 2026-08-21. Scope: a deterministic text-layer integrity screen, its enforc
 
 ### Delivered capability
 
-`specguard/integrity.py` screens a PDF for text that PDF render mode keeps off the visible page while leaving it in the text layer. It reads PyMuPDF span data only: no OCR, no image rendering, no pixel comparison. `check_text_layer(pdf_path)` returns one report per page holding the invisible spans, their page and font data, the raw MuPDF character flags the rule read, and that page's visible text. The report is deterministic and carries the screened document's SHA-256 and page count.
+`specguard/integrity.py` screens a PDF for text that PDF render mode keeps off the visible page while leaving it in the text layer. It reads PyMuPDF span data only: no OCR, no image rendering, no pixel comparison. `check_text_layer(pdf_path)` returns one report per page holding the invisible spans, their page and font data, the raw MuPDF character flags the rule read, and that page's visible text. The report is deterministic for a given byte stream, through any path spelling, and carries the screened document's SHA-256 and page count. All three come from one immutable byte snapshot.
 
 `AuditRuntime.run` calls the screen first, on both bound documents, before any extracted text is assembled into a model message. `run()` takes no argument that can skip it, so the screen is not optional for any caller. Either bound document flagging quarantines the whole run, because the model message carries the text of both.
 
-A quarantined run makes no model call, persists no claim finding, drafts no RFI, and writes one deterministic integrity record per flagged document into the separate `integrity_findings` collection. `AuditTools.persist_integrity_finding` accepts one role name and nothing else. It re-screens the bound file itself at write time, so no caller and no model can author or edit the stored evidence. A document that screens clean is refused and nothing is written.
+A quarantined run makes no model call, persists no claim finding, and drafts no RFI. It attempts one deterministic integrity record per flagged document, into the separate `integrity_findings` collection, and the summary discloses any refusal to write that record instead of reporting an identifier. `AuditTools.persist_integrity_finding` accepts one role name and nothing else. It re-screens the bound file itself at write time, so no caller and no model can author or edit the stored evidence. A document that screens clean is refused and nothing is written.
 
 `check_text_integrity` is registered as the fifth agent tool, ahead of `extract_pdf_text`. The runtime does not depend on the model calling it.
 
@@ -523,3 +523,80 @@ No Vertex cost value was visible in either command output. Actual spend is there
 
 - `tests/adversarial/__init__.py` no longer says a control is pinned with a strict xfail. The marker was removed when finding F1 was fixed in commit 206378a; the suite now carries no expected failure.
 - `tests/adversarial/test_write_surface.py::test_draft_rfi_refuses_a_fabricated_quote_even_with_correct_hashes` no longer ends with a sentence saying the tool renders the forgery. That sentence contradicted the test's own assertion after the F1 fix. It is not named in the work order; it was corrected because a docstring stating the opposite of its assertion is a defect a reviewer would raise.
+
+### Codex review and correction iteration 1
+
+One authorized read-only Codex review ran against commit `7dd0421`. Unlike the Phase 3 attempt, it returned a real result: 7 findings, 2 high, 3 medium, 2 low, with no file modified (`git status --short --branch`, `git diff --exit-code`, and `git diff --cached --exit-code` all exit 0 in its receipts). Its own attempt to run the quality gates failed on a `uv` cache permission error under its read-only sandbox; it reported `.venv\Scripts\ruff.exe check . --no-cache` exit 0 as a diagnostic substitute. The authoritative gate receipts are the ones in this section, run here.
+
+Two of its findings were real defects in the Phase 3.5 code. Both are now fixed.
+
+**HIGH — the model-callable screening tool disclosed hidden text.** `check_text_integrity` accepted an arbitrary filesystem path and returned the complete report, hidden span text included. A submitted document carrying visible prompt-injection text could name another local PDF, and the model could then read that PDF's hidden text through the tool. That reopens the exact disclosure the screen exists to close. The tool now takes a bound `document_role` and returns the flag summary only: screen identity, role, SHA-256, page count, clean flag, flagged pages, and hidden-span count. The span text goes only to the deterministic integrity record, which no model reads. `test_check_text_integrity_tool_never_returns_hidden_span_text` and `test_no_model_registered_tool_returns_hidden_span_text` pin this.
+
+**HIGH — a document replaced after the screen could reach the model.** The screen and the extraction step read each file separately, so replacing a screened clean document with a hidden-text document in that window sent the replacement's text to the model. `AuditRuntime` now records each screened document's SHA-256 and re-reads both hashes after extraction, refusing to send text if either changed. `test_a_document_replaced_after_the_screen_never_reaches_the_model` pins it. An A-B-A writer that replaces a document and restores it inside that window remains outside the guarantee, which matches the scope README already records for the gate and REVIEW-P3 finding F3.
+
+**MEDIUM — screen evidence was not bound to the reported hash.** `check_text_layer` hashed the file through `gate.build_document_record`, then reopened the path for span extraction. It now reads the bytes once and derives the SHA-256, the page count, and the span evidence from that single snapshot, via `pymupdf.open(stream=...)`. `test_the_report_evidence_and_hash_describe_one_byte_snapshot` replaces the file the instant after that read and asserts the report still describes the original bytes.
+
+**MEDIUM — the runtime and its tools could be bound to different documents.** `AuditRuntime.__init__` now compares its two resolved paths against `AuditTools.spec_path` and `AuditTools.cut_sheet_path` and raises on a mismatch. The runtime also attaches an integrity record identifier only when that record's `document_sha256` matches the hash the screen read; otherwise it reports `persisted_record_describes_other_bytes`. Two new tests pin both.
+
+**MEDIUM — documentation promised a record that the code may refuse to write.** README and this file said a flagged run writes one record per flagged document. The runtime permits refusal and discloses it. Both now say the runtime attempts the write and discloses any refusal.
+
+**LOW — the determinism claim was path-sensitive.** A relative and an absolute path to one file produced unequal reports, because `pdf_path` kept the caller's spelling. `check_text_layer` now resolves the path. `test_the_same_bytes_screen_identically_through_any_path_spelling` pins it.
+
+**LOW — test fidelity.** The rebuild test compared only hash, flagged pages, and span text; it now compares the complete serialized report with the path excluded. A sentinel assertion in `tests/test_quarantine.py` was vacuously true over an empty message list; it now also runs a clean pair, asserts a real non-empty model message exists, and checks the sentinel against both runs. The `tests/test_quarantine.py` module docstring now states that it covers the runtime's bound-document path and that the registered tool surface is covered in `tests/test_tools.py`.
+
+Findings recorded and not actioned: none from this review. Every finding above was either fixed or, in the A-B-A case, an explicitly disclosed residue of a fix.
+
+### Named follow-up, not done here
+
+`extract_pdf_text` accepts a path argument and returns raw page text, so for an unscreened file it would return text hidden by render mode. It is a Phase 3 tool with its own tests and its own callers, and binding it to document roles is outside the Phase 3.5 work order. The quarantine does not rest on that tool refusing anything: it rests on the runtime stopping the run before any extraction happens. README discloses this rather than claiming it away. Binding `extract_pdf_text` and `verify_quote` to bound roles is the recommended follow-up before the repo goes public on 2026-08-30.
+
+### Receipts after correction iteration 1
+
+All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code below is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `162 passed, 1 warning in 6.83s`. Zero xfails. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `28 files already formatted`. |
+| fixture rebuild hash compare, command as above | 0 | `files=5`, `byte-identical=True`. |
+
+Test count moved from 153 to 162: 5 added in `tests/test_integrity.py`, 3 in `tests/test_quarantine.py`, and 1 net in `tests/test_tools.py`. No fixture PDF changed.
+
+Both real runs were executed again against the corrected code, because runs D and E above predate these fixes and their receipts would otherwise describe code that is no longer committed.
+
+`uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/veylan_arcworks_208v_altered.pdf` -> exit 0
+
+```text
+RUN SUMMARY
+run id: 074fd5342e57430b9c24b7e66b4d95bd
+QUARANTINED: text_layer_integrity_screen
+no model call was made for this run
+  document: submitted_document
+    SHA-256: 010fe8a7f5690f84ffa28619b345b3e15c9b900fd9a9837916ff09262f1ab332
+    pages screened: 2
+    flagged pages: [1]
+    hidden spans: 2
+    integrity record: B9YeWhp6r6UPULiiEhPw
+claims made: 0
+rejected: 0
+retried: 0
+findings persisted: 0
+RFI path: not generated
+```
+
+`uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/veylan_arcworks_208v_switchboard.pdf` -> exit 0
+
+```text
+RUN SUMMARY
+run id: 996f2388477248fa87f9d6e984ecf4e7
+claims made: 1
+rejected: 0
+retried: 0
+findings persisted: 1
+RFI path: C:\Users\mcspd\dev\specguard\artifacts\rfi-996f2388477248fa87f9d6e984ecf4e7.pdf
+```
+
+One Firestore query covering both runs returned exit 0. For `074fd5342e57430b9c24b7e66b4d95bd` it reported `integrity_findings = 1`, `findings = 0`, `rejections = 0`, with the record carrying the fixture SHA-256, `flagged_pages=[1]`, and both hidden span texts. For `996f2388477248fa87f9d6e984ecf4e7` it reported `integrity_findings = 0`, `findings = 1`, `rejections = 0`, citing the same two quotes and pages as run E. The RFI content assertion returned `missing=[]` and found no `209V`, exit 0.
+
+These two runs, not runs D and E, are the receipts for the committed code.

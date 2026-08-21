@@ -7,7 +7,11 @@ reviewer ingests; the painted page is what a human reviewer reads. The two can
 disagree. This screen reports one specific disagreement: text that the PDF
 render mode keeps off the page while leaving it in the text layer.
 
-1. Source data. The screen reads PyMuPDF span data only, through
+1. Source data. The screen reads the file's bytes once, into one immutable
+   snapshot, and derives everything from that snapshot: the SHA-256, the page
+   count, and the span evidence. A replacement of the file during a screen
+   therefore cannot make the hash describe one byte stream while the evidence
+   describes another. The screen reads PyMuPDF span data only, through
    ``page.get_text("dict")``. It renders no image, runs no OCR, and compares no
    pixels. It reads every page of the document.
 2. Detection rule. A PDF text-showing operator carries a render mode (``Tr``).
@@ -23,8 +27,10 @@ render mode keeps off the page while leaving it in the text layer.
 4. A flagged page is a disclosure, not a verdict. The screen states that the
    text layer disagrees with the visible page and shows the disagreeing spans.
    It does not decide why they are there.
-5. Determinism. The same file always produces the same report. Nothing in the
-   report depends on a clock, a random value, or a model.
+5. Determinism. The same bytes always produce the same report. The recorded
+   path is resolved, so the same file addressed by a relative and an absolute
+   path produces equal reports. Nothing in the report depends on a clock, a
+   random value, or a model.
 
 WHAT THIS SCREEN DOES NOT DETECT
 
@@ -44,12 +50,12 @@ does not close it.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pymupdf
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-from specguard import gate
 from specguard.models import DocumentRole
 
 #: Versioned identity of this screen, stored beside every integrity record so a
@@ -209,17 +215,22 @@ def check_text_layer(pdf_path: str | Path) -> DocumentIntegrityReport:
     """Screen every page of ``pdf_path`` for text hidden by render mode.
 
     The report names each invisible span, its page, and the visible text of
-    that page. It is deterministic: the same file always produces the same
-    report. Nothing here calls a model, and no model may author the result.
+    that page. Every value comes from one immutable byte snapshot, so the
+    reported SHA-256, page count, and span evidence always describe the same
+    bytes even if the file is replaced during the screen. Nothing here calls a
+    model, and no model may author the result.
     """
-    record = gate.build_document_record(pdf_path)
+    path = Path(pdf_path).resolve()
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
     pages: list[PageIntegrityReport] = []
-    with pymupdf.open(record.path) as document:
+    with pymupdf.open(stream=data, filetype="pdf") as document:
+        page_count = document.page_count
         for index, page in enumerate(document, start=1):
             pages.append(_screen_page(page, index))
     return DocumentIntegrityReport(
-        pdf_path=record.path,
-        sha256=record.sha256,
-        page_count=record.page_count,
+        pdf_path=str(path),
+        sha256=digest,
+        page_count=page_count,
         pages=pages,
     )
