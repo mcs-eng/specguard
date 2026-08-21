@@ -1,4 +1,4 @@
-"""The four deterministic tools owned by the SpecGuard ADK agent."""
+"""The five deterministic tools owned by the SpecGuard ADK agent."""
 
 from __future__ import annotations
 
@@ -9,9 +9,11 @@ from typing import Any
 
 import pymupdf
 
-from specguard import gate
+from specguard import gate, integrity
+from specguard.integrity import PersistedIntegrityFinding
 from specguard.models import (
     CitedQuote,
+    DocumentRole,
     Finding,
     PdfTextResult,
     PersistedFinding,
@@ -23,6 +25,7 @@ from specguard.models import (
 DOCUMENTS_COLLECTION = "documents"
 FINDINGS_COLLECTION = "findings"
 REJECTIONS_COLLECTION = "rejections"
+INTEGRITY_FINDINGS_COLLECTION = "integrity_findings"
 
 
 def _canonical_path(path: str | Path) -> Path:
@@ -36,7 +39,7 @@ def _json_data(value: Any) -> Any:
 
 
 class AuditTools:
-    """Bind the four agent tools to one audit run and its two source PDFs."""
+    """Bind the five agent tools to one audit run and its two source PDFs."""
 
     def __init__(
         self,
@@ -54,6 +57,28 @@ class AuditTools:
         self._run_id = run_id
         self._output_directory = Path(output_directory)
         self._now = now or (lambda: datetime.now(UTC))
+
+    def check_text_integrity(self, pdf_path: str) -> dict[str, Any]:
+        """Screen one PDF's text layer for text hidden by render mode.
+
+        The screen reads span data only. It renders nothing and calls no model.
+        An unreadable document returns an error rather than raising, so a
+        caller sees a screening failure instead of a crash.
+        """
+        try:
+            report = integrity.check_text_layer(pdf_path)
+        except (FileNotFoundError, OSError, RuntimeError) as error:
+            return {
+                "ok": False,
+                "pdf_path": str(pdf_path),
+                "error_code": "document_unreadable",
+                "error_message": str(error),
+            }
+        return {
+            "ok": True,
+            "screen_id": integrity.SCREEN_ID,
+            "report": report.model_dump(mode="json"),
+        }
 
     def extract_pdf_text(self, pdf_path: str, page: int) -> dict[str, Any]:
         """Extract one one-based PDF page and return an error instead of raising."""
@@ -155,6 +180,60 @@ class AuditTools:
             "persisted": True,
             "finding": persisted.model_dump(mode="json"),
             "verification_results": [_json_data(result) for result in verification_results],
+        }
+
+    def persist_integrity_finding(self, document_role: str) -> dict[str, Any]:
+        """Re-screen one bound document and write its integrity record.
+
+        The caller names a role and nothing else. Every stored value — the
+        hidden span text, the page numbers, the SHA-256 — is read from the file
+        again here, so no caller and no model can author or edit this record. A
+        document that screens clean is refused, and no write happens.
+        """
+        try:
+            role = DocumentRole(document_role)
+        except ValueError:
+            return {"persisted": False, "reason": "unknown_document_role"}
+
+        path = self._spec_path if role is DocumentRole.SPECIFICATION else self._cut_sheet_path
+        document_before = gate.build_document_record(path)
+        report = integrity.check_text_layer(path)
+        document_after = gate.build_document_record(path)
+        if (
+            document_before.sha256 != document_after.sha256
+            or report.sha256 != document_before.sha256
+        ):
+            return {"persisted": False, "reason": "source_document_changed_during_screening"}
+        if report.clean:
+            return {"persisted": False, "reason": "document_carries_no_hidden_span"}
+
+        integrity_ref = self._firestore.collection(INTEGRITY_FINDINGS_COLLECTION).document()
+        persisted = PersistedIntegrityFinding(
+            integrity_finding_id=integrity_ref.id,
+            run_id=self._run_id,
+            screen_id=integrity.SCREEN_ID,
+            document_role=role,
+            document_sha256=report.sha256,
+            page_count=report.page_count,
+            flagged_pages=report.flagged_pages,
+            hidden_spans=report.hidden_spans,
+        )
+        integrity_data = {
+            **persisted.model_dump(mode="json"),
+            "created_at": self._now(),
+        }
+
+        batch = self._firestore.batch()
+        batch.set(
+            self._firestore.collection(DOCUMENTS_COLLECTION).document(document_after.sha256),
+            document_after.model_dump(mode="json"),
+            merge=True,
+        )
+        batch.set(integrity_ref, integrity_data)
+        batch.commit()
+        return {
+            "persisted": True,
+            "integrity_finding": persisted.model_dump(mode="json"),
         }
 
     def draft_rfi(self, findings: list[PersistedFinding]) -> dict[str, Any]:

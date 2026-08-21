@@ -67,14 +67,34 @@ async def _run(args: argparse.Namespace) -> AuditRunSummary:
         firestore_client.close()
 
 
+def _print_quarantine(summary: AuditRunSummary) -> None:
+    """Disclose the integrity screen result that stopped the run."""
+    quarantine = summary.quarantine
+    if quarantine is None:
+        return
+    print(f"QUARANTINED: {quarantine.reason}")
+    print("no model call was made for this run")
+    for document in quarantine.documents:
+        print(f"  document: {document.document_role.value}")
+        print(f"    SHA-256: {document.document_sha256}")
+        print(f"    pages screened: {document.page_count}")
+        print(f"    flagged pages: {document.flagged_pages}")
+        print(f"    hidden spans: {document.hidden_span_count}")
+        if document.integrity_finding_id is not None:
+            print(f"    integrity record: {document.integrity_finding_id}")
+        else:
+            print(f"    integrity record not written: {document.persistence_reason}")
+
+
 def _print_summary(summary: AuditRunSummary) -> None:
     print("RUN SUMMARY")
     print(f"run id: {summary.run_id}")
+    _print_quarantine(summary)
     print(f"claims made: {summary.claims_made}")
     print(f"rejected: {summary.rejected}")
     print(f"retried: {summary.retried}")
     print(f"findings persisted: {summary.findings_persisted}")
-    print(f"RFI path: {summary.rfi_path}")
+    print(f"RFI path: {summary.rfi_path or 'not generated'}")
 
 
 def main() -> int:

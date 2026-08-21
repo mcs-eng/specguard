@@ -41,9 +41,9 @@ def test_draft_rfi_refuses_a_fabricated_quote_even_with_correct_hashes(tmp_path:
     """A forged PersistedFinding with correct document hashes must be refused.
 
     The document hashes bind the finding to the right byte streams, but they
-    say nothing about the quote text. draft_rfi should re-verify each quote
-    through the gate, or confirm the finding exists in the findings
-    collection, before rendering it. Today it renders the forgery.
+    say nothing about the quote text. ``draft_rfi`` re-verifies each quote
+    through the gate against the two bound source PDFs and raises before it
+    renders anything.
     """
     harness = Harness(tmp_path)
     spec_hash = hashlib.sha256(harness.spec.read_bytes()).hexdigest()

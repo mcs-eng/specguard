@@ -48,14 +48,30 @@ SPEC_PAGES: list[list[str]] = [
 ]
 
 
-def write_pdf(path: Path, pages: list[list[str]], fontsize: int = 11) -> Path:
-    """Write a text-based PDF: one page per entry, one line per string."""
+def write_pdf(
+    path: Path,
+    pages: list[list[str]],
+    fontsize: int = 11,
+    hidden: dict[int, list[str]] | None = None,
+) -> Path:
+    """Write a text-based PDF: one page per entry, one line per string.
+
+    ``hidden`` maps a one-based page number to lines written in PDF render mode
+    3. That mode paints nothing, so those lines never reach a reader while text
+    extraction still returns them. The default writes no hidden line at all.
+    """
+    hidden = hidden or {}
     document = pymupdf.open()
-    for lines in pages:
+    for page_number, lines in enumerate(pages, start=1):
         page = document.new_page()
         y = 72.0
         for line in lines:
             page.insert_text((72.0, y), line, fontname=FIXTURE_FONT, fontsize=fontsize)
+            y += fontsize * 1.6
+        for line in hidden.get(page_number, []):
+            page.insert_text(
+                (72.0, y), line, fontname=FIXTURE_FONT, fontsize=fontsize, render_mode=3
+            )
             y += fontsize * 1.6
     document.save(str(path))
     document.close()

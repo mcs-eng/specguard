@@ -1,4 +1,4 @@
-"""One ADK agent and the bounded audit loop around its four tools."""
+"""One ADK agent and the bounded audit loop around its five tools."""
 
 from __future__ import annotations
 
@@ -13,14 +13,17 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 from pydantic import ValidationError
 
-from specguard import gate
+from specguard import gate, integrity
 from specguard.models import (
     AuditClaim,
     AuditClaimBatch,
     AuditRunSummary,
     CitedQuote,
+    DocumentRole,
     Finding,
     PersistedFinding,
+    QuarantinedDocument,
+    RunQuarantine,
 )
 from specguard.tools import AuditTools
 
@@ -50,7 +53,7 @@ def create_adk_agent(
     model_id: str = MODEL_ID,
     location: str = MODEL_LOCATION,
 ) -> LlmAgent:
-    """Build the single ADK agent with exactly the four required tools."""
+    """Build the single ADK agent with exactly the five required tools."""
     model = Gemini(
         model=model_id,
         client_kwargs={
@@ -65,6 +68,7 @@ def create_adk_agent(
         model=model,
         instruction=load_audit_prompt(),
         tools=[
+            tools.check_text_integrity,
             tools.extract_pdf_text,
             tools.verify_quote,
             tools.persist_finding,
@@ -117,7 +121,19 @@ class AdkClaimGenerator:
 
 
 class AuditRuntime:
-    """Apply one verification retry per claim, then persist only through the gate."""
+    """Screen both documents, then apply one verification retry per claim.
+
+    The runtime disposes; the agent proposes. Two deterministic controls sit
+    around the model and neither is optional for any caller of :meth:`run`:
+
+    1. The text-layer integrity screen runs first, on both bound documents,
+       before any extracted text is assembled into a model message. A flagged
+       document quarantines the run: no model call is made, a deterministic
+       integrity record is persisted, and the summary discloses the quarantine.
+       :meth:`run` takes no argument that can skip this screen.
+    2. The verification gate runs on every quoted anchor, and again at write
+       time inside the persistence tool.
+    """
 
     def __init__(
         self,
@@ -135,6 +151,18 @@ class AuditRuntime:
         self._run_id = run_id
 
     async def run(self) -> AuditRunSummary:
+        quarantine = self._screen_documents()
+        if quarantine is not None:
+            return AuditRunSummary(
+                run_id=self._run_id,
+                claims_made=0,
+                rejected=0,
+                retried=0,
+                findings_persisted=0,
+                rfi_path=None,
+                quarantine=quarantine,
+            )
+
         initial_message = self._build_document_message()
         try:
             initial_batch = await self._claim_generator.generate_claims(initial_message)
@@ -212,6 +240,46 @@ class AuditRuntime:
             findings_persisted=len(persisted_findings),
             rfi_path=rfi_result["rfi_path"],
         )
+
+    def _screen_documents(self) -> RunQuarantine | None:
+        """Screen both bound documents before any text can reach the model.
+
+        Return ``None`` when both documents are clean. Otherwise persist one
+        deterministic integrity record per flagged document and return the
+        disclosure. Either document flagging stops the whole run, because the
+        model message carries the text of both.
+        """
+        quarantined: list[QuarantinedDocument] = []
+        for role, path in (
+            (DocumentRole.SPECIFICATION, self._spec_path),
+            (DocumentRole.SUBMITTED_DOCUMENT, self._cut_sheet_path),
+        ):
+            report = integrity.check_text_layer(path)
+            if report.clean:
+                continue
+            result = self._tools.persist_integrity_finding(role.value)
+            persisted = bool(result.get("persisted"))
+            quarantined.append(
+                QuarantinedDocument(
+                    document_role=role,
+                    document_sha256=report.sha256,
+                    page_count=report.page_count,
+                    flagged_pages=report.flagged_pages,
+                    hidden_span_count=len(report.hidden_spans),
+                    integrity_finding_id=(
+                        str(result["integrity_finding"]["integrity_finding_id"])
+                        if persisted
+                        else None
+                    ),
+                    persistence_reason=(
+                        None if persisted else str(result.get("reason", "persistence_refused"))
+                    ),
+                )
+            )
+
+        if not quarantined:
+            return None
+        return RunQuarantine(reason=integrity.QUARANTINE_REASON, documents=quarantined)
 
     def _build_document_message(self) -> str:
         specification = self._extract_document(self._spec_path, "SPECIFICATION")

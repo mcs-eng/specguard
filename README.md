@@ -4,7 +4,7 @@ SpecGuard audits a construction cut sheet against a specification. Every finding
 
 **Uncited claims are blocked from the ledger.**
 
-This repository is at Phase 3. It includes one Google ADK agent, the deterministic verification gate, guarded Firestore persistence, a bounded one-retry loop, and RFI draft PDF generation. The gate establishes only that each quoted text anchor occurs on its cited page. It does not establish that the finding is accurate.
+This repository is at Phase 3.5. It includes one Google ADK agent, the deterministic verification gate, a text-layer integrity screen that runs before the model reads anything, guarded Firestore persistence, a bounded one-retry loop, and RFI draft PDF generation. The gate establishes only that each quoted text anchor occurs on its cited page. It does not establish that the finding is accurate.
 
 ## Verification contract
 
@@ -33,9 +33,40 @@ The gate proves one narrow thing: the quoted characters appear on the page that 
   - Casefolding erases case-sensitive units. A page reading `15 mW` and a claim quoting `15 MW` normalize identically, a millionfold difference. Case-insensitive matching is required by the contract, so this is a known cost of it, not a defect.
   - NFKC folds superscripts and subscripts into plain digits. A page reading `10²` normalizes to `102`. Cut sheets use `mm²` often.
   - Whitespace collapse discards layout. Text from two columns, two table cells, or a header and a body can end up adjacent, so a quote can splice text that never appeared together on the page.
-- **It reads the text layer, not the visible page.** A PDF whose text layer disagrees with what a human sees — hidden text, or an OCR layer over a scan — verifies against text the reader cannot see. A pure image scan carries no text and cannot verify anything. The gate is proven against generated text-based PDFs only.
+- **It reads the text layer, not the visible page.** A PDF whose text layer disagrees with what a human sees — hidden text, or an OCR layer over a scan — verifies against text the reader cannot see. A pure image scan carries no text and cannot verify anything. The gate is proven against generated text-based PDFs only. The gate itself is unchanged by the integrity screen described below; the screen discloses one form of this disagreement before the model reads anything, and the gate keeps reading the text layer.
 - **The schema does not enforce that the gate ran.** `Finding.verification_status` is an ordinary field. The schema keeps the status and the rejection reason consistent, but a caller can construct a `VERIFIED` finding without calling `verify_quote`. The Firestore persistence tool does not trust that field. It re-verifies both quotes against the two source PDFs and performs no write if either quote rejects.
 - SHA-256 in `DocumentRecord` is chain-of-custody metadata. It records which byte stream was read. It is not an accuracy mechanism and no part of the gate reads it.
+
+## Text-layer integrity screen
+
+A document from a third party is untrusted input. The known limitation above — the gate reads the text layer, not the visible page — describes a real gap between what a human reviewer reads and what an automated reviewer ingests. This screen discloses one way that gap opens. It narrows it. It does not close it.
+
+`specguard/integrity.py` reads PyMuPDF span data for every page of a document. It renders no image, runs no OCR, and compares no pixels. A PDF text-showing operator carries a render mode, and MuPDF records the outcome of that mode on every character. The screen reports a span whose characters are neither filled nor stroked: nothing is painted for the reader, and the text layer still carries the characters. That is render mode 3, the mode an OCR layer uses over a scanned image.
+
+### What it detects
+
+- Text made invisible by render mode 3, which a text-layer reader still ingests. The report names each such span, its page, its font and size, and the raw character flags the rule read.
+- The visible text of every page beside it. On a page with no invisible span, that string is byte-identical to `page.get_text()`, so a clean page is reported exactly as the verification gate reads it.
+
+### What it does not detect
+
+- **Rasterized text.** Text drawn as an image carries no span and no render mode. A pure image scan carries nothing for this screen to read.
+- **Clip-only render mode 7.** MuPDF reports the same character flags for a clip-only span as for a filled-and-clipped span, so the screen cannot separate hidden text from painted text in that mode. `tests/test_integrity.py::test_clip_only_render_mode_is_a_known_limitation` pins that gap.
+- **Other concealment methods.** A fill colour matching the background, a zero alpha set through the graphics state, a glyph placed outside the crop box, or a rectangle drawn over painted text all leave the span filled or stroked. This screen does not report any of them.
+- **Intent.** A flagged page is a disclosure, not a verdict. The screen states that the text layer disagrees with the visible page and shows the disagreeing spans. It does not decide why they are there.
+
+### What the runtime does with a flagged document
+
+The screen runs first, on both bound documents, before any extracted text is assembled into a model message. `AuditRuntime.run` takes no argument that can skip it, so no caller of `run()` can opt out.
+
+When either bound document carries at least one invisible span, the run is quarantined:
+
+- No model call is made. The model receives no text from either document, because the model message carries both.
+- A deterministic integrity record is written to its own `integrity_findings` collection, holding the span text, the page numbers, the document SHA-256, and the screen identity. The persistence tool takes one role name and reads the file again itself, so no caller and no model can author or edit that record. It is not a claim finding and it never passes through the verification gate.
+- No claim finding is persisted and no RFI is drafted.
+- The run summary reports the quarantine: the reason, each flagged document, its flagged pages, its hidden-span count, and its SHA-256.
+
+`check_text_integrity` is also the first of the agent's five tools, so the same screen is available on request. The runtime does not depend on the model calling it.
 
 ## What the test suite proves
 
@@ -68,6 +99,17 @@ Known limitations, each pinned by a test so the limitation cannot quietly disapp
 - Whitespace collapse makes text from separate columns adjacent.
 - The schema cannot prove the gate was ever run.
 
+Text-layer integrity screen:
+
+- The altered demo fixture is flagged, on page 1, with both hidden span texts reported exactly.
+- The four original demo fixtures produce zero flags. That is the false-positive check.
+- On a clean page, the reported visible text equals the page text the gate reads.
+- The altered fixture renders pixel-for-pixel identically to the unaltered one, so the difference is in the text layer alone.
+- A quarantined document produces no model call and no model-visible message carrying the hidden text.
+- The persisted integrity record carries the span evidence, the page numbers, and the document SHA-256, and two runs over one file store the same evidence.
+- `AuditRuntime.run` accepts no argument that could skip the screen.
+- Clip-only render mode 7 is not detected, pinned by its own test.
+
 Mutation testing is not automated. Two mutations were run by hand once and both were caught: reading page 2 for every later citation (`document[min(page_number - 1, 1)]`) failed 2 tests, and replacing `casefold()` with `lower()` failed 1. The receipts are in `HANDOFF.md`; re-run them by hand if the gate changes.
 
 All test fixture content is fictional.
@@ -89,6 +131,8 @@ uv run python run_audit.py --spec path\to\specification.pdf --cutsheet path\to\c
 ```
 
 The command prints claims made, rejected, retried, findings persisted, and the generated RFI path. The model receives only extracted PDF text with one-based page markers. It does not receive fixture manifests or source file names.
+
+When the integrity screen flags either document, the command prints the quarantine instead: the reason, each flagged document, its flagged pages, its hidden-span count, its SHA-256, and the identifier of the integrity record. No model call is made for that run.
 
 ## Development
 

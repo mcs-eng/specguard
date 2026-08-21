@@ -1,8 +1,9 @@
-"""Unit tests for the four deterministic Phase 3 tools."""
+"""Unit tests for the five deterministic SpecGuard tools."""
 
 from __future__ import annotations
 
 import hashlib
+import inspect
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -10,8 +11,10 @@ import pymupdf
 import pytest
 
 from specguard import gate as gate_module
+from specguard import integrity
 from specguard.agent import create_adk_agent, load_audit_prompt
 from specguard.gate import verify_quote
+from specguard.integrity import check_text_layer
 from specguard.models import (
     CitedQuote,
     Finding,
@@ -22,6 +25,7 @@ from specguard.models import (
 from specguard.tools import (
     DOCUMENTS_COLLECTION,
     FINDINGS_COLLECTION,
+    INTEGRITY_FINDINGS_COLLECTION,
     REJECTIONS_COLLECTION,
     AuditTools,
 )
@@ -108,11 +112,12 @@ def test_verify_quote_tool_returns_the_gate_result_unchanged(tmp_path: Path) -> 
     assert tools.verify_quote("Requirement alpha.", 1, str(spec)) == expected
 
 
-def test_agent_owns_exactly_the_four_required_tools(tmp_path: Path) -> None:
+def test_agent_owns_exactly_the_five_required_tools(tmp_path: Path) -> None:
     client = FakeFirestoreClient()
     spec, cut_sheet = _source_pdfs(tmp_path)
     agent = create_adk_agent(_tools(tmp_path, client, spec, cut_sheet), project_id="test-project")
     assert [tool.__name__ for tool in agent.tools] == [
+        "check_text_integrity",
         "extract_pdf_text",
         "verify_quote",
         "persist_finding",
@@ -316,3 +321,113 @@ def test_draft_rfi_with_no_findings_avoids_a_compliance_claim(tmp_path: Path) ->
         text = "\n".join(page.get_text() for page in document)
     assert "No findings were persisted for this run." in text
     assert "not a compliance determination" in text
+
+
+def test_check_text_integrity_tool_returns_the_screen_report(tmp_path: Path) -> None:
+    """The tool hands back the deterministic screen report for one document."""
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    result = _tools(tmp_path, client, spec, cut_sheet).check_text_integrity(str(spec))
+
+    assert result["ok"] is True
+    assert result["screen_id"] == integrity.SCREEN_ID
+    assert result["report"] == check_text_layer(spec).model_dump(mode="json")
+    assert result["report"]["clean"] is True
+
+
+def test_check_text_integrity_tool_reports_an_unreadable_document(tmp_path: Path) -> None:
+    """A missing document returns a screening error rather than raising."""
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    result = _tools(tmp_path, client, spec, cut_sheet).check_text_integrity(
+        str(tmp_path / "absent.pdf")
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "document_unreadable"
+
+
+def test_check_text_integrity_tool_flags_a_hidden_span(tmp_path: Path) -> None:
+    """A document with an invisible span is reported with its span text."""
+    client = FakeFirestoreClient()
+    spec, _ = _source_pdfs(tmp_path)
+    altered = write_pdf(
+        tmp_path / "altered.pdf",
+        [["Submitted characteristic beta."]],
+        hidden={1: ["Submitted characteristic gamma."]},
+    )
+    result = _tools(tmp_path, client, spec, altered).check_text_integrity(str(altered))
+
+    assert result["report"]["clean"] is False
+    assert result["report"]["flagged_pages"] == [1]
+    span = result["report"]["pages"][0]["hidden_spans"][0]
+    assert span["text"] == "Submitted characteristic gamma."
+
+
+def test_persist_integrity_finding_refuses_a_clean_document(tmp_path: Path) -> None:
+    """A document with no hidden span produces no integrity record."""
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    result = _tools(tmp_path, client, spec, cut_sheet).persist_integrity_finding("specification")
+
+    assert result == {"persisted": False, "reason": "document_carries_no_hidden_span"}
+    assert client.data == {}
+    assert client.batches == []
+
+
+def test_persist_integrity_finding_refuses_an_unknown_role(tmp_path: Path) -> None:
+    """The caller names a bound role or nothing is written."""
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    tools = _tools(tmp_path, client, spec, cut_sheet)
+
+    assert tools.persist_integrity_finding(str(spec)) == {
+        "persisted": False,
+        "reason": "unknown_document_role",
+    }
+    assert tools.persist_integrity_finding("") == {
+        "persisted": False,
+        "reason": "unknown_document_role",
+    }
+    assert client.data == {}
+
+
+def test_persist_integrity_finding_writes_span_evidence_and_the_document_hash(
+    tmp_path: Path,
+) -> None:
+    """The stored record carries the spans, the pages, and the screened bytes."""
+    client = FakeFirestoreClient()
+    spec, _ = _source_pdfs(tmp_path)
+    altered = write_pdf(
+        tmp_path / "altered.pdf",
+        [["Submitted characteristic beta."], ["Second submitted page."]],
+        hidden={2: ["Submitted characteristic gamma."]},
+    )
+    tools = _tools(tmp_path, client, spec, altered)
+
+    result = tools.persist_integrity_finding("submitted_document")
+
+    assert result["persisted"] is True
+    stored = client.data[INTEGRITY_FINDINGS_COLLECTION][
+        result["integrity_finding"]["integrity_finding_id"]
+    ]
+    assert stored["document_sha256"] == check_text_layer(altered).sha256
+    assert stored["flagged_pages"] == [2]
+    assert stored["screen_id"] == integrity.SCREEN_ID
+    assert stored["created_at"] == FIXED_TIME
+    assert [span["text"] for span in stored["hidden_spans"]] == ["Submitted characteristic gamma."]
+    assert client.data[DOCUMENTS_COLLECTION][stored["document_sha256"]]["page_count"] == 2
+
+
+def test_persist_integrity_finding_reads_the_file_rather_than_the_caller(
+    tmp_path: Path,
+) -> None:
+    """The record's evidence comes from the screen, not from any argument.
+
+    ``persist_integrity_finding`` accepts one role name and nothing else, so
+    there is no argument through which a model could author span text, a page
+    number, or a hash.
+    """
+    parameters = list(inspect.signature(AuditTools.persist_integrity_finding).parameters)
+
+    assert parameters == ["self", "document_role"]

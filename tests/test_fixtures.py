@@ -21,12 +21,14 @@ PDF_NAMES = (
     "asterquay_learning_workshop_specification.pdf",
     "caldra_meridian_480v_switchboard.pdf",
     "veylan_arcworks_208v_switchboard.pdf",
+    "veylan_arcworks_208v_altered.pdf",
     "torven_70c_termination_switchboard.pdf",
 )
 EXPECTED_PAGE_COUNTS = {
     "asterquay_learning_workshop_specification.pdf": 7,
     "caldra_meridian_480v_switchboard.pdf": 2,
     "veylan_arcworks_208v_switchboard.pdf": 2,
+    "veylan_arcworks_208v_altered.pdf": 2,
     "torven_70c_termination_switchboard.pdf": 2,
 }
 

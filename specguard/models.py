@@ -33,6 +33,18 @@ class RejectionReason(StrEnum):
     QUOTE_NOT_FOUND_ON_CITED_PAGE = "quote_not_found_on_cited_page"
 
 
+class DocumentRole(StrEnum):
+    """Which of the two documents bound to one audit run is meant.
+
+    The role, not a path, is what a caller passes to the integrity persistence
+    tool. A caller therefore cannot point that tool at a document the run is
+    not bound to, and cannot supply the evidence it records.
+    """
+
+    SPECIFICATION = "specification"
+    SUBMITTED_DOCUMENT = "submitted_document"
+
+
 class Severity(StrEnum):
     """Placeholder severity scale.
 
@@ -186,8 +198,52 @@ class PdfTextResult(BaseModel):
     error_message: str | None = None
 
 
+class QuarantinedDocument(BaseModel):
+    """One document the text-layer integrity screen kept away from the model.
+
+    Every value here is copied from the deterministic screen report. No model
+    output reaches this record.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    document_role: DocumentRole = Field(description="Which bound document was screened.")
+    document_sha256: str = Field(
+        pattern=r"^[0-9a-f]{64}$",
+        description="Lowercase hex SHA-256 of the screened byte stream. Chain of custody only.",
+    )
+    page_count: int = Field(ge=1, description="Number of pages the screen read.")
+    flagged_pages: list[int] = Field(
+        min_length=1, description="One-based pages that carry text hidden by render mode."
+    )
+    hidden_span_count: int = Field(ge=1, description="Number of hidden spans the screen found.")
+    integrity_finding_id: str | None = Field(
+        default=None,
+        description="Identifier of the persisted integrity record, when it was written.",
+    )
+    persistence_reason: str | None = Field(
+        default=None, description="Machine-readable reason the integrity record was not written."
+    )
+
+
+class RunQuarantine(BaseModel):
+    """The disclosure that a run stopped before any text reached the model."""
+
+    model_config = ConfigDict(frozen=True)
+
+    reason: str = Field(min_length=1, description="Machine-readable reason for the quarantine.")
+    documents: list[QuarantinedDocument] = Field(
+        min_length=1, description="Every document the screen flagged, in bound order."
+    )
+
+
 class AuditRunSummary(BaseModel):
-    """Stable counters and output path for one complete audit run."""
+    """Stable counters and output path for one complete audit run.
+
+    A quarantined run makes no model call, persists no claim finding, and
+    drafts no RFI, so its counters are zero and ``rfi_path`` is ``None``. The
+    ``quarantine`` field carries the disclosure instead.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -196,9 +252,17 @@ class AuditRunSummary(BaseModel):
     rejected: int = Field(ge=0)
     retried: int = Field(ge=0)
     findings_persisted: int = Field(ge=0)
-    rfi_path: str = Field(min_length=1)
+    rfi_path: str | None = Field(default=None, min_length=1)
+    quarantine: RunQuarantine | None = Field(
+        default=None, description="Set when the integrity screen stopped the run."
+    )
 
     @property
     def verified(self) -> int:
         """Return the former counter name for read-only compatibility."""
         return self.findings_persisted
+
+    @property
+    def quarantined(self) -> bool:
+        """True when the integrity screen stopped this run before the model."""
+        return self.quarantine is not None
