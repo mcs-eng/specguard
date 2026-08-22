@@ -1261,3 +1261,134 @@ All compute and endpoint resources torn down with exit 0:
 | `uv run ruff check .` | 0 | `All checks passed!` |
 | `uv run ruff format --check .` | 0 | `36 files already formatted`. |
 | `git diff --check` | 0 | No whitespace errors. |
+
+---
+
+## Phase 6a — pre-public hardening and the measured eval harness
+
+Date: 2026-08-21. Scope: the three recorded pre-public follow-ups, the measured eval harness, and one retry of the larger Gemma model. The verification gate contract, the prompts, and the five fixture PDFs are unchanged. The diff touches no line of `specguard/gate.py` and no PDF.
+
+### 0. Gemma 3 4B retry — FAILED, gemma-3-1b-it retained
+
+The retry used the explicit machine-type override, on the theory that the earlier failure was machine stock rather than quota. It was neither: the API rejected the configuration itself.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `gcloud ai model-garden models deploy --model=google/gemma3@gemma-3-4b-it --machine-type=g2-standard-12 --accelerator-type=NVIDIA_L4 --accelerator-count=1 --endpoint-display-name=specguard-gemma-4b --region=us-central1 --project=specguard-hack --billing-project=specguard-hack --accept-eula` | 1 | `ERROR: (gcloud.ai.model-garden.models.deploy) The machine type, accelerator type and/or container image URI is not supported by the model.` |
+| `gcloud ai endpoints list --region=us-central1 --project=specguard-hack --billing-project=specguard-hack` | 0 | `Listed 0 items.` |
+| `gcloud ai models list --region=us-central1 --project=specguard-hack --billing-project=specguard-hack` | 0 | `Listed 0 items.` |
+
+The rejection happens in configuration validation, before any resource is created, so nothing partial existed to tear down and both list commands confirm zero. This is a deterministic refusal, not transient stock: `g2-standard-12` is not in the model's supported set, which SETUP.md already records as `g2-standard-24`, `a2-ultragpu-1g`, or `g4-standard-48`. All three exceed the project's 1.0 L4 quota or need accelerator families the project holds at 0.
+
+`gcloud beta ai model-garden models list-deployment-config` could not be run to print the supported set directly: the `beta` component is not installed, and installing it needs write access to the SDK directory under `C:\Program Files (x86)`, which this session does not have (exit 1). The deploy error message is therefore the receipt, not a config listing.
+
+Decision: `google/gemma3@gemma-3-1b-it` is retained. Elapsed time was well inside the ten-minute cap.
+
+### 1. draft_rfi no longer returns a filesystem path to the model
+
+`draft_rfi` is model-callable, so returning the resolved output path handed a model the absolute ephemeral path of the machine running the audit. The tool now returns `rfi_id`, `rfi_number`, and `finding_count`, where `rfi_id` is a `secrets.token_hex(16)` handle carrying no path information.
+
+The path travels on a second channel: `AuditTools.rfi_path_for(rfi_id)`, which is not one of the five registered agent tools and therefore cannot be reached from a model turn. `AuditRuntime._draft_rfi_and_resolve_path` drafts the RFI and exchanges the handle for the path, and raises if the bound tool set did not issue that handle. Both former call sites — the model-output-invalid path and the normal completion path — go through it. `AuditRunSummary.rfi_path`, `run_audit.py`, and the web layer are unchanged, so nothing downstream of the runtime moved.
+
+New tests: `test_draft_rfi_returns_an_opaque_handle_and_no_filesystem_path`, `test_the_runtime_channel_resolves_the_handle_to_the_written_file`, and `test_no_model_registered_tool_returns_the_rfi_filesystem_path`. The last one scans every registered tool result for the output path and for the temporary directory, and asserts `rfi_path_for` is absent from the registered tool list.
+
+This closes the Phase 4 follow-up recorded in PLAN.md M3.
+
+### 2. Cloud Run max-instances 1
+
+`deploy-specguard.ps1` now passes `--max-instances 1`. `test_deploy_script_limits_cloud_run_request_concurrency` pins both `--concurrency 2` and `--max-instances 1`, because request concurrency alone does not bound the service: two per instance across two instances is four.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `.\deploy-specguard.ps1` | 0 | `Service [specguard] revision [specguard-00008-25s] has been deployed and is serving 100 percent of traffic.` |
+| `gcloud run services describe specguard --region us-central1 --project specguard-hack` with a format string for maxScale, containerConcurrency, latest ready revision, and traffic percent | 0 | `1`, `2`, `specguard-00008-25s`, `100`. |
+
+The README sentence was rewritten twice. The first rewrite claimed the aggregate of two was now exact. The Codex review was right that it is not: `--max-instances` is a per-revision target, and Cloud Run may briefly run extra instances during a deployment or a traffic split. The committed sentence says two is the steady-state figure and explicitly not a guarantee for every instant.
+
+Note: the deployed revision still carries the `SPECGUARD_GEMMA_ENDPOINT` value of an endpoint that has been torn down. Severity therefore falls back with a recorded reason on the deployed service until the shoot-day runbook sets a live endpoint. That is the pre-existing Phase 5 posture, unchanged here.
+
+### 3. scripts/reset_demo_ledger.py
+
+Archives `runs`, `findings`, `rejections`, and `integrity_findings`, plus every bucket object, under one timestamped archive key, then leaves them empty. It requires `--confirm`; without the flag it prints what it would do and exits 2.
+
+Two properties are pinned by tests rather than asserted in prose:
+
+- **The whole copy phase finishes before the first delete.** The first implementation interleaved copy and delete per item. That never loses an item, but a failure part way leaves a partly cleared live ledger. The Codex review called this a blocker, and it was rebuilt as two phases, per collection and for the bucket. `test_a_copy_that_fails_on_the_last_object_deletes_nothing` and `test_firestore_documents_are_all_copied_before_any_is_deleted` pin the boundary.
+- **An archive key that already holds data is refused**, on both the Firestore side and the bucket side, so one reset can never overwrite an earlier archive. Objects already under the archive prefix are skipped and counted, so a second reset never nests one archive inside another.
+
+Two scope decisions, both deliberate and both stated in the module docstring:
+
+- The content-addressed `documents` collection is not archived and not cleared. Its records are keyed by document SHA-256, are shared across runs, and carry no run-specific demo data. The earlier wording said "the whole demo ledger", which over-claimed; it now names the four collections.
+- A writer that modifies a live document or object between its copy and its delete loses the newest version. The script carries no Firestore transaction and no Cloud Storage generation precondition, because the reset is run by one operator against an idle service. This is recorded as a known limitation rather than fixed.
+
+Fourteen tests cover the logic with in-memory fakes. `tests/fake_firestore.py` gained `stream()` on collections and `delete()` on document references, so the real `FirestoreLedgerStore` adapter is exercised rather than a hand-written double. `test_the_cloud_storage_adapter_uses_a_server_side_copy` covers the live adapter's use of `copy_blob`, which preserves the content type the findings page serves.
+
+No real reset has been executed. The script is tested, not yet run against the live ledger.
+
+### 4. scripts/eval_fixtures.py and EVAL.md
+
+The harness runs the real runtime N times over every audit case declared in the new `eval-cases` block of `fixtures/MANIFEST.md`, then writes EVAL.md and replaces the marked block in README.md. Expected outcomes live in the manifest, not in the harness, and each `finding` case names an evidence pair from the existing `fixture-evidence` block, so the quote a run must reproduce is recorded once and read twice.
+
+The five fixture PDFs form four audit cases; the specification is one side of every case. EVAL.md states that mapping rather than implying five runs per iteration.
+
+Honesty properties, each pinned by a test:
+
+- A catch requires both quotes and both page numbers to equal the manifest pair. A right quote on the wrong page is a false positive, not a catch.
+- A case with nothing planted has no catch rate and prints `n/a`. Counting it as 100 percent would inflate the published average.
+- The percentage renderer never renders a short rate as `100%`. 199 catches in 200 runs prints `99.5%`, and a rate that still reads as complete at one decimal prints `<100%`. The same guard runs at the bottom of the range.
+- A run whose initial model turn produced nothing usable is flagged and fails every expectation, including `no_finding`. Persisting nothing because the model broke is not the same result as persisting nothing because the cut sheet complies.
+- A quarantined run that still persisted a finding fails the quarantine expectation.
+- The severity model in the header is read back from the `severity_model_id` on the persisted findings. The operator's `--severity-model` string is printed separately and labelled as operator-supplied.
+- Every run identifier is listed in EVAL.md so the table can be checked against Firestore.
+
+Thirty-three tests cover aggregation and publication with fakes. None touches the network.
+
+### 5. The real eval run
+
+Gemma was deployed for the run and torn down after it, per the shoot-day runbook.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `gcloud ai model-garden models deploy --model=google/gemma3@gemma-3-1b-it --machine-type=g2-standard-12 --accelerator-type=NVIDIA_L4 --accelerator-count=1 --endpoint-display-name=specguard-gemma --region=us-central1 --project=specguard-hack --billing-project=specguard-hack --accept-eula` | 0 | Endpoint `mg-endpoint-673c178e-3128-43b9-8d2d-8493d0a50f1a`, deployed model `8206346321150345216`. |
+| `uv run python scripts/eval_fixtures.py -n 5 --severity-model ...` | 0 | See the summary line below. |
+| `gcloud ai endpoints undeploy-model`, then `endpoints delete`, then `models delete` | 0, 0, 0 | Torn down. |
+| `gcloud ai endpoints list --region=us-central1 --project=specguard-hack --billing-project=specguard-hack` | 0 | `Listed 0 items.` |
+| `gcloud ai models list --region=us-central1 --project=specguard-hack --billing-project=specguard-hack` | 0 | `Listed 0 items.` |
+
+```text
+EVAL SUMMARY date=2026-08-21 iterations=5 cases=4 runs=20 catch_rate=100% false_positives=0 rejections=0 retries=0 model_calls=15 cases_matching_manifest=4/4
+```
+
+Measured: catch rate 100 percent on both planted discrepancies across 10 runs, zero false positives on the compliant Caldra cut sheet across 5 runs, and 100 percent quarantine on the altered Veylan fixture with zero model calls across 5 runs. Severity: 7 findings HIGH and 3 UNCLASSIFIED. The three fallbacks were HTTP 502 responses from the Gemma endpoint; the reason is recorded on each finding, and EVAL.md names the count.
+
+Two results are worth reading carefully rather than as a clean sweep:
+
+- **Rejections and retries were both zero.** The model cited every quote correctly on the first turn, so the rejection-and-retry loop — the agentic beat of the demo — did not fire once in 15 model-calling runs. These numbers are not evidence that the loop works. EVAL.md says exactly that under "What this run did not exercise", and points at the test suite, which drives rejections deterministically.
+- **The catch rate is 100 percent on four cases of fictional fixtures**, not on a corpus. The EVAL.md scope section says so.
+
+EVAL.md was regenerated by a second real run after the Codex corrections changed the renderer, so the committed file is the product of the committed code. An earlier real run at the same N produced the same headline numbers with a different severity split: 10 findings, 1 fallback.
+
+Total Vertex spend was not visible in any command output, so EVAL.md records it as not visible rather than estimating it.
+
+### 6. Codex review and correction iteration 1
+
+One authorized read-only Codex review ran against the working tree. It returned 7 findings: 1 blocker, 5 major, 1 minor. `git status --short` before and after the review listed the same 8 modified and 3 untracked paths, and the suite stayed green, so the review modified nothing.
+
+Six findings were real and are fixed above: the interleaved copy and delete (blocker), the inexact concurrency claim, the missing archive-key collision guard, the over-claimed "whole demo ledger" wording, the runs that could pass while broken or internally inconsistent, the rounding that could publish a short rate as 100 percent, and the unverified severity model string.
+
+Not fixed, recorded instead: the Cloud Storage generation preconditions and Firestore transactions Codex suggested for the reset script. A single operator resetting an idle demo ledger does not need them, and the module docstring names the residual limitation.
+
+Codex could not verify the "one receipted execution" claim in EVAL.md, because no run identifiers were published. That was a fair objection and it is now closed: EVAL.md lists all 20 run identifiers.
+
+### 7. Quality gate receipts
+
+All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code below is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `254 passed, 2 warnings`. Zero xfails. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `41 files already formatted`. |
+| `git diff --check` | 0 | No whitespace errors. Git printed existing LF-to-CRLF working-copy warnings only. |
+
+Test count moved from 204 to 254: 3 added in `tests/test_tools.py`, 14 new in `tests/test_reset_demo_ledger.py`, and 33 new in `tests/test_eval_fixtures.py`. No fixture PDF changed, and `specguard/gate.py` is untouched.

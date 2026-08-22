@@ -15,7 +15,7 @@ $deployArguments = @(
     "--min-instances"
     "0"
     "--max-instances"
-    "2"
+    "1"
     "--concurrency"
     "2"
     "--set-env-vars"

@@ -449,9 +449,16 @@ def test_run_view_tells_a_reviewer_that_a_running_run_has_not_finished() -> None
 
 
 def test_deploy_script_limits_cloud_run_request_concurrency() -> None:
+    """Pin both halves of the aggregate concurrency number the README states.
+
+    Request concurrency alone does not bound the service. Two concurrent
+    requests per instance across two instances is four concurrent audits, so
+    the instance cap is part of the documented claim, not a cost setting.
+    """
     script = (Path(__file__).parents[1] / "deploy-specguard.ps1").read_text(encoding="utf-8")
 
     assert '"--concurrency"\n    "2"' in script
+    assert '"--max-instances"\n    "1"' in script
 
 
 def test_run_view_renders_findings_rejections_and_hidden_integrity_text() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,6 +11,7 @@ from typing import Any
 class FakeDocumentSnapshot:
     exists: bool
     _data: dict[str, Any] | None = None
+    id: str = ""
 
     def to_dict(self) -> dict[str, Any] | None:
         return self._data
@@ -30,7 +32,10 @@ class FakeDocumentReference:
     def get(self) -> FakeDocumentSnapshot:
         collection = self.client.data.get(self.collection_name, {})
         exists = self.id in collection
-        return FakeDocumentSnapshot(exists=exists, _data=collection.get(self.id))
+        return FakeDocumentSnapshot(exists=exists, _data=collection.get(self.id), id=self.id)
+
+    def delete(self) -> None:
+        self.client.data.get(self.collection_name, {}).pop(self.id, None)
 
 
 class FakeCollectionReference:
@@ -42,6 +47,10 @@ class FakeCollectionReference:
         if document_id is None:
             document_id = self._client.next_id(self._name)
         return FakeDocumentReference(self._client, self._name, document_id)
+
+    def stream(self) -> Iterator[FakeDocumentSnapshot]:
+        for document_id, data in list(self._client.data.get(self._name, {}).items()):
+            yield FakeDocumentSnapshot(exists=True, _data=data, id=document_id)
 
 
 class FakeBatch:

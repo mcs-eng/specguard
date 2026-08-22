@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -57,6 +58,7 @@ class AuditTools:
         self._run_id = run_id
         self._output_directory = Path(output_directory)
         self._now = now or (lambda: datetime.now(UTC))
+        self._drafted_rfis: dict[str, Path] = {}
 
     @property
     def spec_path(self) -> Path:
@@ -67,6 +69,17 @@ class AuditTools:
     def cut_sheet_path(self) -> Path:
         """The resolved submitted-document path this tool set is bound to."""
         return self._cut_sheet_path
+
+    def rfi_path_for(self, rfi_id: str) -> Path | None:
+        """Resolve one drafted RFI's filesystem path for the deterministic runtime.
+
+        This is the second channel for the RFI path, and it is not one of the
+        five registered agent tools, so no model turn can reach it. The model
+        receives the opaque identifier from :meth:`draft_rfi` and nothing else;
+        the runtime exchanges that identifier for the ephemeral path here.
+        Return ``None`` for an identifier this tool set did not issue.
+        """
+        return self._drafted_rfis.get(rfi_id)
 
     def check_text_integrity(self, document_role: str) -> dict[str, Any]:
         """Screen one bound document's text layer and return the flag summary.
@@ -316,7 +329,15 @@ class AuditTools:
         }
 
     def draft_rfi(self, findings: list[PersistedFinding]) -> dict[str, Any]:
-        """Generate one human-review RFI draft PDF for this audit run."""
+        """Generate one human-review RFI draft PDF and return an opaque handle.
+
+        This tool is model-callable, so it returns no filesystem path. The
+        ephemeral output path is an operational detail of the machine running
+        the audit, and disclosing it to a model hands back a writable location
+        outside the two bound documents. The result carries an opaque
+        identifier instead; the runtime exchanges it through
+        :meth:`rfi_path_for`, which is not a registered tool.
+        """
         spec_document = gate.build_document_record(self._spec_path)
         cut_sheet_document = gate.build_document_record(self._cut_sheet_path)
         if any(
@@ -409,8 +430,10 @@ class AuditTools:
         )
         document.save(str(output_path), garbage=4, deflate=True)
         document.close()
+        rfi_id = secrets.token_hex(16)
+        self._drafted_rfis[rfi_id] = output_path.resolve()
         return {
-            "rfi_path": str(output_path.resolve()),
+            "rfi_id": rfi_id,
             "rfi_number": rfi_number,
             "finding_count": len(findings),
         }

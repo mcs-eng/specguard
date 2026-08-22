@@ -326,8 +326,9 @@ def test_draft_rfi_contains_required_evidence_and_hash_metadata(tmp_path: Path) 
         ),
     )
 
-    result = _tools(tmp_path, client, spec, cut_sheet).draft_rfi([finding])
-    with pymupdf.open(result["rfi_path"]) as document:
+    tools = _tools(tmp_path, client, spec, cut_sheet)
+    result = tools.draft_rfi([finding])
+    with pymupdf.open(tools.rfi_path_for(result["rfi_id"])) as document:
         text = "\n".join(page.get_text() for page in document)
 
     assert result["rfi_number"] == "SG-RUN-1234"
@@ -365,8 +366,9 @@ def test_draft_rfi_refuses_hashes_that_do_not_match_the_bound_sources(tmp_path: 
 def test_draft_rfi_with_no_findings_avoids_a_compliance_claim(tmp_path: Path) -> None:
     client = FakeFirestoreClient()
     spec, cut_sheet = _source_pdfs(tmp_path)
-    result = _tools(tmp_path, client, spec, cut_sheet).draft_rfi([])
-    with pymupdf.open(result["rfi_path"]) as document:
+    tools = _tools(tmp_path, client, spec, cut_sheet)
+    result = tools.draft_rfi([])
+    with pymupdf.open(tools.rfi_path_for(result["rfi_id"])) as document:
         text = "\n".join(page.get_text() for page in document)
     assert "No findings were persisted for this run." in text
     assert "not a compliance determination" in text
@@ -525,3 +527,61 @@ def test_persist_integrity_finding_reads_the_file_rather_than_the_caller(
     parameters = list(inspect.signature(AuditTools.persist_integrity_finding).parameters)
 
     assert parameters == ["self", "document_role"]
+
+
+def test_draft_rfi_returns_an_opaque_handle_and_no_filesystem_path(tmp_path: Path) -> None:
+    """The model-callable draft tool discloses no path to the machine it runs on."""
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    tools = _tools(tmp_path, client, spec, cut_sheet)
+
+    result = tools.draft_rfi([])
+
+    assert set(result) == {"rfi_id", "rfi_number", "finding_count"}
+    rendered = str(result)
+    assert str(tmp_path) not in rendered
+    assert ".pdf" not in rendered
+    assert not any(separator in result["rfi_id"] for separator in ("/", chr(92), ":"))
+
+
+def test_the_runtime_channel_resolves_the_handle_to_the_written_file(tmp_path: Path) -> None:
+    """The RFI path travels on a channel that is not one of the five agent tools."""
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    tools = _tools(tmp_path, client, spec, cut_sheet)
+
+    result = tools.draft_rfi([])
+    resolved = tools.rfi_path_for(result["rfi_id"])
+
+    assert resolved is not None
+    assert resolved.is_file()
+    assert resolved.is_absolute()
+    assert resolved.name == "rfi-run-1234abcd.pdf"
+    assert tools.rfi_path_for("an-identifier-this-tool-set-never-issued") is None
+
+
+def test_no_model_registered_tool_returns_the_rfi_filesystem_path(tmp_path: Path) -> None:
+    """Scan every registered tool result for the ephemeral RFI output path."""
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    tools = _tools(tmp_path, client, spec, cut_sheet)
+    agent = create_adk_agent(tools, project_id="test-project")
+    rfi_path = str(tools.rfi_path_for(tools.draft_rfi([])["rfi_id"]))
+
+    registered = [tool.__name__ for tool in agent.tools]
+    assert registered == [
+        "check_text_integrity",
+        "extract_pdf_text",
+        "verify_quote",
+        "persist_finding",
+        "draft_rfi",
+    ]
+    assert "rfi_path_for" not in registered
+    results = [
+        str(tools.check_text_integrity("specification")),
+        str(tools.extract_pdf_text("specification", 1)),
+        str(tools.verify_quote("Requirement alpha.", 1, "specification")),
+        str(tools.draft_rfi([])),
+    ]
+    assert all(rfi_path not in result for result in results)
+    assert all(str(tmp_path) not in result for result in results)

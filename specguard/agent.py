@@ -180,14 +180,13 @@ class AuditRuntime:
             initial_batch = await self._claim_generator.generate_claims(initial_message)
         except (ValidationError, RuntimeError):
             self._tools.record_rejection("Initial model output", MODEL_OUTPUT_INVALID_REASON)
-            rfi_result = self._tools.draft_rfi([])
             return AuditRunSummary(
                 run_id=self._run_id,
                 claims_made=0,
                 rejected=1,
                 retried=0,
                 findings_persisted=0,
-                rfi_path=rfi_result["rfi_path"],
+                rfi_path=self._draft_rfi_and_resolve_path([]),
             )
 
         persisted_findings: list[PersistedFinding] = []
@@ -255,17 +254,33 @@ class AuditRuntime:
                 reasons = [r.reason for r in severity_results if getattr(r, "reason", None)]
                 severity_reason = reasons[0] if reasons else "Classification fallback"
 
-        rfi_result = self._tools.draft_rfi(persisted_findings)
         return AuditRunSummary(
             run_id=self._run_id,
             claims_made=len(initial_batch.claims),
             rejected=rejected,
             retried=retried,
             findings_persisted=len(persisted_findings),
-            rfi_path=rfi_result["rfi_path"],
+            rfi_path=self._draft_rfi_and_resolve_path(persisted_findings),
             severity_status=severity_status,
             severity_reason=severity_reason,
         )
+
+    def _draft_rfi_and_resolve_path(self, findings: list[PersistedFinding]) -> str:
+        """Draft the RFI, then resolve its path off the model-facing channel.
+
+        ``draft_rfi`` returns an opaque identifier because it is model-callable.
+        The deterministic runtime exchanges that identifier for the ephemeral
+        path through ``AuditTools.rfi_path_for``, which is not a registered
+        tool. An identifier the bound tool set cannot resolve is a runtime
+        defect, not a model outcome, so it raises rather than reporting a run
+        that quietly lost its artifact.
+        """
+        rfi_result = self._tools.draft_rfi(findings)
+        rfi_id = str(rfi_result["rfi_id"])
+        rfi_path = self._tools.rfi_path_for(rfi_id)
+        if rfi_path is None:
+            raise RuntimeError("the bound tool set did not issue the returned RFI identifier")
+        return str(rfi_path)
 
     def _annotate_severity(self, finding: PersistedFinding) -> tuple[PersistedFinding, Any]:
         """Annotate a persisted finding with Gemma severity classification.
