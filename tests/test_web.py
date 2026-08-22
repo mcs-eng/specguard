@@ -1483,6 +1483,17 @@ def test_a_refused_gate_check_renders_as_a_page_and_offers_no_second_gate() -> N
     assert "Run the gate yourself instead" not in response.text
 
 
+def test_the_shared_control_styling_lives_in_the_shell_not_in_each_page() -> None:
+    """Two copies of one control rule drift apart; one copy cannot."""
+    client, _, _ = _fixture_run_client()
+    rule = ".action:active { transform: scale(0.97); }"
+
+    for path in ("/", "/gate", f"/runs/{FIXTURE_RUN_ID}"):
+        body = client.get(path).text
+        assert body.count(rule) == 1
+        assert body.count(".submit-row {") == 1
+
+
 def test_every_button_a_judge_presses_answers_the_press() -> None:
     """A pressable control with no active state reads as unresponsive."""
     client, _, _, _ = _client()

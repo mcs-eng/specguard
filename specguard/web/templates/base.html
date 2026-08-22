@@ -79,10 +79,17 @@
     .stats dt { font-size: .76rem; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-soft); }
     .stats dd { margin: 0; font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; }
     .backlink { display: inline-block; margin-bottom: .9rem; font-size: .9rem; }
+    .action { display: inline-block; border: 1px solid var(--line); border-radius: .35rem; padding: .55rem 1rem; color: var(--ink-soft); font-weight: 700; text-decoration: none; transition: transform 160ms var(--ease-out), background-color 160ms var(--ease-out), border-color 160ms var(--ease-out), color 160ms var(--ease-out); }
+    .action.primary { border-color: var(--accent); color: var(--accent); }
+    .action:active { transform: scale(0.97); }
+    .action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .submit-row { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem; margin-top: 1.35rem; }
+    .submit-note { font-size: .86rem; }
     @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
     @media (hover: hover) and (pointer: fine) {
       tbody tr:hover { background: var(--row-hover); }
       .masthead nav a:hover { border-bottom-color: currentColor; }
+      .action:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -95,6 +102,8 @@
       }
     }
     @media (prefers-reduced-motion: reduce) {
+      .action { transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease; }
+      .action:active { transform: none; }
       .notice { transition: opacity 200ms ease; transform: none; }
       .badge.running::before { animation: none; }
       @starting-style { .notice { transform: none; } }
