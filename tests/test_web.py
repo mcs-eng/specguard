@@ -1235,6 +1235,25 @@ def test_the_root_page_answers_a_head_probe_with_the_security_headers() -> None:
         assert response.headers[name] == value
 
 
+def test_a_generated_500_still_carries_the_security_headers() -> None:
+    """The response most likely to leak detail is not the one without headers."""
+    app = create_app(
+        WebServices(
+            settings=WebSettings(project_id="p", bucket_name="b", demo_passphrase="x"),
+            repository=ExplodingRepository(),
+            storage=ExplodingStorage(),
+            audit_runner=FakeAuditRunner(),
+            audit_slots=asyncio.Semaphore(2),
+        )
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).get("/")
+
+    assert response.status_code == 500
+    for name, value in SECURITY_HEADERS.items():
+        assert response.headers[name] == value
+
+
 def test_the_security_headers_name_the_four_required_controls() -> None:
     assert SECURITY_HEADERS["X-Content-Type-Options"] == "nosniff"
     assert SECURITY_HEADERS["X-Frame-Options"] == "DENY"

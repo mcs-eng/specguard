@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.datastructures import FormData
@@ -198,11 +198,29 @@ def create_app(services: WebServices | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def set_security_headers(request: Request, call_next: Any) -> Response:
-        """Apply the same security headers to every response, including errors."""
+        """Apply the same security headers to every response the router returns."""
         response = await call_next(request)
         for name, value in SECURITY_HEADERS.items():
             response.headers.setdefault(name, value)
         return response
+
+    @app.exception_handler(Exception)
+    async def unhandled_error(request: Request, error: Exception) -> Response:
+        """Return a 500 that still carries the security headers.
+
+        Starlette builds its stack with ``ServerErrorMiddleware`` outside every
+        middleware an application adds, so a 500 that middleware generates
+        never passes back through the header layer above. Without this handler
+        the one response most likely to leak a stack trace would be the one
+        response with no ``Content-Security-Policy`` and no ``nosniff``.
+        ``ServerErrorMiddleware`` re-raises after sending this response, so the
+        error still reaches the logs.
+        """
+        return JSONResponse(
+            {"detail": "Internal Server Error"},
+            status_code=500,
+            headers=dict(SECURITY_HEADERS),
+        )
 
     @app.get("/healthz")
     @app.get("/health")

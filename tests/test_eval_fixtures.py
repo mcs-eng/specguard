@@ -21,6 +21,7 @@ from scripts.eval_fixtures import (
     build_run_outcome,
     compare_to_previous,
     current_code_revision,
+    format_code_revision,
     load_eval_cases,
     load_evidence_pairs,
     overall_catch_rate,
@@ -671,7 +672,28 @@ def test_current_code_revision_reads_this_repository() -> None:
     revision = current_code_revision()
 
     assert revision
-    assert revision == "not recorded for this run" or revision.isalnum()
+    assert revision.split()[0] not in {"", "None"}
+
+
+def test_a_clean_tree_is_named_by_its_commit_alone() -> None:
+    assert format_code_revision("abc1234", "") == "abc1234"
+    assert format_code_revision("abc1234", "\n") == "abc1234"
+
+
+def test_uncommitted_changes_are_named_and_never_borrow_the_commit() -> None:
+    """A dirty tree measured under a commit's name would misattribute the run."""
+    named = format_code_revision("abc1234", " M specguard/agent.py\n")
+
+    assert named == "abc1234 plus uncommitted changes"
+
+
+def test_an_unreadable_tree_state_is_written_as_unknown() -> None:
+    assert format_code_revision("abc1234", None) == "abc1234, working tree state unknown"
+
+
+def test_an_unreadable_commit_is_written_as_unrecorded() -> None:
+    assert format_code_revision(None, "") == "not recorded for this run"
+    assert format_code_revision("", "") == "not recorded for this run"
 
 
 def test_the_previous_published_table_is_read_back_from_the_readme() -> None:

@@ -1,12 +1,12 @@
 # SpecGuard measured evaluation
 
-- Date: 2026-08-21
+- Date: 2026-08-22
+- Code revision these numbers describe: `8854969`
 - Iterations per case: 5
 - Audit model: `gemini-3.7-flash` via Vertex AI
 - Severity model, measured from the persisted findings: `google-gemma3-gemma-3-1b-it`
 - Severity endpoint, as the operator named it: `google-gemma3-gemma-3-1b-it` on a Vertex AI Model Garden endpoint (g2-standard-12, 1x NVIDIA_L4)
-- Total Vertex spend: unavailable for this historical evaluation; the run output exposed no cost value
-- Per-run Gemini usage: this evaluation predates the Phase 6d SDK usage record; future runs record exact prompt, output, and total tokens only when ADK exposes them, and never estimate missing counts
+- Total Vertex spend: not visible in the run output
 - Audit cases: 4, drawn from the five committed fixture PDFs
 - Total real runs: 20
 
@@ -17,8 +17,8 @@ Every number below comes from one receipted execution of `scripts/eval_fixtures.
 | Case | Cut sheet | Expected outcome | Catch rate | False positives | Rejections | Retries | Quarantine rate | Model calls | Severity distribution |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | `E-01` | `caldra_meridian_480v_switchboard.pdf` | `no_finding` | n/a | 0 | 0 | 0 | 0% | 5 | no findings |
-| `E-02` | `veylan_arcworks_208v_switchboard.pdf` | `finding` | 100% | 0 | 0 | 0 | 0% | 5 | high 3, unclassified 2 |
-| `E-03` | `torven_70c_termination_switchboard.pdf` | `finding` | 100% | 0 | 0 | 0 | 0% | 5 | high 4, unclassified 1 |
+| `E-02` | `veylan_arcworks_208v_switchboard.pdf` | `finding` | 100% | 0 | 0 | 0 | 0% | 5 | high 5 |
+| `E-03` | `torven_70c_termination_switchboard.pdf` | `finding` | 100% | 0 | 0 | 0 | 0% | 5 | high 5 |
 | `E-04` | `veylan_arcworks_208v_altered.pdf` | `quarantine` | n/a | 0 | 0 | 0 | 100% | 0 | no findings |
 
 ## What each column means
@@ -40,7 +40,10 @@ Every number below comes from one receipted execution of `scripts/eval_fixtures.
 ## What this run did not exercise
 
 - The verification gate rejected nothing and the runtime retried nothing in this run. The model cited every quote correctly on the first turn, so the rejection-and-retry loop did not fire. These numbers are therefore not evidence that the loop works. The loop is covered by the test suite, which drives rejections deterministically.
-- 3 of 10 persisted findings carry `unclassified` severity. Severity classification fell back for those findings and the reason is recorded on each one. A fallback never blocks an audit and never changes verification status.
+
+## Change from the previous published run
+
+Numbers moved from the 2026-08-21 run. These cases now measure differently: `E-02`, `E-03`. The table above is the current measurement; the earlier figures are superseded, not corrected.
 
 ## Cases that did not match the manifest
 
@@ -50,10 +53,10 @@ None. Every case matched its declared expected outcome in every run.
 
 Every run below is a real Firestore run. These identifiers are the receipt behind the table: each one can be queried against the `findings`, `rejections`, and `integrity_findings` collections.
 
-- `E-01` `caldra_meridian_480v_switchboard.pdf`: `24dcc831fd3f4b70ba443f5df6a4e48d`, `dd319c65825a4ab89416a507870e710f`, `9bac53ab44d745a683c8263729ff1775`, `f9be193e35d54a3d848c05ba938724db`, `29d9710ce2b043b9a01623f16efc3e90`
-- `E-02` `veylan_arcworks_208v_switchboard.pdf`: `d702928eb1fe443b879167bedf14341a`, `d1bbd6f9383546b5818c56d56eb1fccb`, `8b4a29f7365a47dda5f23b90c6800aaf`, `c5caa746cf284b85bc9523706493e670`, `2b5c5078bf134d4c9dd30ee32be644f2`
-- `E-03` `torven_70c_termination_switchboard.pdf`: `79e6f73c97fc4b99a2f0ecc19a1de756`, `c244c73adbda472d853aa3ad1d6b5d63`, `f420b3f5ac2046389fca28aff07e6a7d`, `52f096802b024bc7859f5b83671012fd`, `f46e5b48a2464593945bddeea186d887`
-- `E-04` `veylan_arcworks_208v_altered.pdf`: `b4df1d9ede32493aa6f2c21f8fdb04c0`, `eebb7c6053fd4c36b9fcaeadb99534a4`, `5b55fc1217c142b0a79b20935dae2c17`, `70a1d606af8440f1b6faff226483fc71`, `81e8748240c747cca68f29ddf06a102d`
+- `E-01` `caldra_meridian_480v_switchboard.pdf`: `2060d3cf7cba42db95d839a41ec7509c`, `9fc82b83197d4fedafc1060b973c8cf1`, `6974a9c8803646a8915e92adc5eb81b7`, `8db75761415e46299fa4f6aa6c770776`, `15a6753a0af9415e9273b4bc461806f1`
+- `E-02` `veylan_arcworks_208v_switchboard.pdf`: `c97efb783d9f468fab074152742493b5`, `baad412500ce46fd9343981cd1aac533`, `a552449fabdd455c9dc55952cedb5fd3`, `01cb2fd25fbd40ab91393dff5a6f88d7`, `838db4b5cc6d4d79852dcf83325d0d8e`
+- `E-03` `torven_70c_termination_switchboard.pdf`: `3dc4457a9a054c19915a8ef9585469a8`, `839174915421460188847a20279507cd`, `4c838e10d82e4d7cbeba96abb655a304`, `b6c7e0e5bb0a4a19ae9a5eae3b79c2e4`, `eea54cbf8fbd4fbcafc89b256300239f`
+- `E-04` `veylan_arcworks_208v_altered.pdf`: `51daa926511a4e5c8b4baf9245405d43`, `9aaf25315ec847fa95b7fa0dd40fa944`, `92ec13ea181c48d2aaf0985378dfb3c2`, `61647854ff664661a7070a69a69b960c`, `0027c70e399d4d55bf34e152265c8912`
 
 ## Scope of these numbers
 

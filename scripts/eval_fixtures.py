@@ -784,29 +784,50 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def format_code_revision(revision: str | None, status: str | None) -> str:
+    """Name the code state the numbers describe, including an uncommitted one.
+
+    A commit identifier alone can misattribute a measurement: with uncommitted
+    edits in the tree, ``git rev-parse HEAD`` still names the previous commit,
+    and the published table would then claim that commit describes the runtime
+    that ran. ``revision`` is the short commit or ``None`` when git could not
+    report one; ``status`` is the porcelain status text, or ``None`` when it
+    could not be read. Each unknown is written as unknown.
+    """
+    if not revision:
+        return UNRECORDED_REVISION
+    if status is None:
+        return f"{revision}, working tree state unknown"
+    if status.strip():
+        return f"{revision} plus uncommitted changes"
+    return revision
+
+
 def current_code_revision() -> str:
-    """Return the git revision of the working tree, or an explicit non-answer.
+    """Return the code state of this working tree, or an explicit non-answer.
 
     The published numbers describe one state of the code. Naming that state is
-    part of the measurement, so a revision that cannot be read is recorded as
+    part of the measurement, so a state that cannot be read is recorded as
     unread rather than left out.
     """
+    return format_code_revision(_git("rev-parse", "--short", "HEAD"), _git("status", "--porcelain"))
+
+
+def _git(*arguments: str) -> str | None:
+    """Run one read-only git command, or return ``None`` when it cannot run."""
     import subprocess
 
     try:
         completed = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
+            ["git", *arguments],
             cwd=REPOSITORY_ROOT,
             capture_output=True,
             text=True,
             check=False,
         )
     except OSError:
-        return UNRECORDED_REVISION
-    revision = completed.stdout.strip()
-    if completed.returncode != 0 or not revision:
-        return UNRECORDED_REVISION
-    return revision
+        return None
+    return completed.stdout if completed.returncode == 0 else None
 
 
 def main(argv: Sequence[str] | None = None) -> int:
