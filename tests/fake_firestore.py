@@ -6,6 +6,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
+from google.api_core.exceptions import NotFound
+
 
 @dataclass(frozen=True)
 class FakeDocumentSnapshot:
@@ -27,6 +29,15 @@ class FakeDocumentReference:
         self.client._write(self.collection_name, self.id, data, merge=merge)
 
     def update(self, data: dict[str, Any]) -> None:
+        """Merge into an existing document, or fail the way Firestore fails.
+
+        Real Firestore raises ``NotFound`` when ``update`` names a document
+        that does not exist; only ``set`` creates one. A fake that quietly
+        created the document would hide exactly the write this test double
+        exists to expose.
+        """
+        if self.id not in self.client.data.get(self.collection_name, {}):
+            raise NotFound(f"no document {self.collection_name}/{self.id}")
         self.client._write(self.collection_name, self.id, data, merge=True)
 
     def get(self) -> FakeDocumentSnapshot:

@@ -342,6 +342,104 @@ def test_severity_update_cannot_alter_verification_status(tmp_path: Path) -> Non
     assert stored_after["cut_sheet_quote"] == stored_before["cut_sheet_quote"]
 
 
+def _tools_with_one_verified_finding(tmp_path: Path, run_id: str) -> tuple[Any, Any, str]:
+    """Persist one real verified finding and return the tools, the client, and its ID."""
+    client = FakeFirestoreClient()
+    spec = write_pdf(tmp_path / "spec.pdf", [["Req A"]])
+    cut = write_pdf(tmp_path / "cut.pdf", [["Sub B"]])
+    tools = AuditTools(
+        firestore_client=client,
+        spec_path=spec,
+        cut_sheet_path=cut,
+        run_id=run_id,
+        output_directory=tmp_path / "artifacts",
+    )
+    persisted = tools.persist_finding(
+        Finding(
+            submittal_id=run_id,
+            spec_locator="Page 1",
+            cut_sheet_locator="Page 1",
+            claim_text="Parameter mismatch.",
+            quotes=[
+                CitedQuote(text="Req A", page_number=1, document_path=str(spec)),
+                CitedQuote(text="Sub B", page_number=1, document_path=str(cut)),
+            ],
+            verification_status=VerificationStatus.VERIFIED,
+        )
+    )
+    assert persisted["persisted"] is True
+    return tools, client, str(persisted["finding"]["finding_id"])
+
+
+def test_severity_update_refuses_a_finding_that_is_not_in_the_ledger(tmp_path: Path) -> None:
+    """An annotation call cannot create a severity-only document in the ledger.
+
+    Before this check the method fell back to ``set(..., merge=True)``, which
+    creates the document when it does not exist. A wrong or invented finding ID
+    therefore wrote a findings record carrying a severity and nothing else: no
+    quote, no claim, and no verification status. The run page then had a row in
+    the findings collection that no verified write path produced.
+    """
+    tools, client, _ = _tools_with_one_verified_finding(tmp_path, "run-absent-1")
+    before = dict(client.data[FINDINGS_COLLECTION])
+
+    result = tools.update_finding_severity(
+        "finding-that-was-never-written",
+        Severity.HIGH,
+        model_id="served-model",
+        status="classified",
+    )
+
+    assert result == {"updated": False, "reason": "finding_not_in_ledger"}
+    assert client.data[FINDINGS_COLLECTION] == before
+
+
+def test_severity_update_refuses_a_finding_belonging_to_another_run(tmp_path: Path) -> None:
+    """One run's tools cannot annotate another run's finding."""
+    tools, client, finding_id = _tools_with_one_verified_finding(tmp_path, "run-owner-1")
+    other = AuditTools(
+        firestore_client=client,
+        spec_path=tmp_path / "spec.pdf",
+        cut_sheet_path=tmp_path / "cut.pdf",
+        run_id="run-other-1",
+        output_directory=tmp_path / "artifacts",
+    )
+
+    result = other.update_finding_severity(finding_id, Severity.HIGH, status="classified")
+
+    assert result == {"updated": False, "reason": "finding_not_in_ledger"}
+    assert client.data[FINDINGS_COLLECTION][finding_id]["severity"] == "unclassified"
+
+
+def test_severity_update_refuses_a_record_that_is_not_verified(tmp_path: Path) -> None:
+    """A findings document without a verified status is refused, not annotated."""
+    tools, client, finding_id = _tools_with_one_verified_finding(tmp_path, "run-unverified-1")
+    client.data[FINDINGS_COLLECTION][finding_id]["verification_status"] = "rejected"
+
+    result = tools.update_finding_severity(finding_id, Severity.HIGH, status="classified")
+
+    assert result == {"updated": False, "reason": "finding_not_in_ledger"}
+    assert client.data[FINDINGS_COLLECTION][finding_id]["severity"] == "unclassified"
+
+
+def test_severity_update_records_the_endpoint_label_separately(tmp_path: Path) -> None:
+    """A configured endpoint label is stored under its own field, not as a model ID."""
+    tools, client, finding_id = _tools_with_one_verified_finding(tmp_path, "run-label-1")
+
+    result = tools.update_finding_severity(
+        finding_id,
+        Severity.HIGH,
+        model_id=None,
+        endpoint_label="google-gemma3-gemma-3-1b-it",
+        status="classified",
+    )
+
+    assert result["updated"] is True
+    stored = client.data[FINDINGS_COLLECTION][finding_id]
+    assert stored["severity_model_id"] is None
+    assert stored["severity_endpoint_label"] == "google-gemma3-gemma-3-1b-it"
+
+
 def test_runtime_annotates_persisted_finding_with_severity(tmp_path: Path) -> None:
     """When a claim is verified and persisted, AuditRuntime classifies severity via fake."""
     fake_classifier = FakeSeverityClassifier(severity=Severity.HIGH, model_id="gemma-4-31b-it")

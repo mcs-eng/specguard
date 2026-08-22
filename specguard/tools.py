@@ -252,31 +252,49 @@ class AuditTools:
         model_id: str | None = None,
         status: str | None = None,
         reason: str | None = None,
+        endpoint_label: str | None = None,
     ) -> dict[str, Any]:
-        """Update only severity, provenance, and classification status on a persisted finding.
+        """Update severity fields in place on a finding this run already verified.
 
-        This method updates severity, severity_model_id, severity_status, and
-        severity_reason only. It cannot modify verification_status, rejection_reason,
-        quotes, or claims.
+        This method updates severity, severity_model_id, severity_endpoint_label,
+        severity_status, and severity_reason only. It cannot modify
+        verification_status, rejection_reason, quotes, or claims.
+
+        It reads the finding first and refuses every other case. A document
+        that does not exist, belongs to another run, or does not carry
+        ``verification_status == "verified"`` is refused with
+        ``finding_not_in_ledger``, and nothing is written. Without that read an
+        annotation call would create a severity-only document in the findings
+        collection, which no verified write path can produce and which carries
+        no quote, no claim, and no verification status at all.
         """
         finding_ref = self._firestore.collection(FINDINGS_COLLECTION).document(finding_id)
+        snapshot = finding_ref.get()
+        if not getattr(snapshot, "exists", False):
+            return {"updated": False, "reason": "finding_not_in_ledger"}
+        record = snapshot.to_dict() or {}
+        if (
+            record.get("run_id") != self._run_id
+            or record.get("verification_status") != VerificationStatus.VERIFIED.value
+        ):
+            return {"updated": False, "reason": "finding_not_in_ledger"}
+
         update_data: dict[str, Any] = {
             "severity": (
                 severity.value if isinstance(severity, Severity) else str(severity).lower()
             ),
             "severity_model_id": model_id,
+            "severity_endpoint_label": endpoint_label,
             "severity_status": status,
             "severity_reason": reason,
         }
-        if hasattr(finding_ref, "update"):
-            finding_ref.update(update_data)
-        else:
-            finding_ref.set(update_data, merge=True)
+        finding_ref.update(update_data)
         return {
             "updated": True,
             "finding_id": finding_id,
             "severity": update_data["severity"],
             "severity_model_id": model_id,
+            "severity_endpoint_label": endpoint_label,
             "severity_status": status,
             "severity_reason": reason,
         }
