@@ -1836,7 +1836,7 @@ Every name, value, and organization is invented. Nothing from any real project, 
 
 The build session reported `ruff` exit 0; that covered `uv run ruff check .` only. `uv run ruff format --check .` exited 1 on the two new modules. Both were reformatted in `fa80754` with no semantic change; the byte-identity test proves the generator output did not move.
 
-Two working-copy files in the worktree (`fixtures/build_fixtures.py`, `tests/test_fixtures.py`, plus `fixtures/MANIFEST.md`) carried mixed CRLF and LF endings after the build session. The committed blobs are LF-only, because `core.autocrlf=true` normalizes on commit, so nothing in history is affected. The working copies were re-checked out to a single ending.
+Three working-copy files in the worktree (`fixtures/build_fixtures.py`, `tests/test_fixtures.py`, `fixtures/MANIFEST.md`) carried mixed CRLF and LF endings after the build session. The committed blobs are LF-only, because `core.autocrlf=true` normalizes on commit, so nothing in history is affected. The working copies were re-checked out to a single ending.
 
 ### Local quality-gate receipts
 
