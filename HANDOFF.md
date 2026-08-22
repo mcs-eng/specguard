@@ -1350,6 +1350,7 @@ Every row below is either `FIXED` with its commit or `ACCEPTED` with its reason 
 | P7b | Sub-point glyphs can carry text no reader can read. | FIXED — `d421262` flags any span whose effective size is below 1.0 pt, matrix scaling included; disclosed in README.md, Detected (and how). |
 | P7b | Text placed outside the media box is invisible to the screen. | ACCEPTED — MuPDF drops those glyphs from every extraction path; disclosed in README.md, Not detected (and why). |
 | P7b | A content-stream string operand is rendered as Latin-1, which a subset-encoded font does not honour. | ACCEPTED — the rule's claim is the render mode, read from the operator; disclosed in README.md, Not detected (and why). |
+| P7b | A fill-and-stroke mode 2 span with a transparent fill and a painting stroke is flagged although a reader can see it. | ACCEPTED — MuPDF reports mode 2 with the filled flag alone; the rule errs toward the disclosure and the bias is pinned by `test_a_stroke_that_paints_under_a_transparent_fill_is_still_flagged`. |
 | P4 | The passphrase is checked after multipart parsing. | ACCEPTED — multipart form fields require parsing first and Cloud Run bounds request size; disclosed in Phase 5 review. |
 | P4 | Browser-side file checks are advisory. | ACCEPTED — server validation remains authoritative; disclosed in Phase 5 UI pass. |
 | P4 | Cloud Run concurrency is a steady-state target, not an instant-wide maximum. | ACCEPTED — deploys or traffic splits can overlap instances; disclosed in README.md, Service limits. |
@@ -1678,5 +1679,127 @@ Every finding from the three external reviews is on the board in `README.md`, `F
 | `7283956` | Name the fix commits in the Phase 7a board rows |
 | `c0a380e` | Apply the three Codex review findings |
 | `fcb2ab7` | Record the generated test count for the review corrections |
+
+Nothing was pushed, merged, or opened as a pull request.
+
+
+## Phase 7b — widen the text-layer integrity screen from one detector to five
+
+Date: 2026-08-22. Scope: the bounded Phase 7b work order. The gate contract, the audit prompts, `specguard/gate.py`, and the five committed fixture PDFs are unchanged. `PLAN.md` is unchanged. Fixture *builders* were added in `tests/fixtures_pdf.py` for the new detectors, as the work order permits.
+
+### Housekeeping: the Firestore TTL policy
+
+`GET /` records one upload submission token per render with a one-hour expiry. Without a TTL policy those records accumulate. The command README lists under Service limits was run on arya (PowerShell):
+
+```powershell
+gcloud firestore fields ttls update expires_at --collection-group=upload_submission_tokens --enable-ttl --project=specguard-hack
+```
+
+Exit code 0. The command waited on the field operation and returned `Updated field [expires_at]` with `ttlConfig: state: ACTIVE` on `projects/specguard-hack/databases/(default)/collectionGroups/upload_submission_tokens/fields/expires_at`. The same receipt is in `SETUP.md`, which `.gitignore` keeps untracked, so it is repeated here.
+
+This is a cleanup guarantee, not an access-control one. `POST /audit` already refuses an expired token before Firestore removes the record.
+
+### The five detectors
+
+Every flag now carries a `detector` name and a one-line `evidence` string. A flag from any rule quarantines the run on exactly the terms a render-mode-3 flag did; no rule ranks above another.
+
+| Detector | Rule | Known-bad test | Near-miss test |
+| --- | --- | --- | --- |
+| `render_mode_3` | Characters neither filled nor stroked. Unchanged from P3.5. | `test_altered_fixture_is_flagged_on_the_expected_page` | `test_a_stroked_only_span_is_not_flagged` |
+| `zero_alpha` | A painting, unclipped span whose alpha is 0. MuPDF reports the fill alpha for a filled span and the stroke alpha for a stroke-only one. | `test_zero_fill_alpha_is_flagged`, `test_a_transparent_stroke_only_span_is_flagged` | `test_a_faint_but_painted_span_is_not_flagged`, `test_a_painted_stroke_only_span_is_not_flagged` |
+| `sub_visible_glyph` | Effective span size below 1.0 pt. MuPDF reports `size` after the text matrix is applied. | `test_a_sub_point_glyph_is_flagged`, `test_a_matrix_scaled_glyph_is_flagged` | `test_a_one_point_glyph_is_not_flagged`, `test_a_text_matrix_that_does_not_shrink_is_not_flagged` |
+| `content_stream_render_mode` | The page's content streams are tokenized and `Tr` is tracked across `q`/`Q` and across `Do` into Form XObjects. Text shown under mode 3 or 7 is flagged. | `test_clip_only_render_mode_seven_is_flagged`, `test_the_content_stream_scan_follows_a_form_xobject` | `test_a_filled_and_clipped_render_mode_is_not_flagged`, `test_text_clipped_by_a_path_is_not_flagged` |
+| `out_of_crop_box` | Each cropped page is re-read from a second snapshot whose crop box is widened to the media box; a span not intersecting the original crop box is flagged. | `test_text_outside_the_crop_box_is_flagged` | `test_a_span_partly_inside_the_crop_box_is_not_flagged` |
+
+**PyMuPDF exposes span alpha.** The installed version is 1.28.2 (MuPDF 1.28.2), and `page.get_text("dict")` carries `alpha` on every span, on a 0-255 scale. The `zero_alpha` rule reads it directly; no content-stream fallback was needed. `test_pymupdf_exposes_span_alpha` fails if a later version stops exposing it.
+
+**Why mode 7 needs the content stream.** MuPDF records render modes 4, 5, and 6 as two spans — one painted, one clipped with `char_flags=80` and `alpha=0` — and mode 7 as the clipped span alone. The character flags for the clipped span are identical in all four cases, which is the limitation P3.5 recorded. The content-stream scan reads the mode from the `Tr` operator, so it separates them. Where a mode-7 finding pairs with an unpaired clipped span, the flag carries that span's exact text; otherwise it carries the raw string operand rendered as Latin-1.
+
+**Mode-3 suppression.** A content-stream mode-3 flag is suppressed on a page the span rule already reported, because both rules describe the same concealment and the span rule carries the richer evidence. This is why the altered fixture still reports exactly its two render-mode-3 spans and nothing else.
+
+### What stays undetected, and why
+
+`render_mode_3` aside, two gaps stay open on purpose rather than for lack of effort. White or near-background text and text under a covering shape both need the colour of whatever is painted behind the text, which needs a raster comparison this screen does not make. Real cut sheets set white text on dark header boxes and carry redaction bars, so a heuristic there would quarantine honest documents. Rasterized text stays out because the screen runs no OCR, by design. Text outside the media box is dropped by MuPDF from every extraction path the screen can reach. Each is pinned by its own test and listed in README under "Not detected (and why)".
+
+The claim wording did not move: the screen narrows the text-layer gap; it does not close it.
+
+### One Codex review and its corrections
+
+One read-only `codex review --base c8363cd` ran after the suite went green. It returned two P1 findings and one P2, all three real defects in this phase's own new code, and all three were corrected in one iteration, `98fa2dd`. No second review ran.
+
+| Finding | Disposition |
+| --- | --- |
+| [P1] An inline image whose body carries a whitespace-delimited `EI` ended the step early, so the remaining pixel bytes ran as operators. A body holding `0 Tr` reset the tracked mode while the renderer stayed in mode 7, and clip-only text after it screened clean. Codex proved it with a working page. | CORRECTED. An unfiltered image's exact length is computed from its own `/W`, `/H`, `/BPC`, `/CS`, or `/IM`. A filtered image has no computable length; the `EI` fallback stays, and when a hiding mode is in effect at such an image the scan flags the uncertainty instead of resolving it in the document's favour. |
+| [P1] Stroke-only render mode 1 at stroke alpha 0 paints no ink. MuPDF reports it with the stroked flag and alpha 0, and the rule required the filled flag, so it missed the case. | CORRECTED. The rule now reads any painting, unclipped span whose alpha is 0. One conservative bias comes with it and is disclosed: MuPDF reports fill-and-stroke mode 2 with the filled flag alone, so a mode-2 span with a transparent fill and a painting stroke is flagged though a reader can see it. Named in the module docstring and in README, pinned by `test_a_stroke_that_paints_under_a_transparent_fill_is_still_flagged`. |
+| [P2] Every `Do` rescanned the referenced Form XObject. The path set stopped cycles but not repeated sibling invocations, so forms invoking siblings many times expanded without bound. | CORRECTED. Each `(form, inherited render mode)` pair is scanned once per page, and a `Tr` operand outside 0 to 7 is ignored, which bounds the cache key space to eight modes. Rescanning a pair can add no evidence the first scan did not. |
+
+The inline-image fix was mutation-checked by hand. Forcing `_inline_image_data_length` to return `None` failed `test_an_unfiltered_inline_image_cannot_forge_its_own_end` with `'(an inline image body of undetermined extent)' != 'Clip only line.'`. The mutant page was still flagged, through the new uncertainty disclosure, which is the defence-in-depth the second layer exists for. The mutation was reverted.
+
+### Local quality-gate receipts
+
+All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `450 passed, 2 warnings`. The suite was 414 tests at `c8363cd`. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `48 files already formatted`. |
+| `git diff --check` | 0 | No whitespace errors. |
+| `codex review --base c8363cd` | 0 | Two P1 findings and one P2; all three corrected in `98fa2dd`. No second review ran. |
+| `uv run pytest tests/test_integrity.py::test_no_committed_fixture_trips_a_new_detector -v` | 0 | `5 passed`. All five committed fixtures, one case each. |
+
+**The five-fixture false-positive check.** `test_no_committed_fixture_trips_a_new_detector` asserts that no fixture trips a detector added in this phase. The four originals produce zero flags. The altered fixture produces `detectors == ['render_mode_3']` and nothing else, so widening the screen did not widen what that fixture reports. A pre-check before any code was written confirmed why: the smallest font in any fixture is 5.5 pt, every span reports alpha 255 except the altered fixture's two mode-3 spans, `Tr` appears only in the altered fixture and only as `3`, no fixture carries a Form XObject, and no fixture page has a crop box that differs from its media box.
+
+### Deployment receipts
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `.\deploy-specguard.ps1` | 0 | `Service [specguard] revision [specguard-00024-nst] has been deployed and is serving 100 percent of traffic.` |
+
+The public judge URL remains `https://specguard-108657628939.us-central1.run.app`.
+
+### Live receipts
+
+**A. A new known-bad fixture through `run_audit.py`.** A clip-only mode 7 cut sheet was generated with `write_render_mode_pdf` into the session scratchpad, then audited against the committed Asterquay specification. `uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet <scratchpad>\clip_only_cut_sheet.pdf` exited 0 and printed:
+
+```
+RUN SUMMARY
+run id: baa2efee974f473ab2e651eaaad2ed40
+QUARANTINED: text_layer_integrity_screen
+no model call was made for this run
+  document: submitted_document
+    SHA-256: 303a7d677d4335d6eb4dca29c8b6061332b0e891d59ae0969e9f6564ceea3747
+    pages screened: 1
+    flagged pages: [1]
+    detectors: content_stream_render_mode
+    hidden spans: 1
+    integrity record: L5GMl5dxN1p7P1GM6YIr
+claims made: 0
+rejected: 0
+retried: 0
+findings persisted: 0
+audit model usage: No audit model call was made because the integrity screen quarantined this run.
+RFI path: not generated
+```
+
+A read-only Firestore query on that run id returned exit 0 with `integrity_findings = 1`, `findings = 0`, `rejections = 0`. The stored record carried `screen_id=text_layer_integrity_v2`, `detectors=['content_stream_render_mode']`, `char_flags=80`, the evidence line naming render mode 7 and the unpaired clipped span, and no local path key. This is the detector that did not exist before this phase, quarantining a real run.
+
+**B. The deployed service names the detector and the evidence.** `POST /sample/veylan-altered` returned `303` to run `620ec10560d242d287ff84ab1da754f7`. Its page returned HTTP 200 and carries `submitted_document flagged by <code>render_mode_3</code>` in the quarantine notice, `detectors: <code>render_mode_3</code>` beside the document hash, and a per-flag table with `Detector` and `Evidence` columns holding `Characters are neither filled nor stroked (char_flags=0), which is PDF text render mode 3.` for both hidden spans. `GET /runs/620ec10560d242d287ff84ab1da754f7/export.json` returned HTTP 200 with `screen_id: text_layer_integrity_v2`, `detectors: ["render_mode_3"]`, and `detector` plus `evidence` on each span.
+
+**C. No live false positive on a clean fixture.** `POST /sample/veylan-208v` returned `303` to run `669386b6384e4ab6aad9f2ee5263db5a`. Its export returned HTTP 200 with `integrity_records = 0` and `findings = 1`, so the widened screen let an honest fixture through to the model exactly as before.
+
+**Not receipted live: a new detector on the deployed service.** The four public sample cases are the committed fixtures, and only the altered one flags, on `render_mode_3`. Reaching a new detector through the web path needs an upload behind the demo passphrase, which this session did not use. Receipt A covers a new detector end to end through the same runtime the web path calls, and `test_a_zero_alpha_document_quarantines_the_run_end_to_end` and `test_a_clip_only_document_quarantines_the_run_end_to_end` pin the runtime behaviour with no model call, no message built, and the sentinel absent.
+
+### Board
+
+The README and HANDOFF boards move with the code. Clip-only mode 7, zero alpha, and out-of-crop-box text become `FIXED` against `d421262`. Four rows are added: sub-point glyphs `FIXED`, and three `ACCEPTED` rows for what widening the screen did not reach — text outside the media box, the Latin-1 rendering of a raw content-stream operand, and the mode-2 zero-fill-alpha bias. White-on-white text and covering rectangles keep their own `ACCEPTED` row with the reason restated.
+
+### Local commits
+
+| Commit | Subject |
+| --- | --- |
+| `d421262` | Widen the text-layer integrity screen from one detector to five |
+| `7c19ce7` | Rewrite the integrity disclosure as Detected and Not detected |
+| `98fa2dd` | Apply the three Codex review findings |
 
 Nothing was pushed, merged, or opened as a pull request.
