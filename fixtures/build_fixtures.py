@@ -1145,7 +1145,8 @@ def _draw_messy_spec_page(
     section_title: str,
     part_title: str,
     paragraphs: list[tuple[str, list[str]]],
-    tables: list[tuple[str, tuple[str, ...], list[tuple[str, ...]], tuple[float, ...]]] | None = None,
+    tables: list[tuple[str, tuple[str, ...], list[tuple[str, ...]], tuple[float, ...]]]
+    | None = None,
 ) -> None:
     """Add one numbered specification page with paragraphs and optional tables."""
     page = doc.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
@@ -1159,9 +1160,7 @@ def _draw_messy_spec_page(
     )
     y = 102.0
     for heading, lines in paragraphs:
-        page.insert_text(
-            (LEFT_MARGIN, y), heading, fontname="hebo", fontsize=8.8, color=TEXT_DARK
-        )
+        page.insert_text((LEFT_MARGIN, y), heading, fontname="hebo", fontsize=8.8, color=TEXT_DARK)
         y += 13.0
         for line in lines:
             page.insert_text(
@@ -1320,14 +1319,18 @@ def _draw_messy_spec_cover(doc: pymupdf.Document) -> None:
     y = 229.0
     for code, title, pages in toc_rows:
         page.insert_text((LEFT_MARGIN + 5, y), code, fontname="hebo", fontsize=8.0, color=TEXT_DARK)
-        page.insert_text((LEFT_MARGIN + 72, y), title, fontname="helv", fontsize=8.0, color=TEXT_DARK)
+        page.insert_text(
+            (LEFT_MARGIN + 72, y), title, fontname="helv", fontsize=8.0, color=TEXT_DARK
+        )
         page.draw_line(
             (LEFT_MARGIN + 330, y - 2),
             (RIGHT_MARGIN - 78, y - 2),
             color=(0.86, 0.86, 0.86),
             width=0.5,
         )
-        page.insert_text((RIGHT_MARGIN - 66, y), pages, fontname="hebo", fontsize=8.0, color=TEXT_MUTED)
+        page.insert_text(
+            (RIGHT_MARGIN - 66, y), pages, fontname="hebo", fontsize=8.0, color=TEXT_MUTED
+        )
         y += 17.0
 
     page.draw_rect(

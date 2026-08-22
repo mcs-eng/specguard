@@ -19,9 +19,7 @@ MANIFEST_PATH = FIXTURE_DIRECTORY / "MANIFEST.md"
 MESSY_SPECIFICATION = "nimbrin_thermal_annex_specification.pdf"
 MESSY_PACKAGE = "zarqelune_vantrel_package.pdf"
 MESSY_PDF_NAMES = (MESSY_SPECIFICATION, MESSY_PACKAGE)
-EVIDENCE_PATTERN = re.compile(
-    r"<!-- fixture-evidence-messy\s*(\[.*?\])\s*-->", re.DOTALL
-)
+EVIDENCE_PATTERN = re.compile(r"<!-- fixture-evidence-messy\s*(\[.*?\])\s*-->", re.DOTALL)
 EVAL_CASES_PATTERN = re.compile(r"<!-- eval-cases-messy\s*(\[.*?\])\s*-->", re.DOTALL)
 
 
