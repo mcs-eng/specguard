@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -125,6 +125,9 @@ GATE_DEFAULT_FIXTURE = "specification"
 GATE_DEFAULT_PAGE = 5
 GATE_DEFAULT_QUOTE = "Conductor terminations shall be rated 90 deg C minimum."
 
+#: Shown when the committed fixtures could not be read at import.
+GATE_FIXTURES_UNAVAILABLE = "The gate fixtures are unavailable on this instance."
+
 #: Two one-click inputs that the gate refuses, so a reader sees a rejection
 #: without composing one. Each changes exactly one thing about the passing
 #: example above.
@@ -144,6 +147,25 @@ GATE_NEAR_MISSES = (
         "quote": GATE_DEFAULT_QUOTE,
     },
 )
+
+
+def _default_gate_result() -> dict[str, Any] | None:
+    """Verify the prefilled example once, at import, from a committed fixture.
+
+    ``GET /gate`` is a public route with no counter, so it must not open a PDF
+    per request. The example is fixed, the fixture is committed, and the gate
+    is deterministic, so the verdict is the same on every request and is
+    computed here rather than there. A fixture this instance cannot read
+    yields ``None``, and the page says so instead of failing to start.
+    """
+    selected = GATE_FIXTURES[GATE_DEFAULT_FIXTURE]
+    try:
+        result = gate.verify_quote(
+            GATE_DEFAULT_QUOTE, GATE_DEFAULT_PAGE, FIXTURES_DIRECTORY / selected.filename
+        )
+    except Exception:
+        return None
+    return _gate_result_view(result, selected)
 
 
 @dataclass(frozen=True)
@@ -283,36 +305,52 @@ def create_app(services: WebServices | None = None) -> FastAPI:
         return _render_index(request, app.state.services)
 
     @app.get("/gate")
-    def gate_playground(
+    def gate_playground(request: Request) -> Response:
+        """Show the gate playground and the verdict for its prefilled example.
+
+        This route reads no query string, opens no PDF, and touches no
+        Firestore counter. The default verdict was computed once, at import,
+        from a committed fixture, so serving this page costs one template
+        render. A check on a reader's own values is a POST.
+        """
+        return _render_gate(
+            request,
+            fixture_id=GATE_DEFAULT_FIXTURE,
+            page_text=str(GATE_DEFAULT_PAGE),
+            quote_text=GATE_DEFAULT_QUOTE,
+            result=GATE_DEFAULT_RESULT,
+            error=None if GATE_DEFAULT_RESULT is not None else GATE_FIXTURES_UNAVAILABLE,
+        )
+
+    @app.post("/gate")
+    def gate_check(
         request: Request,
-        fixture: Annotated[str, Query()] = "",
-        page: Annotated[str, Query()] = "",
-        quote: Annotated[str, Query()] = "",
+        fixture: Annotated[str, Form()] = "",
+        page: Annotated[str, Form()] = "",
+        quote: Annotated[str, Form()] = "",
     ) -> Response:
         """Run ``specguard.gate.verify_quote`` against one committed fixture.
 
         This route calls the same function the runtime calls at write time. It
-        makes no model call, writes no record, and needs no passphrase. A
-        request that supplies its own input reserves one durable per-address
-        slot; the default example costs nothing.
+        makes no model call, writes no record, and needs no passphrase. Each
+        check reserves one durable per-address slot.
+
+        A submitted request is answered on its own values only. Filling a blank
+        field from the default example would answer a question the reader did
+        not ask, and would report a verdict for the wrong input.
         """
         app_services: WebServices = app.state.services
-        submitted = bool(request.query_params)
-        if submitted:
-            now = datetime.now(UTC)
-            if not app_services.repository.reserve_gate_check(
-                hour=now.strftime("%Y-%m-%dT%H:00Z"),
-                client_ip=_client_ip(request),
-                hourly_limit=GATE_CHECKS_PER_IP_HOUR,
-            ):
-                return _gate_limit_response(request)
+        now = datetime.now(UTC)
+        if not app_services.repository.reserve_gate_check(
+            hour=now.strftime("%Y-%m-%dT%H:00Z"),
+            client_ip=_client_ip(request),
+            hourly_limit=GATE_CHECKS_PER_IP_HOUR,
+        ):
+            return _gate_limit_response(request)
 
-        # A submitted request is answered on its own values only. Filling a
-        # blank field from the default example would answer a question the
-        # reader did not ask, and would report a verdict for the wrong input.
-        fixture_id = fixture if submitted else GATE_DEFAULT_FIXTURE
-        page_text = page if submitted else str(GATE_DEFAULT_PAGE)
-        quote_text = quote if submitted else GATE_DEFAULT_QUOTE
+        fixture_id = fixture
+        page_text = page
+        quote_text = quote
 
         error = _gate_input_error(fixture_id, page_text, quote_text)
         if error is not None:
@@ -1314,5 +1352,9 @@ def _render_index(
         status_code=status_code,
     )
 
+
+#: The verdict ``GET /gate`` serves, verified once at import. See
+#: :func:`_default_gate_result`.
+GATE_DEFAULT_RESULT = _default_gate_result()
 
 app = create_app()

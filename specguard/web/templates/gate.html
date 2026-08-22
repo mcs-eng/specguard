@@ -27,11 +27,11 @@
     <h2>Gate playground</h2>
     <p>Check any quote against any page of the committed fixtures.</p>
   </div>
-  <p class="lede">This page calls <code>specguard.gate.verify_quote</code> — the same function the runtime calls before a finding reaches the ledger, and again at write time inside <code>persist_finding</code>, and again before the RFI renders. No model runs here. Nothing is stored. No passphrase is needed.</p>
+  <p class="lede">This page calls <code>specguard.gate.verify_quote</code> — the same function the runtime calls before a finding reaches the ledger, and again at write time inside <code>persist_finding</code>, and again before the RFI renders. No model runs here. No claim record is stored. No passphrase is needed. A check is a POST, because it does work and it counts against a per-address budget; loading this page is a GET and does neither.</p>
   {% if error %}
   <div class="notice stop" role="alert"><strong>{{ error }}</strong></div>
   {% endif %}
-  <form id="gate-form" action="/gate" method="get">
+  <form id="gate-form" action="/gate" method="post">
     <div class="gate-grid">
       <label class="field" for="gate-fixture">
         <span>Fixture</span>
@@ -64,14 +64,19 @@
   <ul class="near-misses">
     {% for near_miss in near_misses %}
     <li>
-      <a href="/gate?fixture={{ near_miss.fixture | urlencode }}&amp;page={{ near_miss.page }}&amp;quote={{ near_miss.quote | urlencode }}">{{ near_miss.label }}</a>
+      <form action="/gate" method="post">
+        <input type="hidden" name="fixture" value="{{ near_miss.fixture }}">
+        <input type="hidden" name="page" value="{{ near_miss.page }}">
+        <input type="hidden" name="quote" value="{{ near_miss.quote }}">
+        <button type="submit">{{ near_miss.label }}</button>
+      </form>
       <span class="muted">{{ near_miss.note }}</span>
       <q class="quote">{{ near_miss.quote }}</q>
       <span class="locator">Cited to page {{ near_miss.page }}</span>
     </li>
     {% endfor %}
   </ul>
-  <p class="muted note">The passing example is <q>{{ default_quote }}</q> on page {{ default_page }} of the specification. <a href="/gate">Reset to it.</a></p>
+  <p class="muted note">The passing example is <q>{{ default_quote }}</q> on page {{ default_page }} of the specification, and it is the verdict this page shows before you submit anything. <a href="/gate">Reset to it.</a></p>
 </section>
 <style>
   .gate-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
@@ -91,19 +96,20 @@
   .verdict-bad { border-left-color: var(--bad-line); }
   .near-misses { display: grid; gap: .9rem; margin: 0; padding: 0; list-style: none; }
   .near-misses li { display: grid; gap: .3rem; border: 1px solid var(--line-soft); border-radius: .45rem; background: var(--field); padding: .8rem .9rem; }
-  .near-misses a { justify-self: start; border: 1px solid var(--accent); border-radius: .35rem; padding: .45rem .8rem; margin-bottom: .15rem; font-weight: 700; text-decoration: none; transition: transform 160ms var(--ease-out), background-color 160ms var(--ease-out), color 160ms var(--ease-out); }
-  .near-misses a:active { transform: scale(0.97); }
-  .near-misses a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .near-misses form { margin: 0; }
+  .near-misses button { justify-self: start; border: 1px solid var(--accent); border-radius: .35rem; background: var(--surface); color: var(--accent); padding: .45rem .8rem; margin-bottom: .15rem; font: inherit; font-weight: 700; cursor: pointer; transition: transform 160ms var(--ease-out), background-color 160ms var(--ease-out), color 160ms var(--ease-out); }
+  .near-misses button:active { transform: scale(0.97); }
+  .near-misses button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .near-misses .muted { font-size: .88rem; }
   @media (hover: hover) and (pointer: fine) {
     #gate-submit:hover { filter: brightness(1.12); }
-    .near-misses a:hover { background: var(--accent); color: var(--on-accent); }
+    .near-misses button:hover { background: var(--accent); color: var(--on-accent); }
   }
   @media (prefers-reduced-motion: reduce) {
     #gate-submit { transition: background-color 160ms ease; }
     #gate-submit:active { transform: none; }
-    .near-misses a { transition: background-color 160ms ease, color 160ms ease; }
-    .near-misses a:active { transform: none; }
+    .near-misses button { transition: background-color 160ms ease, color 160ms ease; }
+    .near-misses button:active { transform: none; }
   }
 </style>
 {% endblock %}

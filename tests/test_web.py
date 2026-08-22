@@ -17,8 +17,12 @@ from fastapi.testclient import TestClient
 from specguard import gate
 from specguard.models import AuditRunSummary, DocumentRole, QuarantinedDocument, RunQuarantine
 from specguard.tools import QUOTES_VERIFIED_MEANING
+from specguard.web import app as app_module
 from specguard.web.app import (
     GATE_CHECKS_PER_IP_HOUR,
+    GATE_DEFAULT_PAGE,
+    GATE_DEFAULT_QUOTE,
+    GATE_DEFAULT_RESULT,
     MAX_UPLOAD_BYTES,
     QUOTE_CONTEXT_CACHE_SIZE,
     SAMPLE_RUNS_PER_UTC_DAY,
@@ -1542,9 +1546,9 @@ def test_gate_playground_reports_the_page_count_and_no_rejection_reason() -> Non
 def test_gate_playground_rejects_one_changed_digit() -> None:
     client, _, _, _ = _client()
 
-    response = client.get(
+    response = client.post(
         "/gate",
-        params={
+        data={
             "fixture": "specification",
             "page": str(SPEC_QUOTE_PAGE),
             "quote": "Conductor terminations shall be rated 80 deg C minimum.",
@@ -1559,8 +1563,8 @@ def test_gate_playground_rejects_one_changed_digit() -> None:
 def test_gate_playground_rejects_a_real_quote_cited_to_the_wrong_page() -> None:
     client, _, _, _ = _client()
 
-    response = client.get(
-        "/gate", params={"fixture": "specification", "page": "4", "quote": SPEC_QUOTE}
+    response = client.post(
+        "/gate", data={"fixture": "specification", "page": "4", "quote": SPEC_QUOTE}
     )
 
     assert "REJECTED" in response.text
@@ -1570,8 +1574,8 @@ def test_gate_playground_rejects_a_real_quote_cited_to_the_wrong_page() -> None:
 def test_gate_playground_reports_a_page_outside_the_document() -> None:
     client, _, _, _ = _client()
 
-    response = client.get(
-        "/gate", params={"fixture": "specification", "page": "99", "quote": SPEC_QUOTE}
+    response = client.post(
+        "/gate", data={"fixture": "specification", "page": "99", "quote": SPEC_QUOTE}
     )
 
     assert "REJECTED" in response.text
@@ -1581,9 +1585,9 @@ def test_gate_playground_reports_a_page_outside_the_document() -> None:
 def test_gate_playground_shows_the_normalized_quote_the_gate_compared() -> None:
     client, _, _, _ = _client()
 
-    response = client.get(
+    response = client.post(
         "/gate",
-        params={"fixture": "specification", "page": "5", "quote": "  CONDUCTOR   TERMINATIONS  "},
+        data={"fixture": "specification", "page": "5", "quote": "  CONDUCTOR   TERMINATIONS  "},
     )
 
     assert gate.normalize("  CONDUCTOR   TERMINATIONS  ") in response.text
@@ -1604,9 +1608,9 @@ def test_the_gate_verdict_card_is_coloured_by_its_own_outcome() -> None:
     client, _, _, _ = _client()
 
     verified = client.get("/gate").text
-    rejected = client.get(
+    rejected = client.post(
         "/gate",
-        params={"fixture": "specification", "page": "4", "quote": SPEC_QUOTE},
+        data={"fixture": "specification", "page": "4", "quote": SPEC_QUOTE},
     ).text
 
     assert "card verdict verdict-ok" in verified
@@ -1622,13 +1626,66 @@ def test_gate_playground_lists_both_one_click_near_misses() -> None:
 
     assert "One digit changed: 90 becomes 80" in body
     assert "Right quote, wrong page: cited to page 4" in body
-    assert "page=4" in body
+    assert body.count('<form action="/gate" method="post">') == 2
+    assert '<input type="hidden" name="page" value="4">' in body
+
+
+def test_a_gate_get_parses_no_pdf_and_reserves_no_slot() -> None:
+    """The public GET route serves a verdict computed once, at import.
+
+    Before this, every GET of ``/gate`` opened and parsed a committed PDF, and
+    a GET carrying a query string also spent one per-address slot. The route
+    now reads no query string, calls the gate no times, and touches no counter.
+    """
+    client, repository, _, _ = _client()
+    calls: list[tuple[Any, ...]] = []
+    original = gate.verify_quote
+
+    def counted(*arguments: Any, **keywords: Any) -> Any:
+        calls.append(arguments)
+        return original(*arguments, **keywords)
+
+    app_module.gate.verify_quote = counted  # type: ignore[attr-defined]
+    try:
+        first = client.get("/gate")
+        second = client.get("/gate", params={"fixture": "caldra", "page": "1", "quote": "x"})
+    finally:
+        app_module.gate.verify_quote = original  # type: ignore[attr-defined]
+
+    assert calls == []
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert "VERIFIED" in first.text
+    assert first.text == second.text
+    assert repository.gate_checks_by_hour_ip == {}
+
+
+def test_a_gate_post_still_reserves_one_slot_per_check() -> None:
+    """A check does real work on the reader's own values, so it is counted."""
+    client, repository, _, _ = _client()
+
+    response = client.post(
+        "/gate", data={"fixture": "specification", "page": "5", "quote": SPEC_QUOTE}
+    )
+
+    assert response.status_code == 200
+    assert "VERIFIED" in response.text
+    assert sum(repository.gate_checks_by_hour_ip.values()) == 1
+
+
+def test_the_gate_default_verdict_is_the_committed_passing_example() -> None:
+    """The precomputed verdict describes the example the page prefills."""
+    assert GATE_DEFAULT_RESULT is not None
+    assert GATE_DEFAULT_RESULT["verified"] is True
+    assert GATE_DEFAULT_RESULT["page_number"] == GATE_DEFAULT_PAGE
+    assert GATE_DEFAULT_RESULT["normalized_quote"] == gate.normalize(GATE_DEFAULT_QUOTE)
+    assert GATE_DEFAULT_RESULT["rejection_reason"] is None
 
 
 def test_gate_playground_refuses_a_fixture_it_does_not_hold() -> None:
     client, _, _, _ = _client()
 
-    response = client.get("/gate", params={"fixture": "some-other-file", "page": "1", "quote": "x"})
+    response = client.post("/gate", data={"fixture": "some-other-file", "page": "1", "quote": "x"})
 
     assert response.status_code == 400
     assert "Choose one of the committed fixtures." in response.text
@@ -1638,8 +1695,8 @@ def test_gate_playground_refuses_a_fixture_it_does_not_hold() -> None:
 def test_gate_playground_refuses_a_page_that_is_not_a_positive_number(page: str) -> None:
     client, _, _, _ = _client()
 
-    response = client.get(
-        "/gate", params={"fixture": "specification", "page": page, "quote": SPEC_QUOTE}
+    response = client.post(
+        "/gate", data={"fixture": "specification", "page": page, "quote": SPEC_QUOTE}
     )
 
     assert response.status_code == 400
@@ -1649,7 +1706,7 @@ def test_gate_playground_refuses_a_page_that_is_not_a_positive_number(page: str)
 def test_gate_playground_refuses_an_empty_quote() -> None:
     client, _, _, _ = _client()
 
-    response = client.get("/gate", params={"fixture": "specification", "page": "5", "quote": "  "})
+    response = client.post("/gate", data={"fixture": "specification", "page": "5", "quote": "  "})
 
     assert response.status_code == 400
     assert "Enter a quote to check." in response.text
@@ -1658,8 +1715,8 @@ def test_gate_playground_refuses_an_empty_quote() -> None:
 def test_gate_playground_never_shows_a_filesystem_path() -> None:
     client, _, _, _ = _client()
 
-    body = client.get(
-        "/gate", params={"fixture": "specification", "page": "5", "quote": SPEC_QUOTE}
+    body = client.post(
+        "/gate", data={"fixture": "specification", "page": "5", "quote": SPEC_QUOTE}
     ).text
 
     assert str(SPECIFICATION_FIXTURE) not in body
@@ -1672,9 +1729,9 @@ def test_gate_playground_limits_checks_per_address_per_hour() -> None:
     params = {"fixture": "specification", "page": "5", "quote": SPEC_QUOTE}
 
     for _ in range(GATE_CHECKS_PER_IP_HOUR):
-        assert client.get("/gate", params=params).status_code == 200
+        assert client.post("/gate", data=params).status_code == 200
 
-    blocked = client.get("/gate", params=params)
+    blocked = client.post("/gate", data=params)
 
     assert blocked.status_code == 429
     assert "The gate playground limit is reached. Try again later." in blocked.text
@@ -1684,7 +1741,7 @@ def test_gate_playground_limits_checks_per_address_per_hour() -> None:
 def test_gate_playground_writes_no_run_and_calls_no_model() -> None:
     client, repository, storage, runner = _client()
 
-    client.get("/gate", params={"fixture": "caldra", "page": "1", "quote": "Caldra"})
+    client.post("/gate", data={"fixture": "caldra", "page": "1", "quote": "Caldra"})
 
     assert repository.runs == {}
     assert storage.objects == {}
@@ -1722,9 +1779,9 @@ def test_a_refused_gate_check_renders_as_a_page_and_offers_no_second_gate() -> N
     client, _, _, _ = _client()
     params = {"fixture": "specification", "page": "5", "quote": SPEC_QUOTE}
     for _ in range(GATE_CHECKS_PER_IP_HOUR):
-        client.get("/gate", params=params)
+        client.post("/gate", data=params)
 
-    response = client.get("/gate", params=params)
+    response = client.post("/gate", data=params)
 
     assert response.status_code == 429
     assert "The gate playground limit is reached. Try again later." in response.text
