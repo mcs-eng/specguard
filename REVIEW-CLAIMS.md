@@ -59,15 +59,18 @@ Each finding names the claim as it stood, the evidence checked, the verdict, and
 
 ## Part 3: Decisions
 
+Mason decided D-2 to D-6 on 2026-08-21 after reading this file. Items marked 6c belong to the Phase 6c work order and its owner, not to this audit.
+
 - D-1 (recommendation, lean): ship HANDOFF.md, REVIEW-P3.md, REVIEW-CLAIMS.md publicly, as edited above.
-- D-2 (Mason decides; lean keep): the Codex and review-session mentions in two commit bodies, HANDOFF.md, REVIEW-P3.md, and four test docstrings. Removing them from the two markdown files is a sed; removing them from commit history is a rewrite and from tests is a code change. The contest rules permit AI coding assistants and require disclosure only of pre-existing code.
-- D-3 (Mason decides): post-shoot state of `SPECGUARD_GEMMA_ENDPOINT` (C-13).
-- D-4 (implementation session): the run-page severity caption (C-14), the `_fetch_secret_from_manager` monkeypatch (C-15), the two unpinned integrity items (C-05), the stale test name (C-16).
-- D-5 (Mason's merge step, before the public flip): push the branch and bring `main` up to it. On arya (PowerShell): `git push -u origin phase-2-demo-fixtures`, then either open a PR and merge it on GitHub, or `git checkout main`, `git merge --ff-only phase-2-demo-fixtures`, `git push origin main`. Then flip the repo public and re-run S-11.
-- D-6 (Mason decides): how judges get the demo passphrase (DEVPOST.md, hosted URL note).
+- D-2 DECIDED, keep: the Codex and review-session mentions in two commit bodies, HANDOFF.md, REVIEW-P3.md, and four test docstrings stay. Section 6 of the rules permits AI assistants; the mentions are honest process records and the review trail is engineering-soundness evidence. No history rewrite.
+- D-3 DECIDED, fix in code, 6c: neither clearing nor keeping `SPECGUARD_GEMMA_ENDPOINT` gives a clear judge-facing reason. 6c records a sentinel reason, "severity endpoint not deployed outside demo windows", on every finding classified while the endpoint is down. The VIDEO-SCRIPT.md teardown note (step 2) and the README Gemma fallback sentence describe the pre-6c behaviour and are 6c's to update when the sentinel lands.
+- D-4 DECIDED, 6c: one advisory caption on the run page plus a test (C-14).
+- D-5 DECIDED: this session pushes `phase-2-demo-fixtures` now for backup (receipt R-17). Mason merges `--ff-only` onto `main` after 6c lands, then re-runs the secret-scanning PATCH (S-11).
+- D-6 DECIDED, dissolved by 6c: judges run the four sample audits on the hosted service without any passphrase; uploads of arbitrary documents stay gated to protect the budget; the passphrase is never published. DEVPOST.md must say exactly that once 6c lands; its current hosted-URL note still carries the pre-6c wording and is 6c's to replace.
 - D-7 (recorded): the Devpost tagline length limit is unverified; the draft tagline is 59 characters.
 - D-8 (recorded): PLAN.md calls the 30 percent criterion "engineering soundness"; the rules page calls it "Architectural Discipline & Tech Stack (30%)". PLAN.md is outside this audit's rights; DEVPOST.md quotes the rules.
 - D-9 (recorded): the README's eval paragraph added in C-08 sits outside the generated block and must be re-read by hand after any future `scripts/eval_fixtures.py` run.
+- Also for 6c, from Part 1: the `_fetch_secret_from_manager` monkeypatch (C-15), the two unpinned integrity items (C-05), the stale test name (C-16).
 
 ## Receipts
 
@@ -91,3 +94,4 @@ All commands ran in the repository root on arya. Every exit code is from the unp
 | R-14 | WebFetch of `https://allthingsagentichackathon.devpost.com/rules`, the hackathon home page, the submission URL, and the Devpost help article "How to enter a submission", 2026-08-21 | n/a | Verbatim items recorded in DEVPOST.md; the submission form is a login wall; the help article states no field limits. |
 | R-15 | Sweep of README.md, DEVPOST.md, VIDEO-SCRIPT.md, LICENSE, HANDOFF.md | see result | N1 key shapes: exit 1. N2 emails: the two contest addresses in DEVPOST.md. N3 AI names: one false positive, reworded. N4 client acronyms, billing, personal: exit 1. N5 hidden-string hits in every prose file: 0. |
 | R-16 | `git pull --ff-only` in `~/dev/claude-memory` | 0 | `Already up to date.` (a worktree-prune permission warning printed first). The specguard repo itself has no upstream on this branch; `git fetch --all --prune` was the freshness check (R-01). |
+| R-17 | `git push -u origin phase-2-demo-fixtures` | see below | Recorded after the push; see the commit that follows this file's last edit. |
