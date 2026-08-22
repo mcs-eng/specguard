@@ -282,7 +282,7 @@ def create_app(services: WebServices | None = None) -> FastAPI:
                 client_ip=_client_ip(request),
                 hourly_limit=GATE_CHECKS_PER_IP_HOUR,
             ):
-                return _gate_limit_response()
+                return _gate_limit_response(request)
 
         # A submitted request is answered on its own values only. Filling a
         # blank field from the default example would answer a question the
@@ -407,7 +407,7 @@ def create_app(services: WebServices | None = None) -> FastAPI:
                 hourly_limit=SAMPLE_RUNS_PER_IP_HOUR,
                 daily_limit=SAMPLE_RUNS_PER_UTC_DAY,
             ):
-                return _sample_limit_response()
+                return _sample_limit_response(request)
             run_id = uuid.uuid4().hex
             try:
                 run = await _run_audit(
@@ -557,13 +557,18 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client is not None else "unknown"
 
 
-def _sample_limit_response() -> Response:
-    """Return the plain rate-limit page for exhausted sample audit budgets."""
-    return Response(
-        "<!doctype html><title>Too Many Requests</title><h1>Too many sample audits</h1>"
-        "<p>The sample audit limit is reached. Try again later.</p>",
-        media_type="text/html",
-        status_code=429,
+def _sample_limit_response(request: Request) -> Response:
+    """Return the rate-limit page for exhausted sample audit budgets.
+
+    A refusal page that renders unstyled reads as a broken service rather than
+    as a budget limit, so this one uses the same shell as every other page and
+    points the reader at the gate playground, which needs no model call.
+    """
+    return _render_limit(
+        request,
+        heading="Too many sample audits",
+        detail="The sample audit limit is reached. Try again later.",
+        offer_gate=True,
     )
 
 
@@ -814,12 +819,22 @@ def _gate_result_view(result: Any, selected: GateFixture) -> dict[str, Any]:
     }
 
 
-def _gate_limit_response() -> Response:
-    """Return the plain rate-limit page for exhausted gate-playground budgets."""
-    return Response(
-        "<!doctype html><title>Too Many Requests</title><h1>Too many gate checks</h1>"
-        "<p>The gate playground limit is reached. Try again later.</p>",
-        media_type="text/html",
+def _gate_limit_response(request: Request) -> Response:
+    """Return the rate-limit page for exhausted gate-playground budgets."""
+    return _render_limit(
+        request,
+        heading="Too many gate checks",
+        detail="The gate playground limit is reached. Try again later.",
+        offer_gate=False,
+    )
+
+
+def _render_limit(request: Request, *, heading: str, detail: str, offer_gate: bool) -> Response:
+    """Render one refused request as a page, not as a bare browser default."""
+    return templates.TemplateResponse(
+        request=request,
+        name="limit.html",
+        context={"heading": heading, "detail": detail, "offer_gate": offer_gate},
         status_code=429,
     )
 

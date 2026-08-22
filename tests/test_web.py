@@ -1445,6 +1445,44 @@ def test_gate_playground_writes_no_run_and_calls_no_model() -> None:
 # --- 6. Page explainer ---------------------------------------------------
 
 
+def test_every_page_offers_the_gate_playground_from_its_masthead() -> None:
+    """A reader who lands on a run page has no other path to the gate."""
+    client, _, _ = _fixture_run_client()
+
+    for path in ("/", "/gate", f"/runs/{FIXTURE_RUN_ID}"):
+        body = client.get(path).text
+        assert '<nav aria-label="Sections"><a href="/gate">Gate playground</a></nav>' in body
+
+
+def test_a_refused_sample_audit_renders_as_a_page_not_a_browser_default() -> None:
+    """A refusal that renders unstyled reads as a broken service."""
+    client, _, _, _ = _client()
+    for _ in range(6):
+        client.post("/sample/caldra", follow_redirects=False)
+
+    response = client.post("/sample/caldra", follow_redirects=False)
+
+    assert response.status_code == 429
+    assert "The sample audit limit is reached. Try again later." in response.text
+    assert "SpecGuard" in response.text
+    assert "This is a budget limit on a demo service, not an error." in response.text
+    assert 'href="/gate"' in response.text
+
+
+def test_a_refused_gate_check_renders_as_a_page_and_offers_no_second_gate() -> None:
+    client, _, _, _ = _client()
+    params = {"fixture": "specification", "page": "5", "quote": SPEC_QUOTE}
+    for _ in range(GATE_CHECKS_PER_IP_HOUR):
+        client.get("/gate", params=params)
+
+    response = client.get("/gate", params=params)
+
+    assert response.status_code == 429
+    assert "The gate playground limit is reached. Try again later." in response.text
+    assert "This is a budget limit on a demo service, not an error." in response.text
+    assert "Run the gate yourself instead" not in response.text
+
+
 def test_every_button_a_judge_presses_answers_the_press() -> None:
     """A pressable control with no active state reads as unresponsive."""
     client, _, _, _ = _client()
