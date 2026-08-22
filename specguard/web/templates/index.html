@@ -56,11 +56,19 @@
     <h2>Run a sample audit</h2>
     <p>Each sample uses committed fictional PDFs. No passphrase is required.</p>
   </div>
-  <div class="sample-grid">
+  <div id="sample-grid" class="sample-grid">
     <form action="/sample/caldra" method="post"><button type="submit">Caldra (compliant)</button></form>
     <form action="/sample/veylan-208v" method="post"><button type="submit">Veylan 208V</button></form>
     <form action="/sample/torven-70c" method="post"><button type="submit">Torven 70 deg C</button></form>
     <form action="/sample/veylan-altered" method="post"><button type="submit">Veylan altered (integrity screen)</button></form>
+  </div>
+  <div id="sample-progress" class="running-panel" role="status" aria-live="polite" tabindex="-1" hidden>
+    <span class="pulse" aria-hidden="true"></span>
+    <div>
+      <strong>Sample audit running. Do not submit again.</strong>
+      <p>All sample buttons are disabled until this run opens.</p>
+      <p>The model step takes time. The server reports no progress, so this page shows no bar and no percentage.</p>
+    </div>
   </div>
 </section>
 <section class="card">
@@ -93,6 +101,7 @@
   .sample-grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
   .sample-grid form { margin: 0; }
   .sample-grid button { width: 100%; border: 1px solid var(--accent); border-radius: .35rem; background: var(--accent-soft); color: var(--accent); cursor: pointer; font: inherit; font-weight: 700; padding: .65rem .85rem; }
+  .sample-grid button:disabled { background: var(--line-soft); border-color: var(--line); color: var(--ink-soft); cursor: not-allowed; }
   .sample-grid button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .drop-zone { position: relative; display: grid; gap: .3rem; align-content: start; border: 2px dashed var(--line); border-radius: .5rem; padding: 1rem; cursor: pointer; background: var(--field); transition: border-color 180ms var(--ease-out), background-color 180ms var(--ease-out); }
   .drop-zone input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
@@ -220,7 +229,30 @@
     auditFields.setAttribute('inert', '');
     document.title = 'Audit running — ' + idleTitle;
   });
-  window.addEventListener('pageshow', event => { if (event.persisted) setIdle(); });
+  const sampleGrid = document.getElementById('sample-grid');
+  const sampleProgress = document.getElementById('sample-progress');
+  const sampleForms = sampleGrid.querySelectorAll('form');
+  const sampleButtons = sampleGrid.querySelectorAll('button');
+  let sampleSubmitting = false;
+  function setSampleIdle() {
+    sampleSubmitting = false;
+    for (const button of sampleButtons) button.disabled = false;
+    sampleProgress.hidden = true;
+    sampleGrid.removeAttribute('aria-busy');
+    document.title = idleTitle;
+  }
+  for (const sampleForm of sampleForms) {
+    sampleForm.addEventListener('submit', event => {
+      if (sampleSubmitting) { event.preventDefault(); return; }
+      sampleSubmitting = true;
+      for (const button of sampleButtons) button.disabled = true;
+      sampleProgress.hidden = false;
+      sampleProgress.focus();
+      sampleGrid.setAttribute('aria-busy', 'true');
+      document.title = 'Sample audit running — ' + idleTitle;
+    });
+  }
+  window.addEventListener('pageshow', event => { if (event.persisted) { setIdle(); setSampleIdle(); } });
   const relativeTime = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
   const timeUnits = [['second', 60], ['minute', 60], ['hour', 24], ['day', 7], ['week', 4.35], ['month', 12], ['year', Infinity]];
   for (const stamp of document.querySelectorAll('time[datetime]')) {

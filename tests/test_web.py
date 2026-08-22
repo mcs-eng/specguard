@@ -294,7 +294,7 @@ def test_sample_audit_global_limit_returns_a_plain_429_page() -> None:
     assert runner.calls == []
 
 
-def test_findings_page_shows_a_disabled_submit_state_and_a_stop_message() -> None:
+def test_findings_page_shows_running_states_that_block_repeat_submits() -> None:
     client, _, _, _ = _client()
 
     response = client.get("/")
@@ -305,6 +305,11 @@ def test_findings_page_shows_a_disabled_submit_state_and_a_stop_message() -> Non
     assert "#audit-submit:disabled" in response.text
     assert "auditSubmit.disabled = true" in response.text
     assert "if (submitting) { event.preventDefault(); return; }" in response.text
+    assert "Sample audit running. Do not submit again." in response.text
+    assert "All sample buttons are disabled until this run opens." in response.text
+    assert ".sample-grid button:disabled" in response.text
+    assert "for (const button of sampleButtons) button.disabled = true;" in response.text
+    assert "if (sampleSubmitting) { event.preventDefault(); return; }" in response.text
 
 
 def test_findings_page_confirms_each_chosen_file_before_the_run_starts() -> None:
