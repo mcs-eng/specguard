@@ -23,6 +23,8 @@ PDF_NAMES = (
     "veylan_arcworks_208v_switchboard.pdf",
     "veylan_arcworks_208v_altered.pdf",
     "torven_70c_termination_switchboard.pdf",
+    "nimbrin_thermal_annex_specification.pdf",
+    "zarqelune_vantrel_package.pdf",
 )
 EXPECTED_PAGE_COUNTS = {
     "asterquay_learning_workshop_specification.pdf": 7,
@@ -30,6 +32,8 @@ EXPECTED_PAGE_COUNTS = {
     "veylan_arcworks_208v_switchboard.pdf": 2,
     "veylan_arcworks_208v_altered.pdf": 2,
     "torven_70c_termination_switchboard.pdf": 2,
+    "nimbrin_thermal_annex_specification.pdf": 32,
+    "zarqelune_vantrel_package.pdf": 10,
 }
 
 
@@ -141,6 +145,8 @@ def test_fixtures_disclose_fictional_status_without_approval_or_standard_claims(
         assert all(claim not in text for claim in prohibited_claims), pdf_name
 
     for pdf_name in PDF_NAMES[1:]:
+        if "specification" in pdf_name:
+            continue
         text = document_text[pdf_name]
         assert "This cut sheet is invented for SpecGuard" in text
         assert "No endorsement, certification, or product availability is implied" in text
