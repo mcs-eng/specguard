@@ -1420,6 +1420,17 @@ def test_gate_playground_writes_no_run_and_calls_no_model() -> None:
 # --- 6. Page explainer ---------------------------------------------------
 
 
+def test_every_button_a_judge_presses_answers_the_press() -> None:
+    """A pressable control with no active state reads as unresponsive."""
+    client, _, _, _ = _client()
+
+    body = client.get("/").text
+
+    assert "#audit-submit:active:not(:disabled) { transform: scale(0.97); }" in body
+    assert ".sample-grid button:active:not(:disabled) { transform: scale(0.97); }" in body
+    assert ".sample-grid button:active:not(:disabled) { transform: none; }" in body
+
+
 def test_the_findings_page_explains_the_three_steps_and_links_to_the_gate() -> None:
     client, _, _, _ = _client()
 
