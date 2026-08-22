@@ -1687,6 +1687,33 @@ def test_the_run_page_links_to_its_json_export() -> None:
     assert f'href="/runs/{FIXTURE_RUN_ID}/export.json"' in body
 
 
+def test_both_run_artifacts_are_offered_as_peer_actions() -> None:
+    """Opening the RFI and exporting the run are the same kind of act."""
+    client, _, _ = _fixture_run_client()
+
+    body = client.get(f"/runs/{FIXTURE_RUN_ID}").text
+
+    assert f'<a class="action primary" href="/runs/{FIXTURE_RUN_ID}/rfi.pdf">' in body
+    assert f'<a class="action" href="/runs/{FIXTURE_RUN_ID}/export.json">' in body
+    assert ".action:active { transform: scale(0.97); }" in body
+    assert ".action:active { transform: none; }" in body
+
+
+def test_a_run_with_no_rfi_still_offers_its_export_and_says_why() -> None:
+    """The export exists for every run; only the RFI depends on findings."""
+    client, repository, _ = _fixture_run_client()
+    repository.runs[FIXTURE_RUN_ID]["rfi"] = None
+    repository.runs[FIXTURE_RUN_ID]["summary"]["findings_persisted"] = 0
+    repository.runs[FIXTURE_RUN_ID]["summary"]["rejected"] = 0
+    repository.findings[FIXTURE_RUN_ID] = []
+
+    body = client.get(f"/runs/{FIXTURE_RUN_ID}").text
+
+    assert f'<a class="action" href="/runs/{FIXTURE_RUN_ID}/export.json">' in body
+    assert "action primary" not in body
+    assert "No RFI — no discrepancies found." in body
+
+
 # --- Phase 6e review: the run page reads each run's documents once --------
 
 
