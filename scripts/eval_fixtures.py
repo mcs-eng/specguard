@@ -816,6 +816,7 @@ def format_code_revision(revision: str | None, status: str | None) -> str:
     report one; ``status`` is the porcelain status text, or ``None`` when it
     could not be read. Each unknown is written as unknown.
     """
+    revision = (revision or "").strip()
     if not revision:
         return UNRECORDED_REVISION
     if status is None:

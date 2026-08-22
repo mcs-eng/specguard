@@ -1,8 +1,7 @@
 # SpecGuard measured evaluation
 
 - Date: 2026-08-22
-- Code revision these numbers describe: `616e9f1
- plus uncommitted changes`
+- Code revision these numbers describe: `a424ccf`
 - Iterations per case: 5
 - Audit model: `gemini-3.7-flash` via Vertex AI
 - Severity model, measured from the persisted findings: `google-gemma3-gemma-3-1b-it`
@@ -54,10 +53,10 @@ None. Every case matched its declared expected outcome in every run.
 
 Every run below is a real Firestore run. These identifiers are the receipt behind the table: each one can be queried against the `findings`, `rejections`, and `integrity_findings` collections.
 
-- `E-01` `caldra_meridian_480v_switchboard.pdf`: `9134a95286154248bfd075994dbbda3b`, `2571a097f280436099c72d54edfc2395`, `ffe7f914653d47f29754a6c99ac465dd`, `5cc86b4cffa146c7b4bb2ca5f8995281`, `1ff2f1a1f7ea46f2a456ae5ac909fce3`
-- `E-02` `veylan_arcworks_208v_switchboard.pdf`: `57bf7a61bdf2443bb1bd2544cf16711b`, `fa18eb1afafb41c38598b0acc7d27705`, `72b1a2ed6e284573b397cabc360b9659`, `7b30609b900e49eca90e860b2a3b5a40`, `d16b7d86f1b54902bff2d92cc40d32a6`
-- `E-03` `torven_70c_termination_switchboard.pdf`: `b591789741614dd0a03d5fe684d279f2`, `cc917312f05c4b398ed2c3970b08e13f`, `8956e5a2639f4ce98c5949fb81f63872`, `2b6d63e64d1c4508abb1184a8807a2bb`, `c350d41950c14e9092539d728fbdb390`
-- `E-04` `veylan_arcworks_208v_altered.pdf`: `389a247376654592b423ae81d1e78b95`, `0ccb4299ba234780a3fdf9c67e6f718c`, `8c5a79f0819e45d3ba2a1ef17b70217a`, `221722141d4f402f9dfc4bacde96087f`, `dc6a727cbb804967b59c12a367c95330`
+- `E-01` `caldra_meridian_480v_switchboard.pdf`: `f9463d8f6200411988a00de16d99515a`, `9432bac4a8134d62afe7d9280305a38d`, `c6f6fce9556644e4b0fd9796d1d9e4a6`, `b56b1b11fdc84e138a770920cde0d40f`, `2801939b42eb4a52a9fee3e18598d003`
+- `E-02` `veylan_arcworks_208v_switchboard.pdf`: `babfbd0975e54bd6b56ea2a9f7a5a88f`, `522341e5abeb4457ab054c2914a90706`, `3609ccaee01e424594224f91f52823c0`, `240e302de90b4acc9e1f9dfe6a9f318c`, `51c0e72e607e4cc488c4d73303ee4da6`
+- `E-03` `torven_70c_termination_switchboard.pdf`: `a993628ef1d442cf91284bdedfa0c4fd`, `246bb3c7b3b349eaa7ccf282239874b0`, `8d7e2628be7a42558f6e9f8496722e3b`, `c2c33c0ff1e84d8b8333a6e437f90f41`, `797b2d67ac134ff8adf824a760bc87ed`
+- `E-04` `veylan_arcworks_208v_altered.pdf`: `b37ce8b5021e499dbb126649103f8911`, `2a0eba815c344ddd8b24fbe21f4fe80b`, `460b4431c3734f5698f54d195a00b49e`, `a00adb0d4af741f6857d39df4d3aa51e`, `2c4821621e1f408c866d4ef1dbdaa75e`
 
 ## Scope of these numbers
 

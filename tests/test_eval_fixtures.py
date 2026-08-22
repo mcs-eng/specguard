@@ -709,6 +709,12 @@ def test_a_renamed_source_file_is_named_by_its_new_path() -> None:
     assert uncommitted_source_paths(status) == ["specguard/new.py"]
 
 
+def test_the_revision_git_reports_is_stripped_before_it_is_published() -> None:
+    """git rev-parse ends its answer with a newline; the published field must not."""
+    assert format_code_revision("abc1234\n", "") == "abc1234"
+    assert format_code_revision("  abc1234  ", None) == "abc1234, working tree state unknown"
+
+
 def test_an_unreadable_tree_state_is_written_as_unknown() -> None:
     assert format_code_revision("abc1234", None) == "abc1234, working tree state unknown"
 

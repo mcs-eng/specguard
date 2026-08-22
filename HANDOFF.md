@@ -1406,3 +1406,117 @@ Mason reported that sample audit buttons gave no running feedback and allowed ac
 | --- | --- |
 | `f058e65` | Close Phase 6d runtime gaps |
 | `2850af9` | Show sample audit running state |
+## Phase 6e — gate playground, quote in context, RFI polish, JSON export, production basics
+
+Date: 2026-08-22. Scope: the bounded Phase 6e work order. `PLAN.md`, `SETUP.md`, the audit prompts, the fixtures, and `specguard/gate.py` are unchanged. Every new page element keeps the narrative rule: the runtime enforces the gate, and no page implies model-driven tool use.
+
+### Delivered capability
+
+- `GET /gate` runs `specguard.gate.verify_quote` against the committed fixtures and renders VERIFIED or REJECTED with the machine reason, the normalized quote, the cited page, and the page count. No model call, no persistence, no passphrase. The default view verifies a prefilled passing example for free; a request that supplies its own values reserves one durable per-address slot, 60 per UTC hour, in the same Firestore transaction style as the sample limits. Two one-click links show a rejection in ten seconds: one digit changed, and a real quote cited to the wrong page. The page states that this is the same function the runtime calls at write time.
+- Each verified quote on a run page now sits inside a bounded window of its cited page, with the matched text highlighted. `specguard/context.py` builds the window from the gate's own extraction and the gate's own normalization, and locates the occurrence with the gate's own token-boundary test rather than a second copy of the rule. A rejected claim gets no window, because it has no verified anchor; it shows the machine reason and the normalized quote the gate failed to find. A source document the service cannot read yields no window and says so.
+- `GET /runs/{run_id}/export.json` serves one run's persisted records: findings with both anchors, rejections with their parsed gate feedback, integrity records, document hashes, severity with status and reason, exact token usage, and timestamps. The payload is built from an explicit field allowlist, so an ephemeral request path, the upload passphrase, or a submission token cannot reach it by being forgotten. The payload states its own exclusions.
+- `GET /healthz` and `GET /health` return `200 ok` and read no Firestore collection, no storage bucket, and no model endpoint. Every response carries a Content-Security-Policy that allows no inline script, plus `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `X-Frame-Options: DENY`. The landing page's behaviour moved to `/static/index.js` to satisfy that policy. The root route answers HEAD as well as GET.
+- The RFI draft gains a boxed header block (project, owner, submittal ID, run ID, date, finding count), a findings table (claim, specification quote with its page, submitted quote with its page, severity with its reason), the text-layer screen result for each document, the chain-of-custody hashes labelled as chain of custody only, and reviewer signature lines. The gate re-verification inside `draft_rfi` is unchanged.
+- The findings page opens with a three-step strip: screen, audit, gate, then the RFI, carrying the sentence "Uncited claims are blocked from the ledger." and a link to `/gate`.
+- `scripts/eval_fixtures.py` records the code revision the numbers describe, and compares the new table to the one the README already published, so a moved number is stated in print rather than left to a hand diff.
+
+### The Cloud Run front end owns `/healthz`
+
+The first deployment of this phase returned a Google Front End 404 for `/healthz` on both the judge URL and the service URL. That 404 carried none of the four security headers, which is how the interception is visible: the request never reached the container. `/health` serves the same handler and works. `/healthz` stays registered because it is the conventional name and is reachable everywhere else this app runs. README records both the behaviour and the evidence.
+
+### One Codex review and its corrections
+
+One read-only `codex review --base 5de9c6c` ran after the suite went green. It returned four P2 findings. The work order allows two corrections; the two honesty defects were corrected and the two robustness findings were recorded on the board.
+
+| Finding | Disposition |
+| --- | --- |
+| A 500 that `ServerErrorMiddleware` generates carried none of the security headers, because Starlette builds that middleware outside every middleware an application adds. | CORRECTED in `616e9f1`. An exception handler returns the 500 with the headers attached; `ServerErrorMiddleware` still re-raises, so the error keeps reaching the logs. Without this, the one response most likely to leak detail was the one with no CSP and no nosniff. |
+| `current_code_revision` named HEAD even with uncommitted edits, so a published table could claim a clean commit describes a runtime that was not that commit. | CORRECTED in `616e9f1`, refined in `a424ccf`. The field now names every dirty source path, and reads "working tree state unknown" when git cannot answer. |
+| An RFI findings-table row taller than one page is moved to a fresh page but not sliced across two, so an extreme row would be clipped. | ACCEPTED on the board. A claim or quote needs roughly sixty wrapped lines to fill a page; measured fixture rows run four to six. |
+| Every run page GET downloads and reparses both stored PDFs, with no cache and no rate limit, and run identifiers are public. | ACCEPTED on the board. The service caps instances at one and concurrency at two. A cache is the fix if this ever costs anything. |
+
+The first correction to the revision field proved itself immediately: the next eval run recorded `616e9f1 plus uncommitted changes`, because the harness rewrites `EVAL.md` and `README.md` on every run and both were dirty from the run before. Counting the harness's own output makes the field read uncommitted forever and mean nothing, so `a424ccf` excludes those two files and names every other dirty path. The final eval then recorded a clean `a424ccf`.
+
+### Local quality-gate receipts
+
+All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `354 passed, 2 warnings`. The suite was 276 tests at `5de9c6c`. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `46 files already formatted`. |
+| `git diff --check` | 0 | No whitespace errors. |
+| `codex review --base 5de9c6c` | 0 | Four P2 findings; two corrected, two boarded. No second review ran. |
+
+### Deployment receipts
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `.\deploy-specguard.ps1` | 0 | Revision `specguard-00014-v5q` after `eb8e895`. |
+| `.\deploy-specguard.ps1` | 0 | Revision `specguard-00015-287` after `d88af19`, the `/health` alias. |
+| `.\deploy-specguard.ps1` | 0 | Revision `specguard-00016-pds` after `8854969`, HEAD on the root route. |
+| `.\deploy-specguard.ps1` | 0 | Revision `specguard-00017-rxd` after `616e9f1`, the review corrections. |
+| `.\deploy-specguard.ps1` | 0 | Revision `specguard-00018-n8k` after `a424ccf`, the final source revision. |
+| `gcloud run services describe specguard --region us-central1 --project specguard-hack --format="value(status.latestReadyRevisionName,status.traffic[0].percent,status.url)"` | 0 | `specguard-00018-n8k`, `100`, `https://specguard-ypkohkbwgq-uc.a.run.app`. |
+
+The public judge URL remains `https://specguard-108657628939.us-central1.run.app`.
+
+### Live receipts
+
+Every fetch below used an unpiped `curl.exe` that exited 0.
+
+1. **The gate playground verifies.** `GET /gate` returned HTTP 200 with the badge `VERIFIED`, the prefilled quote `Conductor terminations shall be rated 90 deg C minimum.`, cited page 5, page count 7, the normalized quote `conductor terminations shall be rated 90 deg c minimum.`, and `None. A verified quote carries no rejection reason.`
+2. **The gate playground rejects, three ways.** `GET /gate?fixture=specification&page=5&quote=Conductor%20terminations%20shall%20be%20rated%2080%20deg%20C%20minimum.` returned `REJECTED` with `quote_not_found_on_cited_page`. The same real quote cited to page 4 returned `REJECTED` with `quote_not_found_on_cited_page` and cited page 4. The same quote cited to page 99 returned `REJECTED` with `page_out_of_range`. No response carried a filesystem path.
+3. **Quote in context on a live run.** An unpiped `curl.exe` POST to `/sample/torven-70c` exited 0 and returned `303` to run `e7829d9bc7264334b4421da802160c06`. The run page returned HTTP 200, COMPLETED, and shows `Specification page 5, as the gate read it` with `<mark>conductor terminations shall be rated 90 deg c minimum.</mark>` inside its page window, and `Submitted page 2, as the gate read it` with `<mark>field conductor termination rating: 158 deg f.</mark>` inside its own.
+4. **The JSON export and its exclusions.** `GET /runs/e7829d9bc7264334b4421da802160c06/export.json` returned HTTP 200, `application/json`, 2,829 bytes. It carries both document SHA-256 values, the RFI object hash, the finding with both anchors, exact usage of 31,570 prompt tokens, 333 output tokens, and 33,286 total tokens, and `severity` reading `unclassified` with status `fallback` and reason `severity endpoint not deployed outside demo windows`. With the `exclusions` block removed, the payload contains none of `document_path`, `pdf_path`, `rfi_path`, `passphrase`, `submission_token`, `C:\`, `/tmp`, or `specguard-context-`.
+5. **The health route.** `GET /health` returned HTTP 200, `text/plain; charset=utf-8`, body `ok`, with all four security headers.
+6. **Security headers on the root.** `curl.exe -I https://specguard-108657628939.us-central1.run.app/` returned HTTP 200 with `content-security-policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`, `x-content-type-options: nosniff`, `referrer-policy: no-referrer`, and `x-frame-options: DENY`.
+7. **The running-state UI under the policy.** The deployed landing page carries exactly one `<script>` element, `<script src="/static/index.js" defer></script>`, zero inline event-handler attributes, and zero `javascript:` URLs. `/gate` carries zero script elements and zero inline handlers. `/static/index.js` returned HTTP 200 with `content-type: text/javascript; charset=utf-8` under `script-src 'self'`, and the running-panel markup `id="audit-progress"` and `id="sample-progress"` is present in the page. A rendered browser check of the running panel was not performed in this session; the Chrome extension was not connected.
+8. **The polished RFI.** `GET /runs/e7829d9bc7264334b4421da802160c06/rfi.pdf` returned HTTP 200, `application/pdf`, 15,525 bytes, two pages. Page 1 carries the header block, the findings table with both quotes and their page numbers, the screen result for both documents, and the custody hashes with "They are chain-of-custody metadata only." Page 2 carries the review block and both signature lines.
+
+### The final evaluation
+
+The Gemma endpoint came up through the SETUP.md shoot-day runbook and went down after the last run.
+
+| Step | Command | Exit | Result |
+| --- | --- | ---: | --- |
+| Quota | `gcloud compute regions describe us-central1 --project specguard-hack --format="json(quotas)"` | 0 | `NVIDIA_L4_GPUS` usage 0.0 of limit 1.0. |
+| Up | `gcloud ai model-garden models deploy --model=google/gemma3@gemma-3-1b-it ...` | 0 | Endpoint `specguard-gemma`, deployed model `google-gemma3-gemma-3-1b-it-1787417126`. |
+| Warm | `classify_severity` probe loop | 0 | Attempts 1 to 7 returned HTTP 502 while the container started. Attempt 8 returned `high` from `google-gemma3-gemma-3-1b-it`, status `classified`. |
+| Measure | `uv run python scripts/eval_fixtures.py -n 5 --severity-model ...` | 0 | `EVAL SUMMARY date=2026-08-22 code_revision=a424ccf iterations=5 cases=4 runs=20 catch_rate=100% false_positives=0 rejections=0 retries=0 model_calls=15 cases_matching_manifest=4/4`. |
+| Down | `gcloud ai endpoints undeploy-model ...` | 0 | Model undeployed. |
+| Down | `gcloud ai endpoints delete ... --quiet` | 0 | Endpoint deleted. |
+| Down | `gcloud ai models delete google-gemma3-gemma-3-1b-it-1787417125 ... --quiet` | 0 | Model registry entry deleted. |
+| Verify | `gcloud ai endpoints list --region=us-central1 --project=specguard-hack` | 0 | `Listed 0 items.` |
+| Verify | `gcloud ai models list --region=us-central1 --project=specguard-hack` | 0 | `Listed 0 items.` |
+| Verify | `gcloud compute regions describe us-central1 --project specguard-hack --format="json(quotas)"` | 0 | `NVIDIA_L4_GPUS` usage 0.0. |
+| Verify | `gcloud run services describe specguard ...` | 0 | `specguard-00018-n8k` with `SPECGUARD_GEMMA_ENDPOINT=disabled`. |
+
+The eval ran three times on 2026-08-22, because the code changed under it twice. The first run measured `8854969`, before the Codex corrections. The second measured `616e9f1` and recorded "plus uncommitted changes", which is what exposed the harness-output problem in the dirty-tree check. The third and published run measured `a424ccf`, the deployed source revision, with a clean tree. All three produced the same table.
+
+**EVAL.md and the README table now describe code revision `a424ccf`, deployed as `specguard-00018-n8k`.** Two numbers moved from the 2026-08-21 run, both in the severity column: `E-02` read `high 3, unclassified 2` and now reads `high 5`; `E-03` read `high 4, unclassified 1` and now reads `high 5`. Nothing in the classifier changed. The three earlier `unclassified` labels were Gemma fallbacks recorded when the endpoint returned HTTP 502 during that run; this time the endpoint answered every call. Catch rate, false positives, rejections, retries, quarantine rate, and model calls are unchanged. The README states this above its table.
+
+One hand edit was made to generated output. The revision string reached `EVAL.md` and `README.md` carrying the trailing newline `git rev-parse` returns, so `` `a424ccf` `` rendered across two lines. The newline was removed by hand in both files and the strip was fixed in `scripts/eval_fixtures.py` with a test. No measured number was touched: the edit changed whitespace inside the provenance field only.
+
+### Board rows added this phase
+
+Seven Phase 6e rows and two Phase 6e review rows were added to the board in `README.md`, all `ACCEPTED` with their reason and disclosure location: the playground reads only committed fixtures; the quote window is normalized text rather than the painted page; the CSP still allows inline style; `/healthz` reports process liveness only; the Cloud Run front end owns `/healthz`; the JSON export is a read-side view that proves nothing the run page does not; every run page GET reparses both PDFs; and an oversized RFI table row is clipped rather than split. One earlier row was rewritten: the Vertex spend row no longer refers only to the 2026-08-21 run, because no run has a spend figure.
+
+### Video script changes
+
+Shot 4 is now two beats: the pytest run, then a live `/gate` beat where one click on the "one digit changed" link flips the verdict card to REJECTED with its machine reason. Shot 6 closes on the polished RFI draft before the README headline. The shoot-day tab list gains the `/gate` tab and keeps the RFI tab open from shot 3d.
+
+### Local commits
+
+| Commit | Subject |
+| --- | --- |
+| `605567c` | Add the gate playground, quote in context, JSON export, and production basics |
+| `eb8e895` | Document the Phase 6e surfaces in README and the shooting script |
+| `d88af19` | Serve the health check at a path Cloud Run forwards |
+| `8854969` | Answer a HEAD probe on the root page |
+| `616e9f1` | Apply two Codex review corrections: 500 headers and eval provenance |
+| `a424ccf` | Exclude the eval harness's own output from its dirty-tree check |
+| `<final>` | Record the Phase 6e receipts and the regenerated evaluation |
+
+Nothing was pushed, merged, or opened as a pull request.
