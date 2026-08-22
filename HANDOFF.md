@@ -1507,6 +1507,30 @@ Seven Phase 6e rows and two Phase 6e review rows were added to the board in `REA
 
 Shot 4 is now two beats: the pytest run, then a live `/gate` beat where one click on the "one digit changed" link flips the verdict card to REJECTED with its machine reason. Shot 6 closes on the polished RFI draft before the README headline. The shoot-day tab list gains the `/gate` tab and keeps the RFI tab open from shot 3d.
 
+
+### Phase 6e follow-up — both remaining review findings closed in code
+
+Mason directed that the two Codex findings left on the board be fixed rather than accepted. Both are closed in `4f870c7`, recorded on the board in `1fa8e36`, and deployed as `specguard-00019-fgd`.
+
+**An oversized RFI row is sliced, not clipped.** A findings-table row taller than one page was moved to a fresh page and written there whole, so every line past the page bottom was drawn outside the page. Claim and quote text is model-generated and has no maximum length, so a long claim produced a draft that stopped mid-sentence with nothing saying so. Such a row is now written in slices, each under a repeated header. A row is moved whole only when a fresh page would actually hold it: the first version of the fix moved every oversized row, which left a blank page behind and started the slicing one page later. The rendered check below caught that.
+
+**Each run's page windows are read once.** Every run page GET downloaded and reparsed both stored PDFs, and run identifiers are public, so a reload repeated that work indefinitely. Each run's window set is now cached on the serving app, bounded to 32 entries, keyed by a SHA-256 digest of the anchors it was built from. That key does the work a status test would do and cannot get it wrong: a run whose findings are still being written has a different digest, so it recomputes rather than serving a partial set. A failed read is never cached, because a transient storage error would otherwise outlast its cause. The cache lives on the app's own `WebServices`, so no test app can read another app's entries.
+
+| Receipt | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `365 passed`. Eleven new tests: five for the sliced row, five for the cache, one pinning that an ordinary draft still renders one header row and one finding row. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `46 files already formatted`. |
+| `git diff --check` | 0 | No whitespace errors. |
+| Rendered slice check | 0 | A 1,500-word claim renders across three pages, `word0` first on page 1 and `word1499` last on page 3, a header on each page, and zero drawn rectangles below any page bottom. |
+| Rendered regression check | 0 | The ordinary one-finding draft still renders two pages with one header row and one finding row, unchanged from before the fix. |
+| `.\deploy-specguard.ps1` | 0 | Revision `specguard-00019-fgd`, 100 percent of traffic. |
+| Live cache check | 0 | Two unpiped `curl.exe` GETs of run `e7829d9bc7264334b4421da802160c06` returned identical bodies with both `<mark>` windows. The first took 900 ms, the second 300 ms. A third returned HTTP 200. |
+
+The sliced row is proven by the test suite and by a rendered PDF, not by a live run: forcing the deployed model to emit a claim of roughly sixty wrapped lines is not something this session can arrange, and inventing one would not be a live receipt.
+
+**The published evaluation still names `a424ccf`, and that is correct.** `a424ccf` is the revision that ran. `git diff --stat a424ccf..HEAD -- specguard/` names exactly two files, `specguard/tools.py` and `specguard/web/app.py`, and the changed definitions inside them are `_RfiWriter`, `WebServices`, and `_findings_with_context`. Every counter in the table is fixed before `draft_rfi` renders a page, and no column is read from the web service. `specguard/gate.py`, `specguard/agent.py`, `specguard/integrity.py`, `specguard/severity.py`, `specguard/models.py`, and every `AuditTools` method that produces a counter are byte-identical to the measured revision. Re-running the harness would republish the same table under a later name. The README states this above its table.
+
 ### Local commits
 
 | Commit | Subject |
@@ -1518,5 +1542,8 @@ Shot 4 is now two beats: the pytest run, then a live `/gate` beat where one clic
 | `616e9f1` | Apply two Codex review corrections: 500 headers and eval provenance |
 | `a424ccf` | Exclude the eval harness's own output from its dirty-tree check |
 | `d548139` | Record the Phase 6e receipts and the regenerated evaluation |
+| `72b08af` | Name the receipts commit in the Phase 6e commit table |
+| `4f870c7` | Slice an oversized RFI row and read each run's documents once |
+| `1fa8e36` | Name the fix commit in the two closed board rows |
 
 Nothing was pushed, merged, or opened as a pull request.
