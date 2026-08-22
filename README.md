@@ -14,15 +14,18 @@ The gate establishes one narrow thing: each quoted text anchor occurs on its cit
 - `specguard/integrity.py`: the text-layer integrity screen that runs before any model call.
 - `specguard/agent.py` and `specguard/tools.py`: one ADK agent, five role-bound tools, the bounded one-retry loop, guarded Firestore persistence, and RFI draft PDF generation.
 - `specguard/severity.py`: the advisory Gemma severity annotation with recorded fallback.
-- `specguard/web/`: the FastAPI findings page, guarded upload, and durable run storage, deployed on Cloud Run.
+- `specguard/context.py`: the read-side page window that shows a verified quote inside its cited page.
+- `specguard/web/`: the FastAPI findings page, the gate playground, guarded upload, the JSON run export, and durable run storage, deployed on Cloud Run.
 - `scripts/eval_fixtures.py` and `EVAL.md`: the measured evaluation harness and its committed record.
 - `scripts/reset_demo_ledger.py`: archive-then-clear for the demo ledger.
 - `fixtures/`: five fictional, generated, text-based PDFs and their manifest.
-- `tests/`: 276 tests. No test requires the network or credentials; every model, Firestore, and storage dependency is an in-process fake. `HANDOFF.md`, `REVIEW-P3.md`, and `REVIEW-CLAIMS.md` hold the receipts and the review findings behind every claim in this file.
+- `tests/`: 342 tests. No test requires the network or credentials; every model, Firestore, and storage dependency is an in-process fake. `HANDOFF.md`, `REVIEW-P3.md`, and `REVIEW-CLAIMS.md` hold the receipts and the review findings behind every claim in this file.
 
 Deployed service: `https://specguard-108657628939.us-central1.run.app` (Cloud Run, us-central1, revision `specguard-00013-99g` as of 2026-08-22). The GET routes are public and read-only. `POST /audit` requires a demo passphrase that is not in this repository.
 
 **Try it.** Judges can run four public sample audits without a passphrase: Caldra (compliant), Veylan 208V, Torven 70 deg C, and Veylan altered (integrity screen). Uploading arbitrary PDFs stays gated to protect the demo budget.
+
+**Run the gate yourself.** `/gate` calls `specguard.gate.verify_quote` on the committed fixtures and shows the verdict, the machine reason, the normalized quote, and the page count. It is the same function the runtime calls at write time. It makes no model call, stores nothing, and needs no passphrase. Two one-click links show a rejection: one digit changed, and a real quote cited to the wrong page.
 
 ## Architecture
 
@@ -145,6 +148,29 @@ Measured on 2026-08-21 by `scripts/eval_fixtures.py`, 5 runs per case against th
 
 Two things these numbers do not show. The gate rejected nothing and the runtime retried nothing in the 15 model-calling runs, because the model cited every quote correctly on the first turn, so this table is not evidence that the rejection-and-retry loop works; `tests/test_agent.py` and `tests/adversarial/test_runtime_separation.py` drive rejections deterministically and prove the loop. The 3 `unclassified` findings are Gemma fallbacks, each with its HTTP 502 reason recorded on the finding. The 2026-08-21 evaluation predates per-run Gemini usage records, so it cannot show historical token counts or total Vertex spend. The measurement covers five fictional fixtures, not a corpus of real submittals; it is not evidence of accuracy on documents outside this set.
 
+## Reading a run
+
+Each run page shows every persisted record for one audit.
+
+- **Quote in context.** Beside each verified quote, the page shows a bounded window of the cited page with the matched text highlighted. The window is built from the gate's own extraction and the gate's own normalization, so a reader sees the text the gate compared, not a second rendering of it. `specguard/context.py` locates the occurrence with the gate's token-boundary rule rather than a copy of it, and it reports no window at all where the gate reports no match.
+- **A rejected claim gets no window.** It has no verified anchor, so the page shows the machine reason the gate returned and the normalized quote it failed to find.
+- **JSON export.** `/runs/{run_id}/export.json` serves the same records as data: findings with both anchors, rejections with their parsed gate feedback, integrity records, document hashes, severity with its status and reason, the exact token usage, and the timestamps. The payload is built from an explicit field allowlist, so it carries no filesystem path, no upload passphrase, no submission token, and no hidden-span field the run page withholds from a human reader.
+
+The generated RFI draft carries a header block, a findings table, the text-layer screen result for each document, the chain-of-custody hashes, and reviewer signature lines. The gate re-verifies every quote in the draft before it renders.
+
+## Service hardening
+
+Every response carries the same four headers.
+
+- `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`
+- `X-Content-Type-Options: nosniff`
+- `Referrer-Policy: no-referrer`
+- `X-Frame-Options: DENY`
+
+`script-src 'self'` allows no inline script, so the landing page's behaviour lives in `/static/index.js`. `style-src` still allows inline style, because the pages ship their stylesheet inside the document and no style rule can execute code.
+
+`GET /healthz` returns `200 ok`. It reads no Firestore collection, no storage bucket, and no model endpoint, so it answers one question only: did this process start and can it serve.
+
 ## What the test suite proves
 
 Known-good cases that verify:
@@ -261,7 +287,7 @@ uv run uvicorn specguard.web.app:app --host 127.0.0.1 --port 8080
 
 ### Service limits
 
-The public GET routes are read-only. `POST /audit` requires the demo passphrase, accepts only `application/pdf`, and limits each upload to 5 MB. The landing page mints a one-time submission token. Firestore creates the token record and its `RUNNING` upload record in one transaction, so a replay returns the original run. Public sample audits are limited to six starts per final Cloud Run-appended address per UTC hour and 60 starts per UTC day. Firestore owns both counters, so a cold start cannot reset either budget. The service is deployed with `--max-instances 1` and `--concurrency 2`, and each instance runs at most two in-flight audits, so in steady state the service accepts two concurrent audits. The instance cap is the load-bearing half of that number: with two instances the same request concurrency would allow four. The cap is a per-revision target rather than a hard service-wide ceiling, because Cloud Run may briefly run additional instances during a deployment or a traffic split, so two is the steady-state figure and not a guarantee for every instant. Cloud Run compute is ephemeral. The uploaded PDFs and generated RFI PDFs are durable Cloud Storage objects keyed by run ID, with each object SHA-256 recorded in the Firestore run document. A failed audit remains visible as `FAILED` with its stored source-object records. If both FAILED writes fail, Firestore keeps `RUNNING`; a read older than ten minutes displays `STALLED` without changing the stored record. A completed run with no persisted findings has no RFI and displays `No RFI — no discrepancies found.`
+The public GET routes are read-only. `POST /audit` requires the demo passphrase, accepts only `application/pdf`, and limits each upload to 5 MB. The landing page mints a one-time submission token. Firestore creates the token record and its `RUNNING` upload record in one transaction, so a replay returns the original run. Public sample audits are limited to six starts per final Cloud Run-appended address per UTC hour and 60 starts per UTC day. The gate playground is limited to 60 checks per that address per UTC hour, and its default example costs nothing because it reads a fixed committed input. Firestore owns both counters, so a cold start cannot reset either budget. The service is deployed with `--max-instances 1` and `--concurrency 2`, and each instance runs at most two in-flight audits, so in steady state the service accepts two concurrent audits. The instance cap is the load-bearing half of that number: with two instances the same request concurrency would allow four. The cap is a per-revision target rather than a hard service-wide ceiling, because Cloud Run may briefly run additional instances during a deployment or a traffic split, so two is the steady-state figure and not a guarantee for every instant. Cloud Run compute is ephemeral. The uploaded PDFs and generated RFI PDFs are durable Cloud Storage objects keyed by run ID, with each object SHA-256 recorded in the Firestore run document. A failed audit remains visible as `FAILED` with its stored source-object records. If both FAILED writes fail, Firestore keeps `RUNNING`; a read older than ten minutes displays `STALLED` without changing the stored record. A completed run with no persisted findings has no RFI and displays `No RFI — no discrepancies found.`
 
 ## Limitations and completion board
 
@@ -301,6 +327,12 @@ This board mirrors the Phase 6d board in `HANDOFF.md`. `FIXED` rows name the cha
 | Evaluation | Per-run Gemini usage is unavailable when ADK omits usage metadata. | ACCEPTED — SpecGuard records that fact and never estimates tokens; disclosed on each run page and in `EVAL.md`. |
 | Evaluation | Fixture evaluation did not exercise live gate rejections or retries. | ACCEPTED — the fixtures produced no rejected claim; disclosed in [Measured evaluation](#measured-evaluation). |
 | Evaluation | Fixture results do not show accuracy on real documents. | ACCEPTED — the suite uses fictional fixtures only; disclosed in `EVAL.md`. |
+| P6e | The gate playground reads only the committed fixtures, never an uploaded file. | ACCEPTED — accepting arbitrary uploads on an unauthenticated GET route would reopen the upload budget the passphrase protects; disclosed on `/gate` and in [Try it](#specguard). |
+| P6e | The quote window is normalized text, not the painted page. | ACCEPTED — the gate compares normalized text, so a window built from the raw page would show a reader something the gate never matched; disclosed in [Reading a run](#reading-a-run). |
+| P6e | The run page downloads both stored PDFs to build its windows. | ACCEPTED — the cost is two object reads under 5 MB on a page a human opens; a document the service cannot read yields no window and says so. |
+| P6e | The Content-Security-Policy still allows inline style. | ACCEPTED — the requirement is that no inline script runs; the pages ship their stylesheet inside the document and no style rule can execute code; disclosed in [Service hardening](#service-hardening). |
+| P6e | `/healthz` reports process liveness only, never dependency health. | ACCEPTED — a check that called Firestore or Vertex would report that dependency's health under this route's name; disclosed in [Service hardening](#service-hardening). |
+| P6e | The JSON export is a read-side view and proves nothing the run page does not. | ACCEPTED — it serves the same persisted records from an allowlist; the ledger invariant is enforced at write time, not at export. |
 
 ## Review records
 
