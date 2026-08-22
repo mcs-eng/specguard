@@ -99,6 +99,14 @@ def _print_summary(summary: AuditRunSummary) -> None:
         print(f"severity status: {summary.severity_status}")
         if summary.severity_reason is not None:
             print(f"severity fallback reason: {summary.severity_reason}")
+    if summary.audit_model_usage is not None:
+        usage = summary.audit_model_usage
+        if usage.unavailable_reason is not None:
+            print(f"audit model usage: {usage.unavailable_reason}")
+        else:
+            print(f"audit model prompt tokens: {usage.prompt_tokens}")
+            print(f"audit model output tokens: {usage.output_tokens}")
+            print(f"audit model total tokens: {usage.total_tokens}")
     print(f"RFI path: {summary.rfi_path or 'not generated'}")
 
 

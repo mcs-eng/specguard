@@ -13,6 +13,7 @@
   </div>
   {% endif %}
   <form id="audit-form" action="/audit" method="post" enctype="multipart/form-data">
+    <input type="hidden" name="submission_token" value="{{ submission_token }}">
     <div id="audit-fields" class="fields">
       <div class="drop-grid">
         <label class="drop-zone" for="spec-pdf">
@@ -44,7 +45,7 @@
       <span class="pulse" aria-hidden="true"></span>
       <div>
         <strong>Audit running. Do not submit again.</strong>
-        <p>A second submit starts a duplicate run.</p>
+        <p>A repeated submit returns the first run.</p>
         <p>The model step takes time. The server reports no progress, so this page shows no bar and no percentage. It moves to the findings page by itself when the run ends.</p>
       </div>
     </div>
@@ -74,11 +75,11 @@
       <tbody>
       {% for run in runs %}
         <tr>
-          <td><span class="badge {% if run.status == 'QUARANTINED' %}quarantined{% elif run.status == 'FAILED' %}failed{% elif run.status == 'RUNNING' %}running{% else %}completed{% endif %}">{{ run.status }}</span>{% if run.source == 'sample' %}<span class="badge sample">SAMPLE</span>{% endif %}</td>
+          <td><span class="badge {% if run.display_status == 'QUARANTINED' %}quarantined{% elif run.display_status == 'FAILED' %}failed{% elif run.display_status == 'RUNNING' or run.display_status == 'STALLED' %}running{% else %}completed{% endif %}">{{ run.display_status }}</span>{% if run.source == 'sample' %}<span class="badge sample">SAMPLE</span>{% endif %}{% if run.is_stalled %}<p class="muted">No completion for over ten minutes.</p>{% endif %}</td>
           <td><a class="run-link" href="/runs/{{ run.run_id }}" title="{{ run.run_id }}"><code>{{ run.run_id[:8] }}</code></a></td>
           <td class="num">{{ run.summary.findings_persisted }}</td>
           <td class="num">{{ run.summary.rejected }}</td>
-          <td>{% if run.rfi %}<a href="/runs/{{ run.run_id }}/rfi.pdf">RFI PDF</a>{% else %}<span class="muted">None</span>{% endif %}</td>
+          <td>{% if run.rfi %}<a href="/runs/{{ run.run_id }}/rfi.pdf">RFI PDF</a>{% elif run.status == 'COMPLETED' and run.summary.findings_persisted == 0 and run.summary.rejected == 0 %}<span class="muted">No RFI — no discrepancies found.</span>{% elif run.status == 'COMPLETED' and run.summary.findings_persisted == 0 %}<span class="muted">No verified findings</span>{% else %}<span class="muted">None</span>{% endif %}</td>
           <td class="muted">{% if run.created_at %}<time datetime="{{ run.created_at.isoformat() }}">{{ run.created_at }}</time>{% else %}Unknown{% endif %}</td>
         </tr>
       {% endfor %}

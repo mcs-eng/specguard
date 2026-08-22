@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 import pymupdf
 import pytest
+from requests.exceptions import Timeout
 
 import specguard.severity as severity_module
 from specguard.agent import AuditRuntime
@@ -474,6 +475,66 @@ def test_vertex_endpoint_classifier_handles_http_error() -> None:
     assert result.severity is Severity.UNCLASSIFIED
     assert result.status == "fallback"
     assert "HTTP 503" in (result.reason or "")
+    assert mock_session.post.call_count == 2
+
+
+def test_vertex_endpoint_classifier_retries_one_5xx_then_succeeds() -> None:
+    first = MagicMock(status_code=500, text="Internal Server Error")
+    second = MagicMock(status_code=200)
+    second.json.return_value = {"predictions": ["Output:\nHIGH"]}
+    mock_session = MagicMock()
+    mock_session.post.side_effect = [first, second]
+
+    from specguard.severity import VertexEndpointSeverityClassifier
+
+    result = VertexEndpointSeverityClassifier(
+        endpoint_resource_name="mg-endpoint-123",
+        endpoint_dns="custom.vertexai.goog",
+        session=mock_session,
+    ).classify("Discrepancy", "Spec quote", "Cut quote")
+
+    assert result.severity is Severity.HIGH
+    assert result.status == "classified"
+    assert mock_session.post.call_count == 2
+
+
+def test_vertex_endpoint_classifier_retries_one_timeout_then_succeeds() -> None:
+    second = MagicMock(status_code=200)
+    second.json.return_value = {"predictions": ["Output:\nLOW"]}
+    mock_session = MagicMock()
+    mock_session.post.side_effect = [Timeout("deadline"), second]
+
+    from specguard.severity import VertexEndpointSeverityClassifier
+
+    result = VertexEndpointSeverityClassifier(
+        endpoint_resource_name="mg-endpoint-123",
+        endpoint_dns="custom.vertexai.goog",
+        session=mock_session,
+    ).classify("Discrepancy", "Spec quote", "Cut quote")
+
+    assert result.severity is Severity.LOW
+    assert result.status == "classified"
+    assert mock_session.post.call_count == 2
+
+
+def test_vertex_endpoint_classifier_stops_after_two_failed_attempts() -> None:
+    first = MagicMock(status_code=503, text="Service Unavailable")
+    second = MagicMock(status_code=503, text="Service Unavailable")
+    mock_session = MagicMock()
+    mock_session.post.side_effect = [first, second]
+
+    from specguard.severity import VertexEndpointSeverityClassifier
+
+    result = VertexEndpointSeverityClassifier(
+        endpoint_resource_name="mg-endpoint-123",
+        endpoint_dns="custom.vertexai.goog",
+        session=mock_session,
+    ).classify("Discrepancy", "Spec quote", "Cut quote")
+
+    assert result.severity is Severity.UNCLASSIFIED
+    assert result.status == "fallback"
+    assert "HTTP 503" in (result.reason or "")
+    assert mock_session.post.call_count == 2
 
 
 def test_classify_severity_selects_vertex_endpoint_from_env(

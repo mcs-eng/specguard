@@ -122,7 +122,7 @@ After a finding passes the gate and is written to the ledger, the runtime asks a
 
 The receipted path is `google/gemma3@gemma-3-1b-it` on a dedicated Vertex AI Model Garden endpoint (one NVIDIA L4), selected by `SPECGUARD_GEMMA_ENDPOINT` and called with Application Default Credentials. Each classified finding records the model identifier `google-gemma3-gemma-3-1b-it` beside its label.
 
-The endpoint is deployed only for demo and evaluation windows and torn down afterwards, because the GPU bills while idle. Outside those windows the deployed service records `UNCLASSIFIED` on every new finding, with `severity_status = fallback` and `severity_reason = severity endpoint not deployed outside demo windows`. A reader who runs an audit later will see that state. It is the documented fallback, not a defect. The run page shows the label and either the model identifier or the word `fallback`.
+The endpoint is deployed only for demo and evaluation windows and torn down afterwards, because the GPU bills while idle. Outside those windows the deployed service records `UNCLASSIFIED` on every new finding, with `severity_status = fallback` and `severity_reason = severity endpoint not deployed outside demo windows`. A reader who runs an audit later will see that state. It is the documented fallback, not a defect. The run page and each generated RFI show the recorded reason beside the fallback label.
 
 `specguard/severity.py` also carries a generativelanguage API-key backend that the runtime selects when no endpoint is configured. It is not the receipted path: the last live probe returned HTTP 429 behind the AI Studio prepay wall, and the runtime recorded that outcome as a fallback with its reason.
 
@@ -143,7 +143,7 @@ Measured on 2026-08-21 by `scripts/eval_fixtures.py`, 5 runs per case against th
 
 <!-- eval-table-end -->
 
-Two things these numbers do not show. The gate rejected nothing and the runtime retried nothing in the 15 model-calling runs, because the model cited every quote correctly on the first turn, so this table is not evidence that the rejection-and-retry loop works; `tests/test_agent.py` and `tests/adversarial/test_runtime_separation.py` drive rejections deterministically and prove the loop. The 3 `unclassified` findings are Gemma fallbacks, each with its HTTP 502 reason recorded on the finding. The measurement covers five fictional fixtures, not a corpus of real submittals; it is not evidence of accuracy on documents outside this set.
+Two things these numbers do not show. The gate rejected nothing and the runtime retried nothing in the 15 model-calling runs, because the model cited every quote correctly on the first turn, so this table is not evidence that the rejection-and-retry loop works; `tests/test_agent.py` and `tests/adversarial/test_runtime_separation.py` drive rejections deterministically and prove the loop. The 3 `unclassified` findings are Gemma fallbacks, each with its HTTP 502 reason recorded on the finding. The 2026-08-21 evaluation predates per-run Gemini usage records, so it cannot show historical token counts or total Vertex spend. The measurement covers five fictional fixtures, not a corpus of real submittals; it is not evidence of accuracy on documents outside this set.
 
 ## What the test suite proves
 
@@ -261,7 +261,45 @@ uv run uvicorn specguard.web.app:app --host 127.0.0.1 --port 8080
 
 ### Service limits
 
-The public GET routes are read-only. `POST /audit` requires the demo passphrase, accepts only `application/pdf`, and limits each upload to 5 MB. The service is deployed with `--max-instances 1` and `--concurrency 2`, and each instance runs at most two in-flight audits, so in steady state the service accepts two concurrent audits. The instance cap is the load-bearing half of that number: with two instances the same request concurrency would allow four. The cap is a per-revision target rather than a hard service-wide ceiling, because Cloud Run may briefly run additional instances during a deployment or a traffic split, so two is the steady-state figure and not a guarantee for every instant. Cloud Run compute is ephemeral. The uploaded PDFs and generated RFI PDFs are durable Cloud Storage objects keyed by run ID, with each object SHA-256 recorded in the Firestore run document. A failed audit remains visible as `FAILED` with its stored source-object records; if both FAILED writes fail, the run keeps reporting `RUNNING` and its detail page says the run has not finished.
+The public GET routes are read-only. `POST /audit` requires the demo passphrase, accepts only `application/pdf`, and limits each upload to 5 MB. The landing page mints a one-time submission token. Firestore creates the token record and its `RUNNING` upload record in one transaction, so a replay returns the original run. Public sample audits are limited to six starts per final Cloud Run-appended address per UTC hour and 60 starts per UTC day. Firestore owns both counters, so a cold start cannot reset either budget. The service is deployed with `--max-instances 1` and `--concurrency 2`, and each instance runs at most two in-flight audits, so in steady state the service accepts two concurrent audits. The instance cap is the load-bearing half of that number: with two instances the same request concurrency would allow four. The cap is a per-revision target rather than a hard service-wide ceiling, because Cloud Run may briefly run additional instances during a deployment or a traffic split, so two is the steady-state figure and not a guarantee for every instant. Cloud Run compute is ephemeral. The uploaded PDFs and generated RFI PDFs are durable Cloud Storage objects keyed by run ID, with each object SHA-256 recorded in the Firestore run document. A failed audit remains visible as `FAILED` with its stored source-object records. If both FAILED writes fail, Firestore keeps `RUNNING`; a read older than ten minutes displays `STALLED` without changing the stored record. A completed run with no persisted findings has no RFI and displays `No RFI — no discrepancies found.`
+
+## Limitations and completion board
+
+This board mirrors the Phase 6d board in `HANDOFF.md`. `FIXED` rows name the change commit. `ACCEPTED` rows name why no further change is made and where the limit is disclosed.
+
+| Origin | Recorded item | State |
+| --- | --- | --- |
+| P3 | An RFI could render hand-built, unverified findings. | FIXED — `206378a` re-verifies both quotes before rendering. |
+| P3 | A process with direct Firestore credentials can bypass the application path. | ACCEPTED — SpecGuard cannot control independent credentials; disclosed in [Verification contract](#verification-contract). |
+| P3 | A concurrent source-file replacement can race the hash checks. | ACCEPTED — one local audit has no practical lock over another writer; disclosed in [Verification contract](#verification-contract). |
+| P3 | A malformed model turn could abort without a recorded rejection. | FIXED — `206378a` records `model_output_invalid`. |
+| P3 | No receipt proves a model initiated a registered tool call. | ACCEPTED — the runtime owns extraction, verification, persistence, and RFI creation; disclosed in the introduction. |
+| P3 | The Firestore fake does not model all transaction semantics. | ACCEPTED — current writes are flat and the real transaction paths have route coverage; disclosed in `REVIEW-P3.md` F7. |
+| P3 | A retry can replace its rejected claim with another verified claim. | ACCEPTED — claim identity is prompt-governed and no safe semantic comparator exists; disclosed in `REVIEW-P3.md` F9. |
+| P3 | Casefolding can merge case-sensitive units. | ACCEPTED — the gate contract requires casefolding; disclosed in [What the contract does not claim](#what-the-contract-does-not-claim). |
+| P3 | NFKC can flatten superscripts or subscripts. | ACCEPTED — the gate contract requires NFKC; disclosed in [What the contract does not claim](#what-the-contract-does-not-claim). |
+| P3 | Whitespace collapse can join separate layout regions. | ACCEPTED — layout recovery needs a different gate; disclosed in [What the contract does not claim](#what-the-contract-does-not-claim). |
+| P3 | Text-layer matching differs from the visible page and cannot read image-only PDFs. | ACCEPTED — the gate remains text-based; disclosed in [What the contract does not claim](#what-the-contract-does-not-claim). |
+| P3 | The schema cannot prove the gate ran. | ACCEPTED — write-time re-verification is the enforcement point; disclosed in [What the contract does not claim](#what-the-contract-does-not-claim). |
+| P3.5 | Raster text is not visible to the text-layer integrity screen. | ACCEPTED — the screen performs no OCR or raster comparison; disclosed in [What it does not detect](#what-it-does-not-detect). |
+| P3.5 | Clip-only render mode 7 cannot be separated from painted text. | ACCEPTED — MuPDF exposes the same flags; disclosed in [What it does not detect](#what-it-does-not-detect). |
+| P3.5 | White-on-white text, zero alpha, text outside the crop box, and covering rectangles can conceal text. | ACCEPTED — these methods retain filled or stroked flags; disclosed in [What it does not detect](#what-it-does-not-detect). |
+| P3.5 | The screen cannot determine concealment intent. | ACCEPTED — it reports evidence, not a motive; disclosed in [What it does not detect](#what-it-does-not-detect). |
+| P4 | The passphrase is checked after multipart parsing. | ACCEPTED — multipart form fields require parsing first; Cloud Run bounds request size; disclosed in `HANDOFF.md` Phase 5 review. |
+| P4 | Browser-side file checks are advisory. | ACCEPTED — server validation remains authoritative; disclosed in `HANDOFF.md` Phase 5 UI pass. |
+| P4 | Cloud Run concurrency is a steady-state target, not an instant-wide maximum. | ACCEPTED — Cloud Run may overlap instances during deploys or traffic splits; disclosed in [Service limits](#service-limits). |
+| P4 | A run can remain `RUNNING` if both FAILED-record writes fail. | FIXED — the Phase 6d commit displays `STALLED` after ten minutes without rewriting Firestore; disclosed in [Service limits](#service-limits). |
+| P4 | A reset can race with a live writer. | ACCEPTED — the reset is for one operator on an idle service; disclosed in `HANDOFF.md` Phase 6a. |
+| P6c | A cold start reset the six-per-address hourly sample limit. | FIXED — the Phase 6d commit stores the hourly and daily reservations in one Firestore transaction. |
+| P6c | The run page omitted the recorded severity reason. | FIXED — the Phase 6d commit renders the reason on the run page and in the RFI. |
+| P6c | A completed zero-finding run created an empty RFI. | FIXED — the Phase 6d commit creates no RFI and shows `No RFI — no discrepancies found.` only when no claim was rejected. |
+| P6d | A zero-finding run with rejected claims could claim that no discrepancy existed. | FIXED — the Phase 6d commit says that no finding was verified and directs the reader to rejections. |
+| Severity | An endpoint timeout or error can leave severity unclassified. | ACCEPTED — severity is advisory; one 15-second retry handles a timeout or 5xx response, then the recorded fallback reason explains the result. |
+| Severity | Severity does not prove verification or compliance. | ACCEPTED — it is an annotation after gate verification; disclosed in [Gemma severity annotation](#gemma-severity-annotation). |
+| Evaluation | The 2026-08-21 run has no historical Vertex spend or Gemini token totals. | ACCEPTED — the old output exposed neither value; disclosed in `EVAL.md`. |
+| Evaluation | Per-run Gemini usage is unavailable when ADK omits usage metadata. | ACCEPTED — SpecGuard records that fact and never estimates tokens; disclosed on each run page and in `EVAL.md`. |
+| Evaluation | Fixture evaluation did not exercise live gate rejections or retries. | ACCEPTED — the fixtures produced no rejected claim; disclosed in [Measured evaluation](#measured-evaluation). |
+| Evaluation | Fixture results do not show accuracy on real documents. | ACCEPTED — the suite uses fictional fixtures only; disclosed in `EVAL.md`. |
 
 ## Review records
 

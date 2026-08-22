@@ -249,6 +249,36 @@ class RunQuarantine(BaseModel):
     )
 
 
+class AuditModelUsage(BaseModel):
+    """Exact Gemini token counts exposed by ADK for one audit run.
+
+    A missing SDK value remains unavailable. The runtime never derives a token
+    count from prompt text, output text, or model pricing.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    prompt_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+    unavailable_reason: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _has_counts_or_reason(self) -> AuditModelUsage:
+        """Require either SDK counts or an explicit unavailability disclosure."""
+        has_counts = any(
+            count is not None
+            for count in (self.prompt_tokens, self.output_tokens, self.total_tokens)
+        )
+        if not has_counts and self.unavailable_reason is None:
+            raise ValueError("audit model usage needs SDK counts or an unavailability reason")
+        if has_counts and self.unavailable_reason is not None:
+            raise ValueError(
+                "audit model usage with SDK counts cannot carry an unavailability reason"
+            )
+        return self
+
+
 class AuditRunSummary(BaseModel):
     """Stable counters and output path for one complete audit run.
 
@@ -273,6 +303,10 @@ class AuditRunSummary(BaseModel):
     )
     severity_reason: str | None = Field(
         default=None, description="Fallback reason if severity classification fell back."
+    )
+    audit_model_usage: AuditModelUsage | None = Field(
+        default=None,
+        description="Exact Gemini usage metadata, or its recorded unavailability reason.",
     )
 
     @property

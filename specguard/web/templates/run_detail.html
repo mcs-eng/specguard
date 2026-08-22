@@ -4,7 +4,7 @@
 <a class="backlink" href="/">Back to recent runs</a>
 <section class="card">
   <div class="run-head">
-    <span class="badge {% if run.status == 'QUARANTINED' %}quarantined{% elif run.status == 'FAILED' %}failed{% elif run.status == 'RUNNING' %}running{% else %}completed{% endif %}">{{ run.status }}</span>
+    <span class="badge {% if run.display_status == 'QUARANTINED' %}quarantined{% elif run.display_status == 'FAILED' %}failed{% elif run.display_status == 'RUNNING' or run.display_status == 'STALLED' %}running{% else %}completed{% endif %}">{{ run.display_status }}</span>
     {% if run.source == 'sample' %}<span class="badge sample">SAMPLE</span>{% endif %}
     <div>
       <h2>Run <code>{{ run.run_id }}</code></h2>
@@ -13,6 +13,8 @@
   </div>
   {% if run.status == 'FAILED' %}
   <div class="notice stop"><strong>The audit did not complete.</strong><p>The stored source documents remain recorded for this run. Submit the pair again to start a new run.</p></div>
+  {% elif run.is_stalled %}
+  <div class="notice stop"><strong>This run is stalled.</strong><p>It has reported no completion for over ten minutes. Firestore still stores its state as RUNNING.</p></div>
   {% elif run.status == 'RUNNING' %}
   <div class="notice"><strong>This run has not finished.</strong><p>Reload this page later. The server reports no progress while the model step runs.</p></div>
   {% elif run.status == 'QUARANTINED' %}
@@ -24,7 +26,24 @@
     <div><dt>Rejected</dt><dd>{{ run.summary.rejected }}</dd></div>
     <div><dt>Retried</dt><dd>{{ run.summary.retried }}</dd></div>
   </dl>
-  {% if run.rfi %}<p class="rfi-link"><a href="/runs/{{ run.run_id }}/rfi.pdf">Open the RFI draft PDF</a></p>{% endif %}
+  {% if run.rfi %}<p class="rfi-link"><a href="/runs/{{ run.run_id }}/rfi.pdf">Open the RFI draft PDF</a></p>{% elif run.status == 'COMPLETED' and run.summary.findings_persisted == 0 and run.summary.rejected == 0 %}<p class="rfi-link muted">No RFI — no discrepancies found.</p>{% elif run.status == 'COMPLETED' and run.summary.findings_persisted == 0 %}<p class="rfi-link muted">No RFI — no findings were verified. Read the rejected claims below.</p>{% endif %}
+</section>
+<section class="card">
+  <div class="section-head">
+    <h2>Audit model usage</h2>
+    <p>Exact Gemini token counts from ADK metadata. SpecGuard does not estimate missing counts.</p>
+  </div>
+  {% if run.summary.audit_model_usage %}
+    {% if run.summary.audit_model_usage.unavailable_reason %}
+    <p class="empty">{{ run.summary.audit_model_usage.unavailable_reason }}</p>
+    {% else %}
+    <dl class="stats">
+      <div><dt>Prompt tokens</dt><dd>{% if run.summary.audit_model_usage.prompt_tokens is not none %}{{ run.summary.audit_model_usage.prompt_tokens }}{% else %}Unavailable{% endif %}</dd></div>
+      <div><dt>Output tokens</dt><dd>{% if run.summary.audit_model_usage.output_tokens is not none %}{{ run.summary.audit_model_usage.output_tokens }}{% else %}Unavailable{% endif %}</dd></div>
+      <div><dt>Total tokens</dt><dd>{% if run.summary.audit_model_usage.total_tokens is not none %}{{ run.summary.audit_model_usage.total_tokens }}{% else %}Unavailable{% endif %}</dd></div>
+    </dl>
+    {% endif %}
+  {% else %}<p class="empty">No audit model usage record is available for this older run.</p>{% endif %}
 </section>
 <section class="card">
   <div class="section-head">
@@ -33,7 +52,7 @@
   </div>
   {% if findings %}
   <div class="table-wrap"><table><thead><tr><th scope="col">Claim</th><th scope="col">Specification quote</th><th scope="col">Submitted quote</th><th scope="col">Severity</th></tr></thead><tbody>
-  {% for finding in findings %}<tr><td>{{ finding.claim_text }}</td><td><span class="locator">Specification page {{ finding.spec_quote.page_number }}</span><q class="quote">{{ finding.spec_quote.text }}</q></td><td><span class="locator">Submitted page {{ finding.cut_sheet_quote.page_number }}</span><q class="quote">{{ finding.cut_sheet_quote.text }}</q></td><td><span class="badge severity-{{ (finding.severity or 'unclassified')|lower }}">{{ (finding.severity or 'unclassified')|upper }}</span>{% if finding.severity_model_id %}<span class="locator">{{ finding.severity_model_id }}</span>{% elif finding.severity_status %}<span class="locator">{{ finding.severity_status }}</span>{% endif %}<p class="severity-caption">Severity is an advisory Gemma annotation on already-verified findings. It is not part of verification.</p></td></tr>{% endfor %}
+  {% for finding in findings %}<tr><td>{{ finding.claim_text }}</td><td><span class="locator">Specification page {{ finding.spec_quote.page_number }}</span><q class="quote">{{ finding.spec_quote.text }}</q></td><td><span class="locator">Submitted page {{ finding.cut_sheet_quote.page_number }}</span><q class="quote">{{ finding.cut_sheet_quote.text }}</q></td><td><span class="badge severity-{{ (finding.severity or 'unclassified')|lower }}">{{ (finding.severity or 'unclassified')|upper }}</span>{% if finding.severity_model_id %}<span class="locator">{{ finding.severity_model_id }}</span>{% elif finding.severity_status %}<span class="locator">{{ finding.severity_status }}</span>{% endif %}{% if finding.severity_reason %}<p class="severity-reason">Reason: {{ finding.severity_reason }}</p>{% endif %}<p class="severity-caption">Severity is an advisory Gemma annotation on already-verified findings. It is not part of verification.</p></td></tr>{% endfor %}
   </tbody></table></div>
   {% else %}<p class="empty">No verified findings were persisted for this run.</p>{% endif %}
 </section>
@@ -80,6 +99,7 @@
   .run-head h2 { margin: 0; }
   .run-head p { margin: .15rem 0 0; font-size: .9rem; }
   .rfi-link { margin: 1.2rem 0 0; }
+  .severity-reason { margin: .5rem 0 0; max-width: 22rem; color: var(--ink); font-size: .86rem; overflow-wrap: anywhere; }
   .severity-caption { margin: .5rem 0 0; max-width: 22rem; color: var(--ink-soft); font-size: .82rem; }
   .rfi-link a { display: inline-block; border: 1px solid var(--accent); border-radius: .35rem; padding: .55rem 1rem; font-weight: 700; text-decoration: none; transition: transform 140ms var(--ease-out), background-color 160ms var(--ease-out); }
   .rfi-link a:active { transform: scale(0.97); }

@@ -7,8 +7,6 @@ import os
 import secrets
 import tempfile
 import uuid
-from collections import deque
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -29,6 +27,7 @@ MAX_IN_FLIGHT_AUDITS = 2
 EXPECTED_UPLOAD_FIELDS = frozenset({"spec_pdf", "cut_sheet_pdf"})
 SAMPLE_RUNS_PER_IP_HOUR = 6
 SAMPLE_RUNS_PER_UTC_DAY = 60
+RUN_STALLED_AFTER = timedelta(minutes=10)
 FIXTURES_DIRECTORY = Path(__file__).parents[2] / "fixtures"
 TEMPLATES_DIRECTORY = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIRECTORY))
@@ -51,26 +50,6 @@ SAMPLE_AUDIT_CASES = {
     ),
 }
 SAMPLE_SPECIFICATION_FILENAME = "asterquay_learning_workshop_specification.pdf"
-
-
-class SampleRunRateLimiter:
-    """In-memory per-client limit for sample audit starts on one Cloud Run instance."""
-
-    def __init__(self, now: Callable[[], datetime] | None = None) -> None:
-        self._now = now or (lambda: datetime.now(UTC))
-        self._starts: dict[str, deque[datetime]] = {}
-
-    def allow(self, client_ip: str) -> bool:
-        """Record and allow at most six starts from one client IP each hour."""
-        now = self._now()
-        starts = self._starts.setdefault(client_ip, deque())
-        cutoff = now - timedelta(hours=1)
-        while starts and starts[0] <= cutoff:
-            starts.popleft()
-        if len(starts) >= SAMPLE_RUNS_PER_IP_HOUR:
-            return False
-        starts.append(now)
-        return True
 
 
 @dataclass(frozen=True)
@@ -100,7 +79,6 @@ class WebServices:
     storage: ObjectStorage
     audit_runner: AuditRunner
     audit_slots: asyncio.Semaphore
-    sample_rate_limiter: SampleRunRateLimiter
 
     @classmethod
     def production(cls) -> WebServices:
@@ -112,7 +90,6 @@ class WebServices:
             storage=CloudStorage(bucket_name=settings.bucket_name, project_id=settings.project_id),
             audit_runner=GoogleAuditRunner(project_id=settings.project_id),
             audit_slots=asyncio.Semaphore(MAX_IN_FLIGHT_AUDITS),
-            sample_rate_limiter=SampleRunRateLimiter(),
         )
 
 
@@ -125,6 +102,14 @@ class AuditFailedError(Exception):
 
     def __init__(self, run_id: str | None) -> None:
         super().__init__("The audit could not complete.")
+        self.run_id = run_id
+
+
+class UploadReplay(Exception):
+    """A repeated upload submission token that already owns a run."""
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__("The upload submission token was already used.")
         self.run_id = run_id
 
 
@@ -144,6 +129,7 @@ def create_app(services: WebServices | None = None) -> FastAPI:
         spec_pdf: Annotated[UploadFile, File(...)],
         cut_sheet_pdf: Annotated[UploadFile, File(...)],
         demo_passphrase: Annotated[str, Form(...)],
+        submission_token: Annotated[str, Form(...)],
     ) -> Response:
         """Validate two PDFs, audit them, and store the durable run artifacts."""
         app_services: WebServices = app.state.services
@@ -167,6 +153,16 @@ def create_app(services: WebServices | None = None) -> FastAPI:
                 cut_sheet_bytes = await _read_pdf_upload(cut_sheet_pdf, "The cut sheet")
             except UploadValidationError as error:
                 return _render_index(request, app_services, error=str(error), status_code=400)
+            if not submission_token:
+                return _render_index(
+                    request,
+                    app_services,
+                    error="The upload submission token is required.",
+                    status_code=400,
+                )
+            existing_run_id = app_services.repository.get_submission_run_id(submission_token)
+            if existing_run_id is not None:
+                return RedirectResponse(url=f"/runs/{existing_run_id}", status_code=303)
 
             run_id = uuid.uuid4().hex
             try:
@@ -176,7 +172,10 @@ def create_app(services: WebServices | None = None) -> FastAPI:
                     spec_bytes=spec_bytes,
                     cut_sheet_bytes=cut_sheet_bytes,
                     source="upload",
+                    submission_token=submission_token,
                 )
+            except UploadReplay as replay:
+                return RedirectResponse(url=f"/runs/{replay.run_id}", status_code=303)
             except AuditFailedError as failure:
                 return _render_index(
                     request,
@@ -204,10 +203,14 @@ def create_app(services: WebServices | None = None) -> FastAPI:
             ) from None
 
         async with app_services.audit_slots:
-            if not app_services.sample_rate_limiter.allow(_client_ip(request)):
-                return _sample_limit_response()
-            today = datetime.now(UTC).date().isoformat()
-            if not app_services.repository.reserve_sample_run(today, SAMPLE_RUNS_PER_UTC_DAY):
+            now = datetime.now(UTC)
+            if not app_services.repository.reserve_sample_run(
+                day=now.date().isoformat(),
+                hour=now.strftime("%Y-%m-%dT%H:00Z"),
+                client_ip=_client_ip(request),
+                hourly_limit=SAMPLE_RUNS_PER_IP_HOUR,
+                daily_limit=SAMPLE_RUNS_PER_UTC_DAY,
+            ):
                 return _sample_limit_response()
             run_id = uuid.uuid4().hex
             try:
@@ -235,6 +238,7 @@ def create_app(services: WebServices | None = None) -> FastAPI:
         run = app_services.repository.get_run(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="Audit run not found.")
+        run = _display_run(run)
         findings = app_services.repository.get_findings(run_id)
         rejections = app_services.repository.get_rejections(run_id)
         integrity_records = app_services.repository.get_integrity_records(run_id)
@@ -349,6 +353,7 @@ async def _run_audit(
     spec_bytes: bytes,
     cut_sheet_bytes: bytes,
     source: str,
+    submission_token: str | None = None,
 ) -> dict[str, Any]:
     """Store an auditable run record for one upload or committed sample pair."""
     specification_name = f"{run_id}/specification.pdf"
@@ -373,7 +378,13 @@ async def _run_audit(
             submitted_document=submitted_document,
             source=source,
         )
-        services.repository.create_run(pending_run)
+        if submission_token is None:
+            services.repository.create_run(pending_run)
+        else:
+            existing_run_id = services.repository.create_upload_run(pending_run, submission_token)
+            if existing_run_id is not None:
+                _delete_unrecorded_objects(services.storage, uploaded_names)
+                raise UploadReplay(existing_run_id)
         run_recorded = True
 
         with tempfile.TemporaryDirectory(prefix="specguard-") as directory:
@@ -403,6 +414,8 @@ async def _run_audit(
         )
         services.repository.create_run(run)
         return run
+    except UploadReplay:
+        raise
     except Exception:
         if rfi_object_name is not None:
             _delete_unrecorded_objects(services.storage, [rfi_object_name])
@@ -467,6 +480,11 @@ def _run_record(
                 if summary.quarantine is not None
                 else None
             ),
+            "audit_model_usage": (
+                summary.audit_model_usage.model_dump(mode="json")
+                if summary.audit_model_usage is not None
+                else None
+            ),
         },
         "documents": {
             "specification": _stored_object_record(specification),
@@ -484,6 +502,7 @@ def _empty_summary() -> dict[str, Any]:
         "retried": 0,
         "findings_persisted": 0,
         "quarantine": None,
+        "audit_model_usage": None,
     }
 
 
@@ -526,6 +545,22 @@ def _stored_object_record(stored: StoredObject) -> dict[str, str]:
     }
 
 
+def _display_run(run: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
+    """Add read-side status fields without changing the Firestore run record."""
+    displayed = dict(run)
+    status = str(displayed.get("status", ""))
+    created_at = displayed.get("created_at")
+    reference_time = now or datetime.now(UTC)
+    is_stalled = (
+        status == "RUNNING"
+        and isinstance(created_at, datetime)
+        and created_at <= reference_time - RUN_STALLED_AFTER
+    )
+    displayed["display_status"] = "STALLED" if is_stalled else status
+    displayed["is_stalled"] = is_stalled
+    return displayed
+
+
 def _render_index(
     request: Request,
     services: WebServices,
@@ -539,7 +574,8 @@ def _render_index(
         request=request,
         name="index.html",
         context={
-            "runs": services.repository.list_runs(),
+            "runs": [_display_run(run) for run in services.repository.list_runs()],
+            "submission_token": secrets.token_urlsafe(32),
             "error": error,
             "failed_run_id": failed_run_id,
         },

@@ -5,7 +5,8 @@
 - Audit model: `gemini-3.7-flash` via Vertex AI
 - Severity model, measured from the persisted findings: `google-gemma3-gemma-3-1b-it`
 - Severity endpoint, as the operator named it: `google-gemma3-gemma-3-1b-it` on a Vertex AI Model Garden endpoint (g2-standard-12, 1x NVIDIA_L4)
-- Total Vertex spend: not visible in the run output
+- Total Vertex spend: unavailable for this historical evaluation; the run output exposed no cost value
+- Per-run Gemini usage: this evaluation predates the Phase 6d SDK usage record; future runs record exact prompt, output, and total tokens only when ADK exposes them, and never estimate missing counts
 - Audit cases: 4, drawn from the five committed fixture PDFs
 - Total real runs: 20
 

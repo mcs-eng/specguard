@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
-import pymupdf
+from google.genai import types
 
-from specguard.agent import AuditRuntime
+from specguard.agent import AdkClaimGenerator, AuditRuntime
 from specguard.models import AuditClaim, AuditClaimBatch
 from specguard.tools import FINDINGS_COLLECTION, REJECTIONS_COLLECTION, AuditTools
 from tests.fake_firestore import FakeFirestoreClient
@@ -158,7 +159,7 @@ def test_retry_must_return_exactly_one_corrected_claim(tmp_path: Path) -> None:
     assert rejection["reason"] == "retry_returned_0_claims"
 
 
-def test_empty_model_output_persists_no_findings_and_still_drafts_rfi(tmp_path: Path) -> None:
+def test_empty_model_output_persists_no_findings_and_drafts_no_rfi(tmp_path: Path) -> None:
     generator = FakeClaimGenerator(AuditClaimBatch(claims=[]))
     runtime, client, _, _ = _runtime(tmp_path, generator)
 
@@ -169,13 +170,11 @@ def test_empty_model_output_persists_no_findings_and_still_drafts_rfi(tmp_path: 
     assert summary.rejected == 0
     assert summary.retried == 0
     assert summary.findings_persisted == 0
+    assert summary.rfi_path is None
     assert client.data == {}
-    with pymupdf.open(summary.rfi_path) as document:
-        text = "\n".join(page.get_text() for page in document)
-    assert "No findings were persisted for this run." in text
 
 
-def test_invalid_initial_model_output_records_rejection_and_drafts_empty_rfi(
+def test_invalid_initial_model_output_records_rejection_and_drafts_no_rfi(
     tmp_path: Path,
 ) -> None:
     generator = FakeClaimGenerator(
@@ -194,9 +193,7 @@ def test_invalid_initial_model_output_records_rejection_and_drafts_empty_rfi(
     rejection = next(iter(client.data[REJECTIONS_COLLECTION].values()))
     assert rejection["claim_text"] == "Initial model output"
     assert rejection["reason"] == "model_output_invalid"
-    with pymupdf.open(summary.rfi_path) as document:
-        text = "\n".join(page.get_text() for page in document)
-    assert "No findings were persisted for this run." in text
+    assert summary.rfi_path is None
 
 
 def test_invalid_retry_model_output_rejects_that_claim_and_continues(tmp_path: Path) -> None:
@@ -222,3 +219,51 @@ def test_invalid_retry_model_output_rejects_that_claim_and_continues(tmp_path: P
     rejection = next(iter(client.data[REJECTIONS_COLLECTION].values()))
     assert rejection["claim_text"] == invalid_claim.claim_description
     assert rejection["reason"] == "model_output_invalid"
+
+
+def test_runtime_records_usage_unavailability_without_an_adk_generator(tmp_path: Path) -> None:
+    generator = FakeClaimGenerator(AuditClaimBatch(claims=[]))
+    runtime, _, _, _ = _runtime(tmp_path, generator)
+
+    summary = asyncio.run(runtime.run())
+
+    assert summary.audit_model_usage is not None
+    assert (
+        summary.audit_model_usage.unavailable_reason
+        == "The audit claim generator did not expose token usage metadata."
+    )
+
+
+def test_adk_claim_generator_records_sdk_usage_metadata() -> None:
+    class FakeRunner:
+        async def run_async(self, **_: object):
+            yield SimpleNamespace(
+                usage_metadata=SimpleNamespace(
+                    prompt_token_count=101,
+                    candidates_token_count=17,
+                    total_token_count=118,
+                ),
+                content=types.Content(
+                    role="model", parts=[types.Part.from_text(text='{"claims": []}')]
+                ),
+                is_final_response=lambda: True,
+            )
+
+    generator = object.__new__(AdkClaimGenerator)
+    generator._runner = FakeRunner()
+    generator._run_id = "audit-run-1"
+    generator._user_id = "local-auditor"
+    generator._session_created = True
+    generator._prompt_tokens = 0
+    generator._output_tokens = 0
+    generator._total_tokens = 0
+    generator._usage_seen = False
+
+    batch = asyncio.run(generator.generate_claims("Audit this document."))
+    usage = generator.audit_model_usage()
+
+    assert batch.claims == []
+    assert usage.prompt_tokens == 101
+    assert usage.output_tokens == 17
+    assert usage.total_tokens == 118
+    assert usage.unavailable_reason is None

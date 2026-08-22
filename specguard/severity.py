@@ -17,6 +17,7 @@ from typing import Any, Protocol
 
 from google.genai import types
 from pydantic import BaseModel, Field
+from requests.exceptions import Timeout
 
 from specguard.models import Finding, PersistedFinding, Severity
 
@@ -331,23 +332,35 @@ class VertexEndpointSeverityClassifier:
             url = self._get_predict_url()
             headers = {"X-Goog-User-Project": self.project_id}
             response = None
-            for _attempt in range(3):
-                response = session.post(
-                    url,
-                    json=body,
-                    headers=headers,
-                    timeout=self.timeout_seconds,
-                )
-                if response.status_code == 200 or response.status_code not in (502, 503, 504):
+            timeout_error: Timeout | None = None
+            for attempt in range(2):
+                try:
+                    response = session.post(
+                        url,
+                        json=body,
+                        headers=headers,
+                        timeout=self.timeout_seconds,
+                    )
+                except Timeout as error:
+                    timeout_error = error
+                    if attempt == 0:
+                        continue
                     break
-                import time
-
-                time.sleep(2.0)
+                if response.status_code == 200:
+                    break
+                if 500 <= response.status_code <= 599 and attempt == 0:
+                    continue
+                break
 
             if response is None or response.status_code != 200:
-                status_str = str(response.status_code) if response is not None else "ERR"
-                error_text = response.text[:200].strip() if response is not None else "No response"
-                error_msg = f"HTTP {status_str}: {error_text}"
+                if response is None and timeout_error is not None:
+                    error_msg = f"Request timed out after {self.timeout_seconds:g} seconds"
+                else:
+                    status_str = str(response.status_code) if response is not None else "ERR"
+                    error_text = (
+                        response.text[:200].strip() if response is not None else "No response"
+                    )
+                    error_msg = f"HTTP {status_str}: {error_text}"
                 logger.warning("Vertex endpoint classification returned error: %s", error_msg)
                 return SeverityResult(
                     severity=Severity.UNCLASSIFIED,

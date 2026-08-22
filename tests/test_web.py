@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,6 @@ from specguard.models import AuditRunSummary, DocumentRole, QuarantinedDocument,
 from specguard.web.app import (
     MAX_UPLOAD_BYTES,
     SAMPLE_RUNS_PER_UTC_DAY,
-    SampleRunRateLimiter,
     WebServices,
     WebSettings,
     create_app,
@@ -41,6 +40,8 @@ class FakeRunRepository:
         self.failing_create_calls = failing_create_calls
         self.create_calls = 0
         self.sample_runs_by_day: dict[str, int] = {}
+        self.sample_runs_by_hour_ip: dict[tuple[str, str], int] = {}
+        self.submission_tokens: dict[str, str] = {}
 
     def create_run(self, run: Mapping[str, Any]) -> None:
         self.create_calls += 1
@@ -48,11 +49,33 @@ class FakeRunRepository:
             raise RuntimeError("firestore write failed")
         self.runs[str(run["run_id"])] = dict(run)
 
-    def reserve_sample_run(self, day: str, limit: int) -> bool:
-        current = self.sample_runs_by_day.get(day, 0)
-        if current >= limit:
+    def create_upload_run(self, run: Mapping[str, Any], submission_token: str) -> str | None:
+        existing_run_id = self.submission_tokens.get(submission_token)
+        if existing_run_id is not None:
+            return existing_run_id
+        self.create_run(run)
+        self.submission_tokens[submission_token] = str(run["run_id"])
+        return None
+
+    def get_submission_run_id(self, submission_token: str) -> str | None:
+        return self.submission_tokens.get(submission_token)
+
+    def reserve_sample_run(
+        self,
+        *,
+        day: str,
+        hour: str,
+        client_ip: str,
+        hourly_limit: int,
+        daily_limit: int,
+    ) -> bool:
+        daily_current = self.sample_runs_by_day.get(day, 0)
+        bucket = (hour, client_ip)
+        hourly_current = self.sample_runs_by_hour_ip.get(bucket, 0)
+        if daily_current >= daily_limit or hourly_current >= hourly_limit:
             return False
-        self.sample_runs_by_day[day] = current + 1
+        self.sample_runs_by_day[day] = daily_current + 1
+        self.sample_runs_by_hour_ip[bucket] = hourly_current + 1
         return True
 
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -154,7 +177,6 @@ def _client(
             storage=storage,
             audit_runner=runner,
             audit_slots=asyncio.Semaphore(2),
-            sample_rate_limiter=SampleRunRateLimiter(),
         )
     )
     return TestClient(app), repository, storage, runner
@@ -279,7 +301,7 @@ def test_findings_page_shows_a_disabled_submit_state_and_a_stop_message() -> Non
 
     assert response.status_code == 200
     assert "Audit running. Do not submit again." in response.text
-    assert "A second submit starts a duplicate run." in response.text
+    assert "A repeated submit returns the first run." in response.text
     assert "#audit-submit:disabled" in response.text
     assert "auditSubmit.disabled = true" in response.text
     assert "if (submitting) { event.preventDefault(); return; }" in response.text
@@ -356,7 +378,11 @@ def test_findings_page_promises_no_completion_time_or_progress_value() -> None:
 def test_audit_rejects_a_missing_or_wrong_passphrase() -> None:
     client, _, _, runner = _client()
 
-    response = client.post("/audit", data={"demo_passphrase": "wrong"}, files=_files())
+    response = client.post(
+        "/audit",
+        data={"demo_passphrase": "wrong", "submission_token": "test-token"},
+        files=_files(),
+    )
 
     assert response.status_code == 403
     assert "The demo passphrase is required." in response.text
@@ -366,7 +392,9 @@ def test_audit_rejects_a_missing_or_wrong_passphrase() -> None:
 def test_audit_rejects_a_non_ascii_wrong_passphrase() -> None:
     client, _, _, runner = _client()
 
-    response = client.post("/audit", data={"demo_passphrase": "é"}, files=_files())
+    response = client.post(
+        "/audit", data={"demo_passphrase": "é", "submission_token": "test-token"}, files=_files()
+    )
 
     assert response.status_code == 403
     assert "The demo passphrase is required." in response.text
@@ -381,7 +409,9 @@ def test_audit_rejects_an_unauthorized_oversized_upload_before_audit() -> None:
         "cut_sheet_pdf": ("cut-sheet.pdf", CUT_SHEET_BYTES, "application/pdf"),
     }
 
-    response = client.post("/audit", data={"demo_passphrase": "wrong"}, files=files)
+    response = client.post(
+        "/audit", data={"demo_passphrase": "wrong", "submission_token": "test-token"}, files=files
+    )
 
     assert response.status_code == 403
     assert runner.calls == []
@@ -392,7 +422,7 @@ def test_audit_rejects_a_non_pdf_upload() -> None:
 
     response = client.post(
         "/audit",
-        data={"demo_passphrase": "test-passphrase"},
+        data={"demo_passphrase": "test-passphrase", "submission_token": "test-token"},
         files=_files(spec_type="text/plain"),
     )
 
@@ -409,7 +439,11 @@ def test_audit_rejects_an_oversized_upload() -> None:
         "cut_sheet_pdf": ("cut-sheet.pdf", CUT_SHEET_BYTES, "application/pdf"),
     }
 
-    response = client.post("/audit", data={"demo_passphrase": "test-passphrase"}, files=files)
+    response = client.post(
+        "/audit",
+        data={"demo_passphrase": "test-passphrase", "submission_token": "test-token"},
+        files=files,
+    )
 
     assert response.status_code == 400
     assert "must not exceed 5 MB" in response.text
@@ -421,7 +455,7 @@ def test_audit_stores_run_scoped_objects_and_redirects_to_the_run() -> None:
 
     response = client.post(
         "/audit",
-        data={"demo_passphrase": "test-passphrase"},
+        data={"demo_passphrase": "test-passphrase", "submission_token": "test-token"},
         files=_files(),
         follow_redirects=False,
     )
@@ -446,7 +480,11 @@ def test_audit_stores_run_scoped_objects_and_redirects_to_the_run() -> None:
 def test_audit_cleans_up_objects_when_uploads_cannot_be_recorded() -> None:
     client, repository, storage, runner = _client(fail_upload_at=2)
 
-    response = client.post("/audit", data={"demo_passphrase": "test-passphrase"}, files=_files())
+    response = client.post(
+        "/audit",
+        data={"demo_passphrase": "test-passphrase", "submission_token": "test-token"},
+        files=_files(),
+    )
 
     assert response.status_code == 500
     assert repository.runs == {}
@@ -460,7 +498,11 @@ def test_audit_cleans_up_objects_when_uploads_cannot_be_recorded() -> None:
 def test_audit_records_a_failed_run_after_durable_inputs_are_stored() -> None:
     client, repository, storage, runner = _client(failure=RuntimeError("model failed"))
 
-    response = client.post("/audit", data={"demo_passphrase": "test-passphrase"}, files=_files())
+    response = client.post(
+        "/audit",
+        data={"demo_passphrase": "test-passphrase", "submission_token": "test-token"},
+        files=_files(),
+    )
 
     assert response.status_code == 500
     assert len(runner.calls) == 1
@@ -485,7 +527,11 @@ def test_audit_rejects_a_submission_carrying_an_unexpected_file() -> None:
         ("extra_pdf", ("extra.pdf", EXTRA_BYTES, "application/pdf")),
     ]
 
-    response = client.post("/audit", data={"demo_passphrase": "test-passphrase"}, files=files)
+    response = client.post(
+        "/audit",
+        data={"demo_passphrase": "test-passphrase", "submission_token": "test-token"},
+        files=files,
+    )
 
     assert response.status_code == 400
     assert "unexpected file" in response.text
@@ -502,7 +548,11 @@ def test_audit_rejects_a_submission_carrying_two_files_for_one_document() -> Non
         ("cut_sheet_pdf", ("cut-sheet.pdf", CUT_SHEET_BYTES, "application/pdf")),
     ]
 
-    response = client.post("/audit", data={"demo_passphrase": "test-passphrase"}, files=files)
+    response = client.post(
+        "/audit",
+        data={"demo_passphrase": "test-passphrase", "submission_token": "test-token"},
+        files=files,
+    )
 
     assert response.status_code == 400
     assert "more than one file for the same document" in response.text
@@ -514,7 +564,11 @@ def test_audit_rejects_a_submission_carrying_two_files_for_one_document() -> Non
 def test_audit_deletes_uploaded_objects_when_the_run_record_cannot_be_written() -> None:
     client, repository, storage, runner = _client(failing_create_calls=frozenset({1}))
 
-    response = client.post("/audit", data={"demo_passphrase": "test-passphrase"}, files=_files())
+    response = client.post(
+        "/audit",
+        data={"demo_passphrase": "test-passphrase", "submission_token": "test-token"},
+        files=_files(),
+    )
 
     assert response.status_code == 500
     assert repository.runs == {}
@@ -529,7 +583,11 @@ def test_audit_keeps_recorded_objects_when_the_failed_write_cannot_land() -> Non
         failure=RuntimeError("model failed"), failing_create_calls=frozenset({2, 3})
     )
 
-    response = client.post("/audit", data={"demo_passphrase": "test-passphrase"}, files=_files())
+    response = client.post(
+        "/audit",
+        data={"demo_passphrase": "test-passphrase", "submission_token": "test-token"},
+        files=_files(),
+    )
 
     assert response.status_code == 500
     assert len(runner.calls) == 1
@@ -545,7 +603,7 @@ def test_run_view_tells_a_reviewer_that_a_running_run_has_not_finished() -> None
     client, repository, _, _ = _client()
     repository.runs[RUN_ID] = {
         "run_id": RUN_ID,
-        "created_at": datetime(2026, 8, 21, tzinfo=UTC),
+        "created_at": datetime.now(UTC),
         "status": "RUNNING",
         "summary": {"claims_made": 0, "rejected": 0, "retried": 0, "findings_persisted": 0},
         "documents": {},
@@ -689,7 +747,7 @@ def test_quarantined_run_stores_no_rfi() -> None:
 
     response = client.post(
         "/audit",
-        data={"demo_passphrase": "test-passphrase"},
+        data={"demo_passphrase": "test-passphrase", "submission_token": "test-token"},
         files=_files(),
         follow_redirects=False,
     )
@@ -743,3 +801,181 @@ def test_run_view_renders_classified_severity_badge_and_model_id() -> None:
         "Severity is an advisory Gemma annotation on already-verified findings. "
         "It is not part of verification."
     ) in response.text
+
+
+def test_upload_submission_token_replay_returns_the_first_run() -> None:
+    client, repository, _, runner = _client()
+    data = {"demo_passphrase": "test-passphrase", "submission_token": "replay-token"}
+
+    first = client.post("/audit", data=data, files=_files(), follow_redirects=False)
+    second = client.post("/audit", data=data, files=_files(), follow_redirects=False)
+
+    assert first.status_code == 303
+    assert second.status_code == 303
+    assert second.headers["location"] == first.headers["location"]
+    assert len(repository.runs) == 1
+    assert len(runner.calls) == 1
+
+
+def test_sample_limit_survives_a_cold_start() -> None:
+    client, repository, _, first_runner = _client()
+    headers = {"x-forwarded-for": "203.0.113.9, 198.51.100.4"}
+
+    for _ in range(4):
+        assert (
+            client.post("/sample/caldra", headers=headers, follow_redirects=False).status_code
+            == 303
+        )
+
+    second_runner = FakeAuditRunner()
+    second_client = TestClient(
+        create_app(
+            WebServices(
+                settings=WebSettings(
+                    project_id="test-project",
+                    bucket_name="test-runs",
+                    demo_passphrase="test-passphrase",
+                ),
+                repository=repository,
+                storage=FakeObjectStorage(),
+                audit_runner=second_runner,
+                audit_slots=asyncio.Semaphore(2),
+            )
+        )
+    )
+    for _ in range(2):
+        assert (
+            second_client.post(
+                "/sample/caldra", headers=headers, follow_redirects=False
+            ).status_code
+            == 303
+        )
+
+    blocked = second_client.post("/sample/caldra", headers=headers, follow_redirects=False)
+
+    assert blocked.status_code == 429
+    assert len(first_runner.calls) == 4
+    assert len(second_runner.calls) == 2
+    assert sum(repository.sample_runs_by_day.values()) == 6
+
+
+def test_stalled_run_is_a_read_side_status_on_list_and_detail() -> None:
+    client, repository, _, _ = _client()
+    repository.runs[RUN_ID] = {
+        "run_id": RUN_ID,
+        "created_at": datetime.now(UTC) - timedelta(minutes=11),
+        "status": "RUNNING",
+        "summary": {"claims_made": 0, "rejected": 0, "retried": 0, "findings_persisted": 0},
+        "documents": {},
+        "rfi": None,
+    }
+
+    listing = client.get("/")
+    detail = client.get(f"/runs/{RUN_ID}")
+
+    assert "STALLED" in listing.text
+    assert "No completion for over ten minutes." in listing.text
+    assert "This run is stalled." in detail.text
+    assert "Firestore still stores its state as RUNNING." in detail.text
+    assert repository.runs[RUN_ID]["status"] == "RUNNING"
+
+
+def test_completed_zero_finding_run_says_why_it_has_no_rfi() -> None:
+    client, repository, _, _ = _client()
+    repository.runs[RUN_ID] = {
+        "run_id": RUN_ID,
+        "created_at": datetime.now(UTC),
+        "status": "COMPLETED",
+        "summary": {"claims_made": 0, "rejected": 0, "retried": 0, "findings_persisted": 0},
+        "documents": {},
+        "rfi": None,
+    }
+
+    assert "No RFI — no discrepancies found." in client.get("/").text
+    assert "No RFI — no discrepancies found." in client.get(f"/runs/{RUN_ID}").text
+
+
+def test_completed_rejected_claims_do_not_claim_no_discrepancies() -> None:
+    client, repository, _, _ = _client()
+    repository.runs[RUN_ID] = {
+        "run_id": RUN_ID,
+        "created_at": datetime.now(UTC),
+        "status": "COMPLETED",
+        "summary": {"claims_made": 1, "rejected": 1, "retried": 1, "findings_persisted": 0},
+        "documents": {},
+        "rfi": None,
+    }
+    repository.rejections[RUN_ID] = [
+        {"claim_text": "Unsupported claim", "reason": "quote_not_found_on_cited_page"}
+    ]
+
+    listing = client.get("/")
+    detail = client.get(f"/runs/{RUN_ID}")
+
+    assert "No RFI — no discrepancies found." not in listing.text
+    assert "No verified findings" in listing.text
+    assert "No RFI — no discrepancies found." not in detail.text
+    assert "No RFI — no findings were verified." in detail.text
+    assert "quote_not_found_on_cited_page" in detail.text
+
+
+def test_run_view_renders_fallback_severity_reason_and_audit_usage() -> None:
+    client, repository, _, _ = _client()
+    fallback_reason = "severity endpoint not deployed outside demo windows"
+    repository.runs[RUN_ID] = {
+        "run_id": RUN_ID,
+        "created_at": datetime.now(UTC),
+        "status": "COMPLETED",
+        "summary": {
+            "claims_made": 1,
+            "rejected": 0,
+            "retried": 0,
+            "findings_persisted": 1,
+            "audit_model_usage": {"prompt_tokens": 101, "output_tokens": 17, "total_tokens": 118},
+        },
+        "documents": {},
+        "rfi": None,
+    }
+    repository.findings[RUN_ID] = [
+        {
+            "claim_text": "The submitted voltage conflicts with the requirement.",
+            "spec_quote": {"page_number": 3, "text": "Provide 480V."},
+            "cut_sheet_quote": {"page_number": 1, "text": "Nominal system: 208V."},
+            "severity": "unclassified",
+            "severity_status": "fallback",
+            "severity_reason": fallback_reason,
+        }
+    ]
+
+    response = client.get(f"/runs/{RUN_ID}")
+
+    assert response.status_code == 200
+    assert fallback_reason in response.text
+    assert "Prompt tokens" in response.text
+    assert ">101<" in response.text
+    assert ">17<" in response.text
+    assert ">118<" in response.text
+
+
+def test_run_view_renders_recorded_usage_unavailability_reason() -> None:
+    client, repository, _, _ = _client()
+    unavailable_reason = "The ADK audit call path did not expose token usage metadata."
+    repository.runs[RUN_ID] = {
+        "run_id": RUN_ID,
+        "created_at": datetime.now(UTC),
+        "status": "COMPLETED",
+        "summary": {
+            "claims_made": 0,
+            "rejected": 0,
+            "retried": 0,
+            "findings_persisted": 0,
+            "audit_model_usage": {"unavailable_reason": unavailable_reason},
+        },
+        "documents": {},
+        "rfi": None,
+    }
+
+    response = client.get(f"/runs/{RUN_ID}")
+
+    assert response.status_code == 200
+    assert unavailable_reason in response.text

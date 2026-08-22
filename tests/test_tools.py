@@ -20,6 +20,7 @@ from specguard.models import (
     Finding,
     PersistedFinding,
     PersistedQuote,
+    Severity,
     VerificationStatus,
 )
 from specguard.tools import (
@@ -78,6 +79,24 @@ def _finding(
             CitedQuote(text=cut_sheet_quote, page_number=1, document_path=str(cut_sheet)),
         ],
         verification_status=status,
+    )
+
+
+def _persisted_finding(spec: Path, cut_sheet: Path) -> PersistedFinding:
+    return PersistedFinding(
+        finding_id="finding-1",
+        run_id="run-1234abcd",
+        claim_text="The submitted characteristic conflicts with the requirement.",
+        spec_quote=PersistedQuote(
+            text="Requirement alpha.",
+            page_number=1,
+            document_sha256=hashlib.sha256(spec.read_bytes()).hexdigest(),
+        ),
+        cut_sheet_quote=PersistedQuote(
+            text="Submitted characteristic beta.",
+            page_number=1,
+            document_sha256=hashlib.sha256(cut_sheet.read_bytes()).hexdigest(),
+        ),
     )
 
 
@@ -324,6 +343,9 @@ def test_draft_rfi_contains_required_evidence_and_hash_metadata(tmp_path: Path) 
         cut_sheet_quote=PersistedQuote(
             text="Submitted characteristic beta.", page_number=1, document_sha256=cut_hash
         ),
+        severity=Severity.UNCLASSIFIED,
+        severity_status="fallback",
+        severity_reason="severity endpoint not deployed outside demo windows",
     )
 
     tools = _tools(tmp_path, client, spec, cut_sheet)
@@ -335,6 +357,7 @@ def test_draft_rfi_contains_required_evidence_and_hash_metadata(tmp_path: Path) 
     assert "Project: Fictional Workshop" in text
     assert "Owner: Fictional Public Authority" in text
     assert "Severity: UNCLASSIFIED" in text
+    assert "Severity reason: severity endpoint not deployed outside demo windows" in text
     assert "Specification quote - page 1" in text
     assert "Submitted document quote - page 1" in text
     assert "Requirement alpha." in text
@@ -363,15 +386,12 @@ def test_draft_rfi_refuses_hashes_that_do_not_match_the_bound_sources(tmp_path: 
         _tools(tmp_path, client, spec, cut_sheet).draft_rfi([finding])
 
 
-def test_draft_rfi_with_no_findings_avoids_a_compliance_claim(tmp_path: Path) -> None:
+def test_draft_rfi_refuses_no_findings(tmp_path: Path) -> None:
     client = FakeFirestoreClient()
     spec, cut_sheet = _source_pdfs(tmp_path)
-    tools = _tools(tmp_path, client, spec, cut_sheet)
-    result = tools.draft_rfi([])
-    with pymupdf.open(tools.rfi_path_for(result["rfi_id"])) as document:
-        text = "\n".join(page.get_text() for page in document)
-    assert "No findings were persisted for this run." in text
-    assert "not a compliance determination" in text
+
+    with pytest.raises(ValueError, match="requires at least one persisted finding"):
+        _tools(tmp_path, client, spec, cut_sheet).draft_rfi([])
 
 
 def test_check_text_integrity_tool_returns_the_flag_summary(tmp_path: Path) -> None:
@@ -535,7 +555,7 @@ def test_draft_rfi_returns_an_opaque_handle_and_no_filesystem_path(tmp_path: Pat
     spec, cut_sheet = _source_pdfs(tmp_path)
     tools = _tools(tmp_path, client, spec, cut_sheet)
 
-    result = tools.draft_rfi([])
+    result = tools.draft_rfi([_persisted_finding(spec, cut_sheet)])
 
     assert set(result) == {"rfi_id", "rfi_number", "finding_count"}
     rendered = str(result)
@@ -550,7 +570,7 @@ def test_the_runtime_channel_resolves_the_handle_to_the_written_file(tmp_path: P
     spec, cut_sheet = _source_pdfs(tmp_path)
     tools = _tools(tmp_path, client, spec, cut_sheet)
 
-    result = tools.draft_rfi([])
+    result = tools.draft_rfi([_persisted_finding(spec, cut_sheet)])
     resolved = tools.rfi_path_for(result["rfi_id"])
 
     assert resolved is not None
@@ -566,7 +586,9 @@ def test_no_model_registered_tool_returns_the_rfi_filesystem_path(tmp_path: Path
     spec, cut_sheet = _source_pdfs(tmp_path)
     tools = _tools(tmp_path, client, spec, cut_sheet)
     agent = create_adk_agent(tools, project_id="test-project")
-    rfi_path = str(tools.rfi_path_for(tools.draft_rfi([])["rfi_id"]))
+    rfi_path = str(
+        tools.rfi_path_for(tools.draft_rfi([_persisted_finding(spec, cut_sheet)])["rfi_id"])
+    )
 
     registered = [tool.__name__ for tool in agent.tools]
     assert registered == [
@@ -581,7 +603,7 @@ def test_no_model_registered_tool_returns_the_rfi_filesystem_path(tmp_path: Path
         str(tools.check_text_integrity("specification")),
         str(tools.extract_pdf_text("specification", 1)),
         str(tools.verify_quote("Requirement alpha.", 1, "specification")),
-        str(tools.draft_rfi([])),
+        str(tools.draft_rfi([_persisted_finding(spec, cut_sheet)])),
     ]
     assert all(rfi_path not in result for result in results)
     assert all(str(tmp_path) not in result for result in results)

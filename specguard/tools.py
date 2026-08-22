@@ -338,6 +338,8 @@ class AuditTools:
         identifier instead; the runtime exchanges it through
         :meth:`rfi_path_for`, which is not a registered tool.
         """
+        if not findings:
+            raise ValueError("an RFI requires at least one persisted finding")
         spec_document = gate.build_document_record(self._spec_path)
         cut_sheet_document = gate.build_document_record(self._cut_sheet_path)
         if any(
@@ -380,37 +382,30 @@ class AuditTools:
         )
         writer.space(8)
 
-        if not findings:
-            writer.heading("FINDINGS", size=12)
-            writer.paragraph(
-                "No findings were persisted for this run. "
-                "This statement is not a compliance determination."
+        for index, finding in enumerate(findings, start=1):
+            writer.heading(f"FINDING {index}", size=12)
+            writer.paragraph(finding.claim_text)
+            severity_val = (
+                finding.severity.value.upper()
+                if isinstance(finding.severity, Severity)
+                else str(finding.severity).upper()
             )
-        else:
-            for index, finding in enumerate(findings, start=1):
-                writer.heading(f"FINDING {index}", size=12)
-                writer.paragraph(finding.claim_text)
-                severity_val = (
-                    finding.severity.value.upper()
-                    if isinstance(finding.severity, Severity)
-                    else str(finding.severity).upper()
-                )
-                if finding.severity_model_id:
-                    writer.line(
-                        f"Severity: {severity_val} (model: {finding.severity_model_id})", bold=True
-                    )
-                else:
-                    writer.line(f"Severity: {severity_val}", bold=True)
+            if finding.severity_model_id:
                 writer.line(
-                    f"Specification quote - page {finding.spec_quote.page_number}", bold=True
+                    f"Severity: {severity_val} (model: {finding.severity_model_id})", bold=True
                 )
-                writer.paragraph(f'"{finding.spec_quote.text}"')
-                writer.line(
-                    f"Submitted document quote - page {finding.cut_sheet_quote.page_number}",
-                    bold=True,
-                )
-                writer.paragraph(f'"{finding.cut_sheet_quote.text}"')
-                writer.space(8)
+            else:
+                writer.line(f"Severity: {severity_val}", bold=True)
+            if finding.severity_reason:
+                writer.line(f"Severity reason: {finding.severity_reason}")
+            writer.line(f"Specification quote - page {finding.spec_quote.page_number}", bold=True)
+            writer.paragraph(f'"{finding.spec_quote.text}"')
+            writer.line(
+                f"Submitted document quote - page {finding.cut_sheet_quote.page_number}",
+                bold=True,
+            )
+            writer.paragraph(f'"{finding.cut_sheet_quote.text}"')
+            writer.space(8)
 
         writer.heading("CHAIN-OF-CUSTODY METADATA", size=12)
         writer.paragraph(f"Specification document SHA-256: {spec_document.sha256}")

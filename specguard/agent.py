@@ -17,6 +17,7 @@ from specguard import gate, integrity
 from specguard.models import (
     AuditClaim,
     AuditClaimBatch,
+    AuditModelUsage,
     AuditRunSummary,
     CitedQuote,
     DocumentRole,
@@ -93,6 +94,10 @@ class AdkClaimGenerator:
         self._run_id = run_id
         self._user_id = "local-auditor"
         self._session_created = False
+        self._prompt_tokens: int | None = 0
+        self._output_tokens: int | None = 0
+        self._total_tokens: int | None = 0
+        self._usage_seen = False
 
     async def generate_claims(self, message: str) -> AuditClaimBatch:
         if not self._session_created:
@@ -110,6 +115,7 @@ class AdkClaimGenerator:
             session_id=self._run_id,
             new_message=content,
         ):
+            self._record_usage(getattr(event, "usage_metadata", None))
             if not event.is_final_response() or not event.content:
                 continue
             text_parts = [part.text for part in event.content.parts or [] if part.text]
@@ -119,6 +125,43 @@ class AdkClaimGenerator:
         if final_text is None:
             raise RuntimeError("the ADK agent returned no final structured response")
         return AuditClaimBatch.model_validate_json(final_text)
+
+    def audit_model_usage(self) -> AuditModelUsage:
+        """Return exact ADK usage counts, or record that this path exposed none."""
+        if not self._usage_seen or all(
+            count is None
+            for count in (self._prompt_tokens, self._output_tokens, self._total_tokens)
+        ):
+            return AuditModelUsage(
+                unavailable_reason="The ADK audit call path did not expose token usage metadata."
+            )
+        return AuditModelUsage(
+            prompt_tokens=self._prompt_tokens,
+            output_tokens=self._output_tokens,
+            total_tokens=self._total_tokens,
+        )
+
+    def _record_usage(self, usage_metadata: Any) -> None:
+        """Accumulate SDK-provided counts without estimating missing values."""
+        if usage_metadata is None:
+            return
+        self._usage_seen = True
+        self._prompt_tokens = _add_usage_count(
+            self._prompt_tokens, getattr(usage_metadata, "prompt_token_count", None)
+        )
+        self._output_tokens = _add_usage_count(
+            self._output_tokens, getattr(usage_metadata, "candidates_token_count", None)
+        )
+        self._total_tokens = _add_usage_count(
+            self._total_tokens, getattr(usage_metadata, "total_token_count", None)
+        )
+
+
+def _add_usage_count(current: int | None, reported: Any) -> int | None:
+    """Add one SDK count while preserving an unavailable field as ``None``."""
+    if current is None or reported is None:
+        return None
+    return current + int(reported)
 
 
 class AuditRuntime:
@@ -173,6 +216,12 @@ class AuditRuntime:
                 findings_persisted=0,
                 rfi_path=None,
                 quarantine=quarantine,
+                audit_model_usage=AuditModelUsage(
+                    unavailable_reason=(
+                        "No audit model call was made because the integrity screen "
+                        "quarantined this run."
+                    )
+                ),
             )
 
         initial_message = self._build_document_message()
@@ -186,7 +235,8 @@ class AuditRuntime:
                 rejected=1,
                 retried=0,
                 findings_persisted=0,
-                rfi_path=self._draft_rfi_and_resolve_path([]),
+                rfi_path=None,
+                audit_model_usage=self._audit_model_usage(),
             )
 
         persisted_findings: list[PersistedFinding] = []
@@ -260,9 +310,23 @@ class AuditRuntime:
             rejected=rejected,
             retried=retried,
             findings_persisted=len(persisted_findings),
-            rfi_path=self._draft_rfi_and_resolve_path(persisted_findings),
+            rfi_path=(
+                self._draft_rfi_and_resolve_path(persisted_findings) if persisted_findings else None
+            ),
             severity_status=severity_status,
             severity_reason=severity_reason,
+            audit_model_usage=self._audit_model_usage(),
+        )
+
+    def _audit_model_usage(self) -> AuditModelUsage:
+        """Return the generator's exact usage record or disclose its absence."""
+        reported_usage = getattr(self._claim_generator, "audit_model_usage", None)
+        if callable(reported_usage):
+            usage = reported_usage()
+            if isinstance(usage, AuditModelUsage):
+                return usage
+        return AuditModelUsage(
+            unavailable_reason="The audit claim generator did not expose token usage metadata."
         )
 
     def _draft_rfi_and_resolve_path(self, findings: list[PersistedFinding]) -> str:
