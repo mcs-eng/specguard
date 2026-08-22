@@ -9,10 +9,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from specguard.models import AuditRunSummary, DocumentRole, QuarantinedDocument, RunQuarantine
-from specguard.web.app import MAX_UPLOAD_BYTES, WebServices, WebSettings, create_app
+from specguard.web.app import (
+    MAX_UPLOAD_BYTES,
+    SAMPLE_RUNS_PER_UTC_DAY,
+    SampleRunRateLimiter,
+    WebServices,
+    WebSettings,
+    create_app,
+)
 from specguard.web.storage import StoredObject
 
 RUN_ID = "web-run-1234"
@@ -32,12 +40,20 @@ class FakeRunRepository:
         self.integrity_records: dict[str, list[dict[str, Any]]] = {}
         self.failing_create_calls = failing_create_calls
         self.create_calls = 0
+        self.sample_runs_by_day: dict[str, int] = {}
 
     def create_run(self, run: Mapping[str, Any]) -> None:
         self.create_calls += 1
         if self.create_calls in self.failing_create_calls:
             raise RuntimeError("firestore write failed")
         self.runs[str(run["run_id"])] = dict(run)
+
+    def reserve_sample_run(self, day: str, limit: int) -> bool:
+        current = self.sample_runs_by_day.get(day, 0)
+        if current >= limit:
+            return False
+        self.sample_runs_by_day[day] = current + 1
+        return True
 
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         return list(reversed(list(self.runs.values())))[:limit]
@@ -138,6 +154,7 @@ def _client(
             storage=storage,
             audit_runner=runner,
             audit_slots=asyncio.Semaphore(2),
+            sample_rate_limiter=SampleRunRateLimiter(),
         )
     )
     return TestClient(app), repository, storage, runner
@@ -161,7 +178,57 @@ def test_findings_page_shows_the_upload_form_and_no_runs() -> None:
     assert "Specification PDF" in response.text
     assert "Cut-sheet PDF" in response.text
     assert "audit-submit" in response.text
+    assert "Run a sample audit" in response.text
+    assert "Caldra (compliant)" in response.text
+    assert "Veylan 208V" in response.text
+    assert "Torven 70 deg C" in response.text
+    assert "Veylan altered (integrity screen)" in response.text
     assert "No audit runs are stored yet." in response.text
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    ["caldra", "veylan-208v", "torven-70c", "veylan-altered"],
+)
+def test_sample_audit_routes_run_committed_fixtures_without_a_passphrase(case_id: str) -> None:
+    client, repository, storage, runner = _client()
+
+    response = client.post(f"/sample/{case_id}", follow_redirects=False)
+
+    assert response.status_code == 303
+    run_id = response.headers["location"].removeprefix("/runs/")
+    assert repository.runs[run_id]["source"] == "sample"
+    assert runner.calls[0][0].startswith(b"%PDF-")
+    assert runner.calls[0][1].startswith(b"%PDF-")
+    assert f"{run_id}/specification.pdf" in storage.objects
+    assert f"{run_id}/submitted-document.pdf" in storage.objects
+
+
+def test_sample_audit_per_ip_limit_returns_a_plain_429_page() -> None:
+    client, repository, _, runner = _client()
+
+    for _ in range(6):
+        response = client.post("/sample/caldra", follow_redirects=False)
+        assert response.status_code == 303
+
+    response = client.post("/sample/caldra", follow_redirects=False)
+
+    assert response.status_code == 429
+    assert "The sample audit limit is reached. Try again later." in response.text
+    assert len(runner.calls) == 6
+    assert sum(repository.sample_runs_by_day.values()) == 6
+
+
+def test_sample_audit_global_limit_returns_a_plain_429_page() -> None:
+    client, repository, _, runner = _client()
+    today = datetime.now(UTC).date().isoformat()
+    repository.sample_runs_by_day[today] = SAMPLE_RUNS_PER_UTC_DAY
+
+    response = client.post("/sample/caldra", follow_redirects=False)
+
+    assert response.status_code == 429
+    assert "The sample audit limit is reached. Try again later." in response.text
+    assert runner.calls == []
 
 
 def test_findings_page_shows_a_disabled_submit_state_and_a_stop_message() -> None:
@@ -217,6 +284,7 @@ def test_recent_runs_shorten_the_run_identifier_and_keep_it_reachable() -> None:
         "run_id": RUN_ID,
         "created_at": datetime(2026, 8, 21, tzinfo=UTC),
         "status": "COMPLETED",
+        "source": "sample",
         "summary": {"claims_made": 1, "rejected": 0, "retried": 0, "findings_persisted": 1},
         "documents": {},
         "rfi": None,
@@ -228,6 +296,7 @@ def test_recent_runs_shorten_the_run_identifier_and_keep_it_reachable() -> None:
     assert f'href="/runs/{RUN_ID}" title="{RUN_ID}"' in response.text
     assert f"<code>{RUN_ID[:8]}</code>" in response.text
     assert '<time datetime="2026-08-21T00:00:00+00:00">' in response.text
+    assert "SAMPLE" in response.text
 
 
 def test_findings_page_promises_no_completion_time_or_progress_value() -> None:
@@ -330,6 +399,7 @@ def test_audit_stores_run_scoped_objects_and_redirects_to_the_run() -> None:
     )
     assert run["rfi"]["sha256"] == hashlib.sha256(RFI_BYTES).hexdigest()
     assert "rfi_path" not in str(run)
+    assert run["source"] == "upload"
 
 
 def test_audit_cleans_up_objects_when_uploads_cannot_be_recorded() -> None:
@@ -459,6 +529,13 @@ def test_deploy_script_limits_cloud_run_request_concurrency() -> None:
 
     assert '"--concurrency"\n    "2"' in script
     assert '"--max-instances"\n    "1"' in script
+    assert "SPECGUARD_GEMMA_ENDPOINT=disabled" in script
+
+
+def test_deploy_image_bundles_sample_fixture_pdfs() -> None:
+    dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "COPY fixtures/*.pdf ./fixtures/" in dockerfile
 
 
 def test_run_view_renders_findings_rejections_and_hidden_integrity_text() -> None:
@@ -467,6 +544,7 @@ def test_run_view_renders_findings_rejections_and_hidden_integrity_text() -> Non
         "run_id": RUN_ID,
         "created_at": datetime(2026, 8, 21, tzinfo=UTC),
         "status": "QUARANTINED",
+        "source": "sample",
         "summary": {
             "claims_made": 1,
             "rejected": 1,
@@ -525,6 +603,7 @@ def test_run_view_renders_findings_rejections_and_hidden_integrity_text() -> Non
     assert "text_layer_integrity_screen" in response.text
     assert "Specification page 3" in response.text
     assert "Submitted page 1" in response.text
+    assert "SAMPLE" in response.text
 
 
 def test_rfi_route_serves_durable_pdf_bytes() -> None:
@@ -619,3 +698,7 @@ def test_run_view_renders_classified_severity_badge_and_model_id() -> None:
     assert "severity-high" in response.text
     assert "HIGH" in response.text
     assert "gemma-3-27b-it" in response.text
+    assert (
+        "Severity is an advisory Gemma annotation on already-verified findings. "
+        "It is not part of verification."
+    ) in response.text

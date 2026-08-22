@@ -27,7 +27,7 @@ Source: `https://allthingsagentichackathon.devpost.com/rules` and the hackathon 
 
 **Category:** Taskmaster
 
-**Hosted project URL:** `https://specguard-108657628939.us-central1.run.app` (Cloud Run, us-central1). The GET routes are public. `POST /audit` needs the demo passphrase. Decision for Mason: give judges the passphrase through the form's judge-only testing field if one exists, and rotate it after judging; otherwise judges read the stored runs and run the CLI from the repo with their own project.
+**Hosted project URL:** `https://specguard-108657628939.us-central1.run.app` (Cloud Run, us-central1). Judges can run the four public sample audits without a passphrase: Caldra (compliant), Veylan 208V, Torven 70 deg C, and Veylan altered (integrity screen). `POST /audit` keeps arbitrary uploads behind the demo passphrase to protect the demo budget.
 
 **Repository URL:** `https://github.com/mcs-eng/specguard` (private until 2026-08-30, public before submission).
 

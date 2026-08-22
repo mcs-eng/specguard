@@ -7,8 +7,10 @@ import os
 import secrets
 import tempfile
 import uuid
+from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -25,8 +27,50 @@ from specguard.web.storage import CloudStorage, ObjectStorage, StoredObject
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_IN_FLIGHT_AUDITS = 2
 EXPECTED_UPLOAD_FIELDS = frozenset({"spec_pdf", "cut_sheet_pdf"})
+SAMPLE_RUNS_PER_IP_HOUR = 6
+SAMPLE_RUNS_PER_UTC_DAY = 60
+FIXTURES_DIRECTORY = Path(__file__).parents[2] / "fixtures"
 TEMPLATES_DIRECTORY = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIRECTORY))
+
+
+@dataclass(frozen=True)
+class SampleAuditCase:
+    """One committed fixture pair available to judges without a passphrase."""
+
+    label: str
+    cut_sheet_filename: str
+
+
+SAMPLE_AUDIT_CASES = {
+    "caldra": SampleAuditCase("Caldra (compliant)", "caldra_meridian_480v_switchboard.pdf"),
+    "veylan-208v": SampleAuditCase("Veylan 208V", "veylan_arcworks_208v_switchboard.pdf"),
+    "torven-70c": SampleAuditCase("Torven 70 deg C", "torven_70c_termination_switchboard.pdf"),
+    "veylan-altered": SampleAuditCase(
+        "Veylan altered (integrity screen)", "veylan_arcworks_208v_altered.pdf"
+    ),
+}
+SAMPLE_SPECIFICATION_FILENAME = "asterquay_learning_workshop_specification.pdf"
+
+
+class SampleRunRateLimiter:
+    """In-memory per-client limit for sample audit starts on one Cloud Run instance."""
+
+    def __init__(self, now: Callable[[], datetime] | None = None) -> None:
+        self._now = now or (lambda: datetime.now(UTC))
+        self._starts: dict[str, deque[datetime]] = {}
+
+    def allow(self, client_ip: str) -> bool:
+        """Record and allow at most six starts from one client IP each hour."""
+        now = self._now()
+        starts = self._starts.setdefault(client_ip, deque())
+        cutoff = now - timedelta(hours=1)
+        while starts and starts[0] <= cutoff:
+            starts.popleft()
+        if len(starts) >= SAMPLE_RUNS_PER_IP_HOUR:
+            return False
+        starts.append(now)
+        return True
 
 
 @dataclass(frozen=True)
@@ -56,6 +100,7 @@ class WebServices:
     storage: ObjectStorage
     audit_runner: AuditRunner
     audit_slots: asyncio.Semaphore
+    sample_rate_limiter: SampleRunRateLimiter
 
     @classmethod
     def production(cls) -> WebServices:
@@ -67,6 +112,7 @@ class WebServices:
             storage=CloudStorage(bucket_name=settings.bucket_name, project_id=settings.project_id),
             audit_runner=GoogleAuditRunner(project_id=settings.project_id),
             audit_slots=asyncio.Semaphore(MAX_IN_FLIGHT_AUDITS),
+            sample_rate_limiter=SampleRunRateLimiter(),
         )
 
 
@@ -129,12 +175,54 @@ def create_app(services: WebServices | None = None) -> FastAPI:
                     run_id=run_id,
                     spec_bytes=spec_bytes,
                     cut_sheet_bytes=cut_sheet_bytes,
+                    source="upload",
                 )
             except AuditFailedError as failure:
                 return _render_index(
                     request,
                     app_services,
                     error="The audit did not complete.",
+                    failed_run_id=failure.run_id,
+                    status_code=500,
+                )
+        return RedirectResponse(url=f"/runs/{run['run_id']}", status_code=303)
+
+    @app.post("/sample/{case_id}")
+    async def sample_audit(request: Request, case_id: str) -> Response:
+        """Run one committed sample fixture pair without the upload passphrase."""
+        app_services: WebServices = app.state.services
+        if not app_services.settings.bucket_name:
+            raise HTTPException(status_code=503, detail="The runs bucket is not configured.")
+        case = SAMPLE_AUDIT_CASES.get(case_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail="Sample audit not found.")
+        try:
+            spec_bytes, cut_sheet_bytes = _sample_audit_bytes(case)
+        except OSError:
+            raise HTTPException(
+                status_code=503, detail="The sample audit fixtures are unavailable."
+            ) from None
+
+        async with app_services.audit_slots:
+            if not app_services.sample_rate_limiter.allow(_client_ip(request)):
+                return _sample_limit_response()
+            today = datetime.now(UTC).date().isoformat()
+            if not app_services.repository.reserve_sample_run(today, SAMPLE_RUNS_PER_UTC_DAY):
+                return _sample_limit_response()
+            run_id = uuid.uuid4().hex
+            try:
+                run = await _run_audit(
+                    app_services,
+                    run_id=run_id,
+                    spec_bytes=spec_bytes,
+                    cut_sheet_bytes=cut_sheet_bytes,
+                    source="sample",
+                )
+            except AuditFailedError as failure:
+                return _render_index(
+                    request,
+                    app_services,
+                    error="The sample audit did not complete.",
                     failed_run_id=failure.run_id,
                     status_code=500,
                 )
@@ -220,14 +308,38 @@ async def _read_pdf_upload(upload: UploadFile, label: str) -> bytes:
     return data
 
 
+def _sample_audit_bytes(case: SampleAuditCase) -> tuple[bytes, bytes]:
+    """Read the committed specification and selected cut-sheet fixture from the image."""
+    return (
+        (FIXTURES_DIRECTORY / SAMPLE_SPECIFICATION_FILENAME).read_bytes(),
+        (FIXTURES_DIRECTORY / case.cut_sheet_filename).read_bytes(),
+    )
+
+
+def _client_ip(request: Request) -> str:
+    """Return the ASGI peer address used for the per-client sample limit."""
+    return request.client.host if request.client is not None else "unknown"
+
+
+def _sample_limit_response() -> Response:
+    """Return the plain rate-limit page for exhausted sample audit budgets."""
+    return Response(
+        "<!doctype html><title>Too Many Requests</title><h1>Too many sample audits</h1>"
+        "<p>The sample audit limit is reached. Try again later.</p>",
+        media_type="text/html",
+        status_code=429,
+    )
+
+
 async def _run_audit(
     services: WebServices,
     *,
     run_id: str,
     spec_bytes: bytes,
     cut_sheet_bytes: bytes,
+    source: str,
 ) -> dict[str, Any]:
-    """Store an auditable run record for every successfully uploaded document pair."""
+    """Store an auditable run record for one upload or committed sample pair."""
     specification_name = f"{run_id}/specification.pdf"
     submitted_document_name = f"{run_id}/submitted-document.pdf"
     uploaded_names: list[str] = []
@@ -248,6 +360,7 @@ async def _run_audit(
             run_id=run_id,
             specification=specification,
             submitted_document=submitted_document,
+            source=source,
         )
         services.repository.create_run(pending_run)
         run_recorded = True
@@ -275,6 +388,7 @@ async def _run_audit(
             specification=specification,
             submitted_document=submitted_document,
             rfi=rfi,
+            source=source,
         )
         services.repository.create_run(run)
         return run
@@ -299,12 +413,13 @@ def _store_rfi(
 
 
 def _pending_run_record(
-    *, run_id: str, specification: StoredObject, submitted_document: StoredObject
+    *, run_id: str, specification: StoredObject, submitted_document: StoredObject, source: str
 ) -> dict[str, Any]:
     """Build a run record before the audit can create durable derived data."""
     return {
         "run_id": run_id,
         "created_at": datetime.now(UTC),
+        "source": source,
         "status": "RUNNING",
         "summary": _empty_summary(),
         "documents": {
@@ -323,11 +438,13 @@ def _run_record(
     specification: StoredObject,
     submitted_document: StoredObject,
     rfi: StoredObject | None,
+    source: str,
 ) -> dict[str, Any]:
     """Build the public Firestore run record without any ephemeral file paths."""
     return {
         "run_id": run_id,
         "created_at": created_at,
+        "source": source,
         "status": "QUARANTINED" if summary.quarantined else "COMPLETED",
         "summary": {
             "claims_made": summary.claims_made,

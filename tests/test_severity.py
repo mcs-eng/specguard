@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pymupdf
 import pytest
 
+import specguard.severity as severity_module
 from specguard.agent import AuditRuntime
 from specguard.models import (
     AuditClaim,
@@ -213,6 +214,7 @@ def test_unclassified_retained_when_no_api_key(monkeypatch: pytest.MonkeyPatch) 
     """If no API key is available in env or secret manager, classify returns UNCLASSIFIED."""
     monkeypatch.delenv("SPECGUARD_GEMMA_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(severity_module, "_fetch_secret_from_manager", lambda *args: None)
     classifier = GemmaSeverityClassifier(api_key=None)
 
     result = classifier.classify("Claim", "Quote 1", "Quote 2")
@@ -220,6 +222,33 @@ def test_unclassified_retained_when_no_api_key(monkeypatch: pytest.MonkeyPatch) 
     assert result.severity is Severity.UNCLASSIFIED
     assert result.model_id is None
     assert result.status == "fallback"
+
+
+def test_disabled_endpoint_records_the_demo_window_fallback_without_a_network_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The disabled sentinel must stop before it constructs an endpoint client."""
+    monkeypatch.setenv("SPECGUARD_GEMMA_ENDPOINT", "disabled")
+
+    def unexpected_endpoint_client(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the disabled sentinel must not make a network call")
+
+    monkeypatch.setattr(
+        severity_module, "VertexEndpointSeverityClassifier", unexpected_endpoint_client
+    )
+    finding = PersistedFinding(
+        finding_id="find-1",
+        run_id="run-1",
+        claim_text="Parameter mismatch.",
+        spec_quote=PersistedQuote(text="Req A", page_number=1, document_sha256="aa" * 32),
+        cut_sheet_quote=PersistedQuote(text="Sub B", page_number=1, document_sha256="bb" * 32),
+    )
+
+    result = classify_severity(finding)
+
+    assert result.severity is Severity.UNCLASSIFIED
+    assert result.status == "fallback"
+    assert result.reason == "severity endpoint not deployed outside demo windows"
 
 
 def test_gemma_severity_classifier_parses_valid_structured_response() -> None:

@@ -154,7 +154,7 @@ uv run python scripts/reset_demo_ledger.py
 gcloud ai model-garden models deploy --model=google/gemma3@gemma-3-1b-it --machine-type=g2-standard-12 --accelerator-type=NVIDIA_L4 --accelerator-count=1 --endpoint-display-name=specguard-gemma --region=us-central1 --project=specguard-hack --billing-project=specguard-hack --accept-eula
 ```
 
-2. Read the new endpoint resource name, SETUP.md runbook step 2. The name changes on every deploy; the value baked into `deploy-specguard.ps1` is an old, deleted endpoint.
+2. Read the new endpoint resource name, SETUP.md runbook step 2. The name changes on every deploy; `deploy-specguard.ps1` starts with `SPECGUARD_GEMMA_ENDPOINT=disabled`.
 
 ```powershell
 $endpoint = (gcloud ai endpoints list --region=us-central1 --project=specguard-hack --filter="displayName:specguard-gemma" --format="value(name)")
@@ -221,13 +221,13 @@ gcloud ai models list --region=us-central1 --project=specguard-hack --billing-pr
 gcloud ai endpoints list --region=us-central1 --project=specguard-hack --billing-project=specguard-hack
 ```
 
-2. Release the warm instance and clear the endpoint variable on the deployed revision, as the Phase 6b addendum orders:
+2. Release the warm instance and set the deployed revision to the severity-disabled sentinel:
 
 ```powershell
-gcloud run services update specguard --region us-central1 --project specguard-hack --min-instances 0 --remove-env-vars SPECGUARD_GEMMA_ENDPOINT
+gcloud run services update specguard --region us-central1 --project specguard-hack --min-instances 0 --update-env-vars "SPECGUARD_GEMMA_ENDPOINT=disabled"
 ```
 
-   Consequence to decide before doing it (Mason's call; REVIEW-CLAIMS.md finding C-13): with `SPECGUARD_GEMMA_ENDPOINT` unset, `classify_severity` selects the generativelanguage API-key backend, which reads `specguard-gemma-key` from Secret Manager and has returned HTTP 429 behind the AI Studio prepay wall. The fallback reason a judge then sees on a new finding names prepayment credits. Leaving the variable set to the deleted endpoint instead records the Vertex error for a missing endpoint, which reads as "endpoint down". Either way the label is UNCLASSIFIED with a recorded reason and the audit completes. Also: `deploy-specguard.ps1` re-sets the old endpoint value on every deploy, so a later deploy undoes a `--remove-env-vars`.
+   A later finding records `UNCLASSIFIED`, `severity_status=fallback`, and `severity_reason=severity endpoint not deployed outside demo windows`. The audit still completes. `deploy-specguard.ps1` sets the same sentinel on later deployments.
 
 3. Confirm the service still answers: open the landing page; the shoot's runs are listed.
 4. Archive the recordings and the take log (run IDs shown on camera) outside the repo.

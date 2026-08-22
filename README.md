@@ -22,6 +22,8 @@ The gate establishes one narrow thing: each quoted text anchor occurs on its cit
 
 Deployed service: `https://specguard-108657628939.us-central1.run.app` (Cloud Run, us-central1, revision `specguard-00008-25s` as of 2026-08-21). The GET routes are public and read-only. `POST /audit` requires a demo passphrase that is not in this repository.
 
+**Try it.** Judges can run four public sample audits without a passphrase: Caldra (compliant), Veylan 208V, Torven 70 deg C, and Veylan altered (integrity screen). Uploading arbitrary PDFs stays gated to protect the demo budget.
+
 ## Architecture
 
 ```mermaid
@@ -120,7 +122,7 @@ After a finding passes the gate and is written to the ledger, the runtime asks a
 
 The receipted path is `google/gemma3@gemma-3-1b-it` on a dedicated Vertex AI Model Garden endpoint (one NVIDIA L4), selected by `SPECGUARD_GEMMA_ENDPOINT` and called with Application Default Credentials. Each classified finding records the model identifier `google-gemma3-gemma-3-1b-it` beside its label.
 
-The endpoint is deployed only for demo and evaluation windows and torn down afterwards, because the GPU bills while idle. Outside those windows the deployed service records `UNCLASSIFIED` on every new finding, with `severity_status = fallback` and the HTTP status and message the call returned in `severity_reason`, on the finding document and in the run summary. A reader who runs an audit later will see that state. It is the documented fallback, not a defect. The run page shows the label and either the model identifier or the word `fallback`.
+The endpoint is deployed only for demo and evaluation windows and torn down afterwards, because the GPU bills while idle. Outside those windows the deployed service records `UNCLASSIFIED` on every new finding, with `severity_status = fallback` and `severity_reason = severity endpoint not deployed outside demo windows`. A reader who runs an audit later will see that state. It is the documented fallback, not a defect. The run page shows the label and either the model identifier or the word `fallback`.
 
 `specguard/severity.py` also carries a generativelanguage API-key backend that the runtime selects when no endpoint is configured. It is not the receipted path: the last live probe returned HTTP 429 behind the AI Studio prepay wall, and the runtime recorded that outcome as a fallback with its reason.
 

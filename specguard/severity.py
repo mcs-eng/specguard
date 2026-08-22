@@ -436,6 +436,13 @@ def classify_severity(
             return classifier.classify(claim_text, spec_quote, cut_sheet_quote)
 
         endpoint = endpoint_resource_name or os.environ.get("SPECGUARD_GEMMA_ENDPOINT")
+        if endpoint == "disabled":
+            return SeverityResult(
+                severity=Severity.UNCLASSIFIED,
+                model_id=None,
+                status="fallback",
+                reason="severity endpoint not deployed outside demo windows",
+            )
         if endpoint:
             endpoint_classifier = VertexEndpointSeverityClassifier(
                 endpoint_resource_name=endpoint,
