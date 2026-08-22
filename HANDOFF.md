@@ -1517,6 +1517,6 @@ Shot 4 is now two beats: the pytest run, then a live `/gate` beat where one clic
 | `8854969` | Answer a HEAD probe on the root page |
 | `616e9f1` | Apply two Codex review corrections: 500 headers and eval provenance |
 | `a424ccf` | Exclude the eval harness's own output from its dirty-tree check |
-| `<final>` | Record the Phase 6e receipts and the regenerated evaluation |
+| `d548139` | Record the Phase 6e receipts and the regenerated evaluation |
 
 Nothing was pushed, merged, or opened as a pull request.
