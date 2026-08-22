@@ -205,6 +205,7 @@ def create_app(services: WebServices | None = None) -> FastAPI:
         return response
 
     @app.get("/healthz")
+    @app.get("/health")
     def healthz() -> Response:
         """Report that this instance serves requests, without reading a dependency.
 
@@ -212,6 +213,12 @@ def create_app(services: WebServices | None = None) -> FastAPI:
         model endpoint. It answers one question only: did this process start
         and can it serve. A check that called a dependency would report that
         dependency's health under this route's name.
+
+        Two paths serve the same handler. On Cloud Run the Google Front End
+        answers ``/healthz`` itself with its own 404 and never forwards the
+        request, so ``/health`` is the path that reaches this process on the
+        deployed service. ``/healthz`` stays registered because it is the
+        conventional name and it is reachable everywhere else this app runs.
         """
         return Response("ok", media_type="text/plain; charset=utf-8")
 

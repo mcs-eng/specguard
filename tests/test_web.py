@@ -1160,7 +1160,8 @@ def _fixture_run_client() -> tuple[TestClient, FakeRunRepository, FakeObjectStor
 # --- 5. Production basics ------------------------------------------------
 
 
-def test_healthz_returns_200_without_reading_any_dependency() -> None:
+@pytest.mark.parametrize("path", ["/healthz", "/health"])
+def test_healthz_returns_200_without_reading_any_dependency(path: str) -> None:
     app = create_app(
         WebServices(
             settings=WebSettings(project_id="p", bucket_name="b", demo_passphrase="x"),
@@ -1171,14 +1172,14 @@ def test_healthz_returns_200_without_reading_any_dependency() -> None:
         )
     )
 
-    response = TestClient(app).get("/healthz")
+    response = TestClient(app).get(path)
 
     assert response.status_code == 200
     assert response.text == "ok"
 
 
 @pytest.mark.parametrize(
-    "path", ["/", "/gate", "/healthz", "/static/index.js", "/runs/does-not-exist"]
+    "path", ["/", "/gate", "/healthz", "/health", "/static/index.js", "/runs/does-not-exist"]
 )
 def test_every_response_carries_the_security_headers(path: str) -> None:
     client, _, _, _ = _client()
