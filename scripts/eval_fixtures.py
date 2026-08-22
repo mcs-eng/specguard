@@ -52,6 +52,11 @@ MEASURED_ON_PATTERN = re.compile(r"Measured on (\d{4}-\d{2}-\d{2}) by")
 TABLE_ROW_PATTERN = re.compile(r"^\| `(E-\d+)` \|(.*)\|\s*$", re.MULTILINE)
 UNRECORDED_REVISION = "not recorded for this run"
 
+#: The two files this harness rewrites. Edits to them cannot change what the
+#: runtime did, and they are always dirty on a second run, so they are excluded
+#: from the working-tree check that names the measured code.
+HARNESS_OUTPUTS = frozenset({"EVAL.md", "README.md"})
+
 OUTCOME_FINDING = "finding"
 OUTCOME_NO_FINDING = "no_finding"
 OUTCOME_QUARANTINE = "quarantine"
@@ -784,6 +789,23 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def uncommitted_source_paths(status: str) -> list[str]:
+    """Return the dirty paths that could have changed what the runtime did.
+
+    ``EVAL.md`` and ``README.md`` are this harness's own output. They are dirty
+    after every run, and editing them cannot change a measurement, so counting
+    them would make the revision field read "uncommitted" forever and mean
+    nothing.
+    """
+    paths: list[str] = []
+    for line in status.splitlines():
+        entry = line[3:].strip() if len(line) > 3 else ""
+        path = entry.split(" -> ")[-1].strip('"')
+        if path and path not in HARNESS_OUTPUTS:
+            paths.append(path)
+    return paths
+
+
 def format_code_revision(revision: str | None, status: str | None) -> str:
     """Name the code state the numbers describe, including an uncommitted one.
 
@@ -798,8 +820,9 @@ def format_code_revision(revision: str | None, status: str | None) -> str:
         return UNRECORDED_REVISION
     if status is None:
         return f"{revision}, working tree state unknown"
-    if status.strip():
-        return f"{revision} plus uncommitted changes"
+    dirty = uncommitted_source_paths(status)
+    if dirty:
+        return f"{revision} plus uncommitted changes to {', '.join(sorted(dirty))}"
     return revision
 
 

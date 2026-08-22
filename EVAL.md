@@ -1,7 +1,8 @@
 # SpecGuard measured evaluation
 
 - Date: 2026-08-22
-- Code revision these numbers describe: `8854969`
+- Code revision these numbers describe: `616e9f1
+ plus uncommitted changes`
 - Iterations per case: 5
 - Audit model: `gemini-3.7-flash` via Vertex AI
 - Severity model, measured from the persisted findings: `google-gemma3-gemma-3-1b-it`
@@ -43,7 +44,7 @@ Every number below comes from one receipted execution of `scripts/eval_fixtures.
 
 ## Change from the previous published run
 
-Numbers moved from the 2026-08-21 run. These cases now measure differently: `E-02`, `E-03`. The table above is the current measurement; the earlier figures are superseded, not corrected.
+No number in this table moved from the 2026-08-22 run. Every case reports the same measurement it reported then.
 
 ## Cases that did not match the manifest
 
@@ -53,10 +54,10 @@ None. Every case matched its declared expected outcome in every run.
 
 Every run below is a real Firestore run. These identifiers are the receipt behind the table: each one can be queried against the `findings`, `rejections`, and `integrity_findings` collections.
 
-- `E-01` `caldra_meridian_480v_switchboard.pdf`: `2060d3cf7cba42db95d839a41ec7509c`, `9fc82b83197d4fedafc1060b973c8cf1`, `6974a9c8803646a8915e92adc5eb81b7`, `8db75761415e46299fa4f6aa6c770776`, `15a6753a0af9415e9273b4bc461806f1`
-- `E-02` `veylan_arcworks_208v_switchboard.pdf`: `c97efb783d9f468fab074152742493b5`, `baad412500ce46fd9343981cd1aac533`, `a552449fabdd455c9dc55952cedb5fd3`, `01cb2fd25fbd40ab91393dff5a6f88d7`, `838db4b5cc6d4d79852dcf83325d0d8e`
-- `E-03` `torven_70c_termination_switchboard.pdf`: `3dc4457a9a054c19915a8ef9585469a8`, `839174915421460188847a20279507cd`, `4c838e10d82e4d7cbeba96abb655a304`, `b6c7e0e5bb0a4a19ae9a5eae3b79c2e4`, `eea54cbf8fbd4fbcafc89b256300239f`
-- `E-04` `veylan_arcworks_208v_altered.pdf`: `51daa926511a4e5c8b4baf9245405d43`, `9aaf25315ec847fa95b7fa0dd40fa944`, `92ec13ea181c48d2aaf0985378dfb3c2`, `61647854ff664661a7070a69a69b960c`, `0027c70e399d4d55bf34e152265c8912`
+- `E-01` `caldra_meridian_480v_switchboard.pdf`: `9134a95286154248bfd075994dbbda3b`, `2571a097f280436099c72d54edfc2395`, `ffe7f914653d47f29754a6c99ac465dd`, `5cc86b4cffa146c7b4bb2ca5f8995281`, `1ff2f1a1f7ea46f2a456ae5ac909fce3`
+- `E-02` `veylan_arcworks_208v_switchboard.pdf`: `57bf7a61bdf2443bb1bd2544cf16711b`, `fa18eb1afafb41c38598b0acc7d27705`, `72b1a2ed6e284573b397cabc360b9659`, `7b30609b900e49eca90e860b2a3b5a40`, `d16b7d86f1b54902bff2d92cc40d32a6`
+- `E-03` `torven_70c_termination_switchboard.pdf`: `b591789741614dd0a03d5fe684d279f2`, `cc917312f05c4b398ed2c3970b08e13f`, `8956e5a2639f4ce98c5949fb81f63872`, `2b6d63e64d1c4508abb1184a8807a2bb`, `c350d41950c14e9092539d728fbdb390`
+- `E-04` `veylan_arcworks_208v_altered.pdf`: `389a247376654592b423ae81d1e78b95`, `0ccb4299ba234780a3fdf9c67e6f718c`, `8c5a79f0819e45d3ba2a1ef17b70217a`, `221722141d4f402f9dfc4bacde96087f`, `dc6a727cbb804967b59c12a367c95330`
 
 ## Scope of these numbers
 

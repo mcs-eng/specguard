@@ -29,6 +29,7 @@ from scripts.eval_fixtures import (
     render_eval_markdown,
     render_readme_section,
     render_results_table,
+    uncommitted_source_paths,
     write_readme_section,
 )
 from specguard.models import AuditRunSummary, DocumentRole, QuarantinedDocument, RunQuarantine
@@ -682,9 +683,30 @@ def test_a_clean_tree_is_named_by_its_commit_alone() -> None:
 
 def test_uncommitted_changes_are_named_and_never_borrow_the_commit() -> None:
     """A dirty tree measured under a commit's name would misattribute the run."""
-    named = format_code_revision("abc1234", " M specguard/agent.py\n")
+    named = format_code_revision("abc1234", " M specguard/agent.py\n M specguard/gate.py\n")
 
-    assert named == "abc1234 plus uncommitted changes"
+    assert named == "abc1234 plus uncommitted changes to specguard/agent.py, specguard/gate.py"
+
+
+def test_the_harness_own_output_files_do_not_make_the_tree_dirty() -> None:
+    """This script rewrites EVAL.md and README.md, so they are dirty every run."""
+    status = " M EVAL.md\n M README.md\n"
+
+    assert uncommitted_source_paths(status) == []
+    assert format_code_revision("abc1234", status) == "abc1234"
+
+
+def test_a_source_edit_beside_the_harness_output_still_counts() -> None:
+    status = " M EVAL.md\n M specguard/tools.py\n?? scripts/new_probe.py\n"
+
+    assert uncommitted_source_paths(status) == ["specguard/tools.py", "scripts/new_probe.py"]
+    assert "specguard/tools.py" in format_code_revision("abc1234", status)
+
+
+def test_a_renamed_source_file_is_named_by_its_new_path() -> None:
+    status = "R  specguard/old.py -> specguard/new.py\n"
+
+    assert uncommitted_source_paths(status) == ["specguard/new.py"]
 
 
 def test_an_unreadable_tree_state_is_written_as_unknown() -> None:
