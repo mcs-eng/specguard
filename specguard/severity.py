@@ -23,7 +23,37 @@ from specguard.models import Finding, PersistedFinding, Severity
 
 logger = logging.getLogger(__name__)
 
-GEMMA_MODEL_ID = os.environ.get("SPECGUARD_GEMMA_MODEL", "gemma-4-31b-it")
+#: Default model for the generativelanguage backend, which addresses a model by
+#: name in the request URL and returns 404 for a name it does not serve. The
+#: 2026-08-21 ListModels probe recorded in HANDOFF.md returned
+#: ``models/gemma-4-31b-it`` and ``models/gemma-4-26b-a4b-it``, and 404 for
+#: ``models/gemma-3-27b-it``. This constant reads its own variable:
+#: ``SPECGUARD_GEMMA_MODEL`` names the Vertex endpoint's deployed model, whose
+#: naming scheme this API does not share, and one shared variable made either
+#: value wrong for the other backend.
+GEMMA_MODEL_ID = os.environ.get("SPECGUARD_GEMMA_API_MODEL", "gemma-4-31b-it")
+
+#: Fallback label for the Vertex endpoint backend when the endpoint's own
+#: response names no served model. It is a configured label, never an observed
+#: model identifier, and it is recorded under that name.
+VERTEX_ENDPOINT_LABEL = os.environ.get("SPECGUARD_GEMMA_MODEL", "google-gemma3-gemma-3-1b-it")
+
+#: Fields a Vertex ``:predict`` response may use to name the model that served
+#: it, most specific first.
+_SERVED_MODEL_FIELDS = ("modelDisplayName", "deployedModelId", "model")
+
+
+def _served_model_id(payload: Any) -> str | None:
+    """Return the model identifier the endpoint reported, if it reported one."""
+    if not isinstance(payload, dict):
+        return None
+    for field in _SERVED_MODEL_FIELDS:
+        value = payload.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 PROMPT_PATH = Path(__file__).parent / "prompts" / "classify_severity_v1.txt"
 
 
@@ -42,7 +72,12 @@ class SeverityResult:
     """The outcome of a severity classification attempt."""
 
     severity: Severity
+    #: The model identifier the serving endpoint reported. ``None`` when the
+    #: endpoint reported none: a configured value is not an observation.
     model_id: str | None = None
+    #: The configured label for the endpoint that answered. It names what this
+    #: deployment was pointed at, not what served the request.
+    endpoint_label: str | None = None
     rationale: str = ""
     status: str = "classified"
     reason: str | None = None
@@ -54,6 +89,7 @@ class SeverityResult:
             return (
                 self.severity == other.severity
                 and self.model_id == other.model_id
+                and self.endpoint_label == other.endpoint_label
                 and self.rationale == other.rationale
                 and self.status == other.status
                 and self.reason == other.reason
@@ -258,9 +294,9 @@ class VertexEndpointSeverityClassifier:
     ) -> None:
         self.endpoint_resource_name = endpoint_resource_name
         self.endpoint_dns = endpoint_dns or os.environ.get("SPECGUARD_GEMMA_ENDPOINT_DNS")
-        self.model_id = (
-            model_id or os.environ.get("SPECGUARD_GEMMA_MODEL") or "google-gemma3-gemma-3-1b-it"
-        )
+        #: What this deployment was pointed at. Nothing validates it against the
+        #: endpoint, so it is a label, and it is recorded as one.
+        self.endpoint_label = model_id or VERTEX_ENDPOINT_LABEL
         self.project_id = project_id or os.environ.get("SPECGUARD_PROJECT", "specguard-hack")
         self.location = location
         self.timeout_seconds = timeout_seconds
@@ -365,6 +401,7 @@ class VertexEndpointSeverityClassifier:
                 return SeverityResult(
                     severity=Severity.UNCLASSIFIED,
                     model_id=None,
+                    endpoint_label=self.endpoint_label,
                     status="fallback",
                     reason=error_msg,
                 )
@@ -375,15 +412,21 @@ class VertexEndpointSeverityClassifier:
                 return SeverityResult(
                     severity=Severity.UNCLASSIFIED,
                     model_id=None,
+                    endpoint_label=self.endpoint_label,
                     status="fallback",
                     reason="Empty predictions list from Vertex endpoint",
                 )
 
             raw_prediction = predictions[0]
             severity = _parse_severity_token(raw_prediction, prompt=content)
+            # The served identifier if the endpoint reported one, and nothing in
+            # its place if it did not. The configured label goes to its own
+            # field, because calling it a model ID publishes a value that
+            # nothing observed.
             return SeverityResult(
                 severity=severity,
-                model_id=self.model_id,
+                model_id=_served_model_id(data),
+                endpoint_label=self.endpoint_label,
                 rationale="Classified via Vertex AI Model Garden Endpoint",
                 status="classified",
                 reason=None,
@@ -394,6 +437,7 @@ class VertexEndpointSeverityClassifier:
             return SeverityResult(
                 severity=Severity.UNCLASSIFIED,
                 model_id=None,
+                endpoint_label=self.endpoint_label,
                 status="fallback",
                 reason=error_detail,
             )

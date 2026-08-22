@@ -891,6 +891,10 @@ def _finding_row(finding: PersistedFinding) -> list[str]:
     severity_cell = [severity_label]
     if finding.severity_model_id:
         severity_cell.append(f"model: {finding.severity_model_id}")
+    elif finding.severity_endpoint_label:
+        # A configured label, not an observed model. The word matters: the
+        # endpoint answering under this label reported no model identifier.
+        severity_cell.append(f"endpoint label: {finding.severity_endpoint_label}")
     elif finding.severity_status:
         severity_cell.append(f"status: {finding.severity_status}")
     if finding.severity_reason:

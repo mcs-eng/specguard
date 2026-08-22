@@ -1288,7 +1288,11 @@ def _export_finding(finding: dict[str, Any]) -> dict[str, Any]:
         "severity": {
             "label": finding.get("severity"),
             "status": finding.get("severity_status"),
+            # model_id is what the endpoint reported. endpoint_label is what
+            # this deployment was configured to call. They are separate fields
+            # because a configured label is not an observation.
             "model_id": finding.get("severity_model_id"),
+            "endpoint_label": finding.get("severity_endpoint_label"),
             "reason": finding.get("severity_reason"),
         },
         "created_at": _isoformat(finding.get("created_at")),

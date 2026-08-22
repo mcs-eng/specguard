@@ -497,7 +497,11 @@ def test_vertex_endpoint_classifier_parses_single_token() -> None:
     mock_session = MagicMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"predictions": ["Prompt:\n...\nOutput:\nHIGH"]}
+    mock_response.json.return_value = {
+        "predictions": ["Prompt:\n...\nOutput:\nHIGH"],
+        "deployedModelId": "1787417126",
+        "model": "projects/p/locations/us-central1/models/served-gemma",
+    }
     mock_session.post.return_value = mock_response
 
     from specguard.severity import VertexEndpointSeverityClassifier
@@ -511,7 +515,8 @@ def test_vertex_endpoint_classifier_parses_single_token() -> None:
     result = classifier.classify("Discrepancy", "Spec quote", "Cut quote")
 
     assert result.severity is Severity.HIGH
-    assert result.model_id == "gemma-2-2b-it"
+    assert result.model_id == "1787417126"
+    assert result.endpoint_label == "gemma-2-2b-it"
     assert result.status == "classified"
     assert result.reason is None
 
@@ -537,8 +542,85 @@ def test_vertex_endpoint_classifier_parses_json_severity() -> None:
     result = classifier.classify("Discrepancy", "Spec quote", "Cut quote")
 
     assert result.severity is Severity.MEDIUM
-    assert result.model_id == "gemma-2-2b-it"
+    assert result.model_id is None
+    assert result.endpoint_label == "gemma-2-2b-it"
     assert result.status == "classified"
+
+
+def test_vertex_endpoint_records_the_served_model_the_endpoint_named() -> None:
+    """Provenance is what the endpoint reported, not what this deployment configured.
+
+    ``SPECGUARD_GEMMA_MODEL`` is an operator-supplied string. Nothing validates
+    it against the endpoint, so recording it as ``severity_model_id`` published
+    an observation nobody made. The display name the response carries is a real
+    observation, and it wins.
+    """
+    mock_session = MagicMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "predictions": ["Output:\nHIGH"],
+        "modelDisplayName": "google-gemma3-gemma-3-1b-it",
+        "deployedModelId": "1787417126",
+    }
+    mock_session.post.return_value = mock_response
+
+    from specguard.severity import VertexEndpointSeverityClassifier
+
+    classifier = VertexEndpointSeverityClassifier(
+        endpoint_resource_name="mg-endpoint-123",
+        endpoint_dns="custom.vertexai.goog",
+        model_id="a-label-nobody-checked",
+        session=mock_session,
+    )
+    result = classifier.classify("Discrepancy", "Spec quote", "Cut quote")
+
+    assert result.model_id == "google-gemma3-gemma-3-1b-it"
+    assert result.endpoint_label == "a-label-nobody-checked"
+
+
+def test_vertex_endpoint_records_no_model_id_when_the_response_names_none() -> None:
+    """With nothing observed, the model field stays empty and the label carries it."""
+    mock_session = MagicMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"predictions": ["Output:\nLOW"]}
+    mock_session.post.return_value = mock_response
+
+    from specguard.severity import VertexEndpointSeverityClassifier
+
+    classifier = VertexEndpointSeverityClassifier(
+        endpoint_resource_name="mg-endpoint-123",
+        endpoint_dns="custom.vertexai.goog",
+        model_id="google-gemma3-gemma-3-1b-it",
+        session=mock_session,
+    )
+    result = classifier.classify("Discrepancy", "Spec quote", "Cut quote")
+
+    assert result.severity is Severity.LOW
+    assert result.status == "classified"
+    assert result.model_id is None
+    assert result.endpoint_label == "google-gemma3-gemma-3-1b-it"
+
+
+def test_the_two_severity_backends_read_separate_model_variables() -> None:
+    """One variable named two things, so either value was wrong for one backend.
+
+    ``SPECGUARD_GEMMA_MODEL`` names the Vertex endpoint's deployed model. The
+    generativelanguage API does not share that naming scheme, and it 404s on a
+    name it does not serve, so it reads its own variable.
+    """
+    import importlib
+
+    import specguard.severity as module
+
+    reloaded = importlib.reload(module)
+    assert reloaded.GEMMA_MODEL_ID == "gemma-4-31b-it"
+    assert reloaded.VERTEX_ENDPOINT_LABEL == "google-gemma3-gemma-3-1b-it"
+
+    source = Path(reloaded.__file__).read_text(encoding="utf-8")
+    assert 'os.environ.get("SPECGUARD_GEMMA_API_MODEL", "gemma-4-31b-it")' in source
+    assert 'os.environ.get("SPECGUARD_GEMMA_MODEL", "google-gemma3-gemma-3-1b-it")' in source
 
 
 def test_vertex_endpoint_classifier_handles_invalid_output() -> None:

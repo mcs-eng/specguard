@@ -366,6 +366,7 @@ class AuditRuntime:
                 finding.finding_id,
                 result.severity,
                 model_id=result.model_id,
+                endpoint_label=getattr(result, "endpoint_label", None),
                 status=result.status,
                 reason=result.reason,
             )
@@ -373,6 +374,7 @@ class AuditRuntime:
                 update={
                     "severity": result.severity,
                     "severity_model_id": result.model_id,
+                    "severity_endpoint_label": getattr(result, "endpoint_label", None),
                     "severity_status": result.status,
                     "severity_reason": result.reason,
                 }

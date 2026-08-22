@@ -192,7 +192,11 @@ class PersistedFinding(BaseModel):
     spec_quote: PersistedQuote
     cut_sheet_quote: PersistedQuote
     severity: Severity = Severity.UNCLASSIFIED
+    #: The model identifier the severity endpoint reported for this call.
     severity_model_id: str | None = None
+    #: The configured label of the endpoint that was called. It records what
+    #: this deployment was pointed at, never what served the request.
+    severity_endpoint_label: str | None = None
     severity_status: str | None = None
     severity_reason: str | None = None
 

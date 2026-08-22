@@ -2000,6 +2000,7 @@ def test_the_exported_finding_carries_both_anchors_and_its_severity_record() -> 
         "label": "high",
         "status": "classified",
         "model_id": "google-gemma3-gemma-3-1b-it",
+        "endpoint_label": None,
         "reason": None,
     }
     assert finding["created_at"] == "2026-08-22T12:00:00+00:00"
