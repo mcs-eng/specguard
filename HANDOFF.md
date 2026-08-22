@@ -1581,3 +1581,97 @@ A rendered browser check was not performed in this session; the Chrome extension
 | `2bef0ec` | Define the shared control styling once, in the shell |
 
 Nothing was pushed, merged, or opened as a pull request.
+
+
+## Phase 7a — close the findings from three independent external reviews
+
+Date: 2026-08-22. Scope: the bounded Phase 7a work order. `PLAN.md`, `SETUP.md`, the audit prompts, the fixtures, and `specguard/gate.py` are unchanged. The gate contract is untouched. Every fix below has a test that fails before it and passes after it.
+
+### The ten ledger items
+
+| # | Finding | What changed | Commit |
+| ---: | --- | --- | --- |
+| 1 | `update_finding_severity` fell back to `set(..., merge=True)`, which creates the document Firestore's `update` refuses to create. A wrong finding ID therefore wrote a severity-only record into the ledger: no quote, no claim, no verification status. | Reads the finding first; returns `{"updated": False, "reason": "finding_not_in_ledger"}` unless the record exists, belongs to this run, and carries `verification_status == "verified"`. The `set` fallback is gone. `tests/fake_firestore.py` now raises `NotFound` on an update of a missing document, mirroring Firestore. `tests/adversarial/test_write_surface.py` parses every runtime source and flags any `set`, `update`, `create`, `delete`, or `add` reaching the findings collection outside `persist_finding` and `update_finding_severity`, in the direct and the batched call form; it also asserts both writes are still found, so the allowlist cannot pass by matching nothing. | `16853d9` |
+| 2 | A single `VERIFIED` badge sat over the whole findings table, and the table was rendered from every findings record for the run. | The badge reads `QUOTES VERIFIED` on the run page, in the RFI heading, and in the export, each with the one-line meaning beside it. The run page and the export filter on the stored `verification_status`, and each row states its own. | `f55d748` |
+| 3 | The landing page published every run, so a submittal uploaded behind the demo passphrase reached every later visitor. | The list carries `source == "sample"` runs only. An upload run stays reachable by its own 128-bit URL and is never enumerated. README documents this as a capability-URL model, including the part that model always carries: the URL is the credential. | `f0d33bb` |
+| 4 | The page minted a random string as a submission token and recorded nothing, so `POST /audit` accepted any value a caller invented. | Every render mints a token and records it in Firestore with a one-hour expiry. The route refuses an unminted or expired token, and the create-run transaction checks again, so a token that expires between the two is refused with nothing left behind. A replay of a used token still returns the original run. | `55afbad` |
+| 5 | `GET /gate` opened and parsed a committed PDF per request, and a GET carrying a query string also spent a durable rate-limit slot. README's "public GET routes are read-only" was therefore false. | A check is `POST /gate` and is counted. `GET /gate` reads no query string, calls the gate no times, and touches no counter: it serves a verdict computed once at import from a committed fixture. The two near-miss links are POST buttons. README states the claim precisely, naming the one exception. | `f767bdb` |
+| 6 | `X-Forwarded-For` was honoured everywhere, so outside Cloud Run one caller could reset every per-address limit by varying a header. | Read only under `SPECGUARD_TRUST_FORWARDED_FOR=1`, which `deploy-specguard.ps1` sets. Without it the header is not read and the limits key on the peer address. | `6bdd747` |
+| 7 | The header set carried no HSTS. | `Strict-Transport-Security: max-age=31536000; includeSubDomains` on every response. | `6bdd747` |
+| 8 | `check_text_integrity` returned `str(error)`, which for an OS or PyMuPDF failure names the absolute path of the file — the one thing the role-bound tools exist to keep from the model. `extract_pdf_text` caught `IndexError` only. | Both return an error code and the exception class name, never a message. `extract_pdf_text` reports `FileNotFoundError`, `OSError`, and PyMuPDF failures as `document_unreadable` data. `PdfTextResult.error_message` becomes `error_type`. | `2cffa9a` |
+| 9 | `severity_model_id` was filled from `SPECGUARD_GEMMA_MODEL`, an operator string nothing validates against the endpoint, so a finding published a model identifier nobody observed. One env var also served two backends with incompatible naming. | The identifier comes from the endpoint's own response; when the response names none, the field stays empty. The configured string moves to `severity_endpoint_label` and is labelled as one on the page, in the RFI, and in the export. The generativelanguage backend reads `SPECGUARD_GEMMA_API_MODEL`, defaulting to `gemma-4-31b-it`, which the 2026-08-21 `ListModels` receipt in this file found on that API. | `6f27d92` |
+| 10 | Six README and Devpost claims had drifted from the code. | The test count is generated by `scripts/record_test_count.py` from a real `uv run pytest -q` receipt, with the revision it describes. The `a424ccf` provenance paragraph is restated. The web repository is no longer called read-only. The diagram and the prose agree on what the severity annotation writes. The 20-run and 15-model-calling-run arithmetic is stated. `DEVPOST.md` is synced. | `ba1be8d`, `7283956` |
+
+### The `a424ccf` provenance paragraph, restated
+
+Before Phase 7a the delta was six commits and seven files, all web-layer or `_RfiWriter`, and the byte-identity sentence held. Phase 7a also changed `specguard/agent.py`, `specguard/models.py`, `specguard/severity.py`, and `specguard/tools.py`, so that sentence no longer holds and README no longer prints it. README now names what changed inside the measured path, argues why a run over the five committed fixtures does not reach those paths, and marks that as reasoning rather than a receipt. **The published table has not been re-measured against Phase 7a.** The next shoot-day endpoint window regenerates it; `EVAL.md`'s severity-model line will read differently, because that value now comes from the endpoint's response rather than the configured label.
+
+### One Codex review and its corrections
+
+One read-only `codex review --base 2b6e797` ran after the suite went green. It returned one P1 and two P2 findings. All three were real defects introduced by this phase's own changes, so all three were corrected in one iteration, `c0a380e`. No second review ran.
+
+| Finding | Disposition |
+| --- | --- |
+| [P1] Minting a token on every unauthenticated `GET /` created a durable Firestore document per request, with no cap and no cleanup. A crawler could grow that collection without bound. | CORRECTED. A `HEAD` probe mints nothing. One address may mint 30 tokens per UTC hour; past that the page renders without the upload form and says so, while the sample audits and the gate playground keep working. README carries the `gcloud firestore fields ttls update expires_at` command that removes spent records. |
+| [P2] The landing page filtered sample runs after `list_runs` applied its limit, so 20 newer upload runs would have emptied the public list. | CORRECTED. The page reads the newest 100 runs and keeps the newest 20 sample ones. The filter stays in the service because an equality filter plus an ordering needs a Firestore composite index; README states the resulting bound. |
+| [P2] The generativelanguage backend still set `severity_model_id` from its configured request name, contradicting the field's new meaning. | CORRECTED. It reads the response's reported model version and records the request name as the endpoint label, so one provenance rule covers both backends. |
+
+### Local quality-gate receipts
+
+All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `414 passed, 2 warnings`. The suite was 374 tests at `2b6e797`. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `48 files already formatted`. |
+| `git diff --check` | 0 | No whitespace errors. |
+| `codex review --base 2b6e797` | 0 | One P1 and two P2 findings; all three corrected in `c0a380e`. No second review ran. |
+| `uv run pytest tests/adversarial/ -v` | 0 | `17 passed`, including `test_only_two_named_functions_write_into_the_findings_collection`. |
+
+The widened write-surface test was mutation-checked by hand before it was committed. Re-adding `finding_ref.set(update_data, merge=True)` plus a `.delete()` failed it with `Extra items in the left set: 'delete', 'set'`. Adding `self._firestore.collection(FINDINGS_COLLECTION).document("smuggled").set({})` inside `record_rejection` failed it with `Left contains one more item: 'tools.py:495 record_rejection() calls .set()'`. Both mutations were reverted.
+
+### Deployment receipts
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `.\deploy-specguard.ps1` | 0 | `Service [specguard] revision [specguard-00023-bst] has been deployed and is serving 100 percent of traffic.` |
+
+The public judge URL remains `https://specguard-108657628939.us-central1.run.app`.
+
+### Live receipts
+
+Every `curl.exe` below was unpiped and exited 0. Counter readings come from a read-only Firestore script that writes nothing.
+
+1. **HSTS and the other four headers.** `curl.exe -sS -I /` returned HTTP 200 with `strict-transport-security: max-age=31536000; includeSubDomains`, plus the content-security-policy, `x-content-type-options: nosniff`, `referrer-policy: no-referrer`, and `x-frame-options: DENY`.
+2. **The landing page lists sample runs only.** `GET /` returned 19 run links and 19 `SAMPLE` badges: every listed run is a sample. The heading reads `Recent sample runs`.
+3. **An upload run URL still resolves while unlisted.** The Phase 6d upload run `bb7992f01b7e4f099820745461ba6f41` does not appear anywhere in the landing-page body. `GET /runs/bb7992f01b7e4f099820745461ba6f41` returned HTTP 200 and `GET /runs/bb7992f01b7e4f099820745461ba6f41/export.json` returned HTTP 200.
+4. **`GET /gate` is unmetered; `POST /gate` is counted.** The `gate_check_limits` counters summed to 6. Five `GET /gate` requests each returned HTTP 200, and the sum was still 6. One `POST /gate` returned HTTP 200, and the sum was 7.
+5. **The gate playground still verifies and still rejects.** `GET /gate` returned HTTP 200 with the `VERIFIED` verdict card, `<form id="gate-form" action="/gate" method="post">`, and two near-miss POST forms. `POST /gate` with the 80-deg-C quote returned `REJECTED` and `quote_not_found_on_cited_page`; with the real quote it returned `VERIFIED`.
+6. **A HEAD probe mints no token; a GET mints exactly one.** Before: `token_mint_limits` sum 2, `upload_submission_tokens` 3 documents. After `HEAD /` (HTTP 200): unchanged, 2 and 3. After `GET /` (HTTP 200): sum 3 and 4 documents.
+7. **The renamed badge on a live run.** `POST /sample/veylan-208v` returned `303` to run `1b2f3c284bc0459a956ba1419a9d4a83`. Its page returned HTTP 200, carries `QUOTES VERIFIED` twice and no bare `>VERIFIED<`, carries the sentence `Both quotes were found at their cited pages. This is not a judgment that the discrepancy is real.`, and carries the new per-row `Status` column. Its export reports `verification_status: verified` with the meaning string beside it, and `severity` `unclassified` with status `fallback`, which is the documented state while `SPECGUARD_GEMMA_ENDPOINT=disabled`.
+
+**Not receipted live: the unminted-token refusal.** `POST /audit` checks the demo passphrase before it reads the token, and a wrong passphrase returns HTTP 403 with `The demo passphrase is required.` (receipted). Reaching the token check needs the real passphrase, which this session did not use. Three tests pin the refusal instead: an invented token, an expired token, and a token that expires between the route's check and the transaction. Each asserts that no run record and no stored object is left behind.
+
+### Board
+
+Every finding from the three external reviews is on the board in `README.md`, `FIXED` with its commit or `ACCEPTED` with its reason and disclosure location. Phase 7a added nine rows: six `FIXED` for the ledger items, one `ACCEPTED` for the capability-URL model, one `ACCEPTED` for the unmeasured evaluation revision, and three `FIXED` for the Codex corrections.
+
+### Local commits
+
+| Commit | Subject |
+| --- | --- |
+| `16853d9` | Refuse a severity annotation for a finding that is not in the ledger |
+| `f55d748` | Name the badge for what the gate proves: QUOTES VERIFIED |
+| `f0d33bb` | List sample runs only, and state the capability-URL model |
+| `55afbad` | Mint every upload submission token server-side, with an expiry |
+| `f767bdb` | Make a gate check a POST, and serve the default verdict from import |
+| `6bdd747` | Honour X-Forwarded-For only where a proxy appends it, and add HSTS |
+| `2cffa9a` | Return tool errors without a message, so no path reaches the model |
+| `6f27d92` | Record what the severity endpoint reported, not what it was configured with |
+| `ba1be8d` | Restate the README and Devpost claims that had drifted from the code |
+| `7283956` | Name the fix commits in the Phase 7a board rows |
+| `c0a380e` | Apply the three Codex review findings |
+| `fcb2ab7` | Record the generated test count for the review corrections |
+
+Nothing was pushed, merged, or opened as a pull request.

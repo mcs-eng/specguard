@@ -20,8 +20,13 @@ def _runtime_sources() -> dict[Path, str]:
     return {path: path.read_text(encoding="utf-8") for path in files}
 
 
-def test_only_the_tools_and_read_only_web_repository_acquire_firestore_collections() -> None:
-    """The web repository may read records, but only tools may write claim records."""
+def test_only_the_tools_and_the_web_repository_acquire_firestore_collections() -> None:
+    """The web repository is not read-only; only the tools write a claim record.
+
+    The repository writes run records, submission tokens, and rate-limit
+    counters. What it never writes is a findings, rejections, or integrity
+    record, and that is what the next test proves for the ledger itself.
+    """
     collection_users = [
         path.name for path, source in _runtime_sources().items() if ".collection(" in source
     ]

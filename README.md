@@ -24,11 +24,11 @@ The gate establishes one narrow thing: each quoted text anchor occurs on its cit
 
 <!-- test-count-start -->
 
-`uv run pytest -q` exited 0 with **414 passed** on code revision `c0a380e`. This line is written by `scripts/record_test_count.py` from that run's own summary line; it is not typed by hand. No test requires the network or credentials; every model, Firestore, and storage dependency is an in-process fake.
+`uv run pytest -q` exited 0 with **414 passed** on code revision `fcb2ab7 plus uncommitted changes to HANDOFF.md, tests/adversarial/test_write_surface.py`. This line is written by `scripts/record_test_count.py` from that run's own summary line; it is not typed by hand. No test requires the network or credentials; every model, Firestore, and storage dependency is an in-process fake.
 
 <!-- test-count-end -->
 
-Deployed service: `https://specguard-108657628939.us-central1.run.app` (Cloud Run, us-central1, revision `PLACEHOLDER_REVISION` as of 2026-08-22). Every public GET route reads only, with one stated exception: `GET /` also mints one upload submission token and records it, within a per-address hourly budget. Work that costs something — an audit, a sample audit, a gate check — is a POST. `POST /audit` requires a demo passphrase that is not in this repository.
+Deployed service: `https://specguard-108657628939.us-central1.run.app` (Cloud Run, us-central1, revision `specguard-00023-bst` as of 2026-08-22). Every public GET route reads only, with one stated exception: `GET /` also mints one upload submission token and records it, within a per-address hourly budget. Work that costs something — an audit, a sample audit, a gate check — is a POST. `POST /audit` requires a demo passphrase that is not in this repository.
 
 **Try it.** Judges can run four public sample audits without a passphrase: Caldra (compliant), Veylan 208V, Torven 70 deg C, and Veylan altered (integrity screen). Uploading arbitrary PDFs stays gated to protect the demo budget.
 
