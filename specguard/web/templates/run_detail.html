@@ -28,7 +28,7 @@
   {% elif run.status == 'RUNNING' %}
   <div class="notice"><strong>This run has not finished.</strong><p>Reload this page later. The server reports no progress while the model step runs.</p></div>
   {% elif run.status == 'QUARANTINED' %}
-  <div class="notice"><strong>The text-layer integrity screen stopped this run.</strong>{% if run.summary.quarantine %}<p>Reason: <code>{{ run.summary.quarantine.reason }}</code>. No model call was made and no RFI was drafted. The hidden text is recorded below for a human reviewer only.</p>{% endif %}</div>
+  <div class="notice"><strong>The text-layer integrity screen stopped this run.</strong>{% if run.summary.quarantine %}<p>Reason: <code>{{ run.summary.quarantine.reason }}</code>. No model call was made and no RFI was drafted. The hidden text is recorded below for a human reviewer only.</p>{% for document in run.summary.quarantine.documents %}{% if document.detectors %}<p>{{ document.document_role }} flagged by {% for name in document.detectors %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}{% endfor %}{% endif %}</div>
   {% endif %}
   <dl class="stats">
     <div><dt>Claims made</dt><dd>{{ run.summary.claims_made }}</dd></div>
@@ -93,9 +93,9 @@
     {% for record in integrity_records %}
     <article>
       <h3>{{ record.document_role }} · flagged pages {{ record.flagged_pages }}</h3>
-      <p class="muted">Document SHA-256: <code>{{ record.document_sha256 }}</code></p>
-      <div class="table-wrap"><table><thead><tr><th scope="col">Page</th><th scope="col">Hidden span text</th><th scope="col">Font</th><th scope="col">Size</th></tr></thead><tbody>
-      {% for span in record.hidden_spans %}<tr><td>{{ span.page_number }}</td><td><q>{{ span.text }}</q></td><td>{{ span.font }}</td><td>{{ span.size }}</td></tr>{% endfor %}
+      <p class="muted">Document SHA-256: <code>{{ record.document_sha256 }}</code>{% if record.detectors %} · detectors: {% for name in record.detectors %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</p>
+      <div class="table-wrap"><table><thead><tr><th scope="col">Page</th><th scope="col">Detector</th><th scope="col">Hidden span text</th><th scope="col">Evidence</th><th scope="col">Font</th><th scope="col">Size</th></tr></thead><tbody>
+      {% for span in record.hidden_spans %}<tr><td>{{ span.page_number }}</td><td><code>{{ span.detector }}</code></td><td><q>{{ span.text }}</q></td><td>{{ span.evidence }}</td><td>{{ span.font }}</td><td>{{ span.size }}</td></tr>{% endfor %}
       </tbody></table></div>
     </article>
     {% endfor %}

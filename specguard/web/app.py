@@ -1311,6 +1311,7 @@ def _export_quarantine(quarantine: Any) -> dict[str, Any] | None:
                 "document_sha256": document.get("document_sha256"),
                 "page_count": document.get("page_count"),
                 "flagged_pages": document.get("flagged_pages"),
+                "detectors": document.get("detectors"),
                 "hidden_span_count": document.get("hidden_span_count"),
                 "integrity_finding_id": document.get("integrity_finding_id"),
                 "persistence_reason": document.get("persistence_reason"),
@@ -1370,9 +1371,12 @@ def _export_integrity(record: dict[str, Any]) -> dict[str, Any]:
         "document_sha256": record.get("document_sha256"),
         "page_count": record.get("page_count"),
         "flagged_pages": record.get("flagged_pages"),
+        "detectors": record.get("detectors"),
         "hidden_spans": [
             {
                 "page_number": span.get("page_number"),
+                "detector": span.get("detector"),
+                "evidence": span.get("evidence"),
                 "text": span.get("text"),
                 "font": span.get("font"),
                 "size": span.get("size"),

@@ -80,6 +80,7 @@ def _print_quarantine(summary: AuditRunSummary) -> None:
         print(f"    SHA-256: {document.document_sha256}")
         print(f"    pages screened: {document.page_count}")
         print(f"    flagged pages: {document.flagged_pages}")
+        print(f"    detectors: {', '.join(document.detectors) or 'none recorded'}")
         print(f"    hidden spans: {document.hidden_span_count}")
         if document.integrity_finding_id is not None:
             print(f"    integrity record: {document.integrity_finding_id}")

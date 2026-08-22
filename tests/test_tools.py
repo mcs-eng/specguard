@@ -441,9 +441,9 @@ def test_draft_rfi_contains_required_evidence_and_hash_metadata(tmp_path: Path) 
     assert "reason: severity endpoint not deployed outside demo windows" in text
     assert "TEXT-LAYER INTEGRITY SCREEN" in text
     assert "Document Screen Pages read Result" in text
-    assert "specification text_layer_render_mode_v1" in text
-    assert "submitted document text_layer_render_mode_v1" in text
-    assert "Clean: no span is hidden by render mode." in text
+    assert f"specification {integrity.SCREEN_ID}" in text
+    assert f"submitted document {integrity.SCREEN_ID}" in text
+    assert "Clean: no detector flagged this document." in text
     assert "CHAIN-OF-CUSTODY METADATA" in text
     assert spec_hash in text
     assert cut_hash in text

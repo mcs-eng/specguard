@@ -233,9 +233,13 @@ class QuarantinedDocument(BaseModel):
     )
     page_count: int = Field(ge=1, description="Number of pages the screen read.")
     flagged_pages: list[int] = Field(
-        min_length=1, description="One-based pages that carry text hidden by render mode."
+        min_length=1, description="One-based pages that carry text the screen flagged."
     )
-    hidden_span_count: int = Field(ge=1, description="Number of hidden spans the screen found.")
+    detectors: list[str] = Field(
+        default_factory=list,
+        description="Names of the screen rules that flagged this document, in rule order.",
+    )
+    hidden_span_count: int = Field(ge=1, description="Number of flags the screen raised.")
     integrity_finding_id: str | None = Field(
         default=None,
         description="Identifier of the persisted integrity record, when it was written.",

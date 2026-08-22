@@ -357,6 +357,7 @@ class AuditTools:
             document_sha256=report.sha256,
             page_count=report.page_count,
             flagged_pages=report.flagged_pages,
+            detectors=report.detectors,
             hidden_spans=report.hidden_spans,
         )
         integrity_data = {
@@ -578,10 +579,10 @@ class AuditTools:
         ):
             report = integrity.check_text_layer(path)
             result = (
-                "Clean: no span is hidden by render mode."
+                "Clean: no detector flagged this document."
                 if report.clean
                 else f"FLAGGED on pages {report.flagged_pages}: "
-                f"{len(report.hidden_spans)} hidden spans."
+                f"{len(report.hidden_spans)} flags from {', '.join(report.detectors)}."
             )
             rows.append(
                 [

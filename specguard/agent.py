@@ -421,6 +421,7 @@ class AuditRuntime:
                     document_sha256=report.sha256,
                     page_count=report.page_count,
                     flagged_pages=report.flagged_pages,
+                    detectors=report.detectors,
                     hidden_span_count=len(report.hidden_spans),
                     integrity_finding_id=(str(record["integrity_finding_id"]) if matched else None),
                     persistence_reason=(

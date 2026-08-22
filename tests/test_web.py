@@ -1551,7 +1551,7 @@ def _fixture_run_client() -> tuple[TestClient, FakeRunRepository, FakeObjectStor
         {
             "integrity_finding_id": "integrity-6e-1",
             "run_id": FIXTURE_RUN_ID,
-            "screen_id": "text_layer_render_mode_v1",
+            "screen_id": "text_layer_integrity_v2",
             "document_role": "submitted_document",
             "document_sha256": cut_sheet_hash,
             "page_count": 2,
@@ -2127,7 +2127,7 @@ def test_the_export_carries_integrity_records_with_their_document_hashes() -> No
 
     records = client.get(f"/runs/{FIXTURE_RUN_ID}/export.json").json()["integrity_records"]
 
-    assert records[0]["screen_id"] == "text_layer_render_mode_v1"
+    assert records[0]["screen_id"] == "text_layer_integrity_v2"
     assert records[0]["flagged_pages"] == [1]
     assert len(records[0]["document_sha256"]) == 64
     assert records[0]["hidden_spans"][0]["text"] == "Nominal system: 209V, 3-phase, 4-wire."
@@ -2141,7 +2141,7 @@ def test_the_export_shows_no_hidden_span_field_the_run_page_withholds() -> None:
         "hidden_spans"
     ][0]
 
-    assert set(span) == {"page_number", "text", "font", "size"}
+    assert set(span) == {"page_number", "detector", "evidence", "text", "font", "size"}
 
 
 def test_the_export_excludes_paths_passphrases_and_tokens() -> None:

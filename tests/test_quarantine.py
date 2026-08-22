@@ -27,7 +27,7 @@ from specguard.tools import (
     AuditTools,
 )
 from tests.fake_firestore import FakeFirestoreClient
-from tests.fixtures_pdf import write_pdf
+from tests.fixtures_pdf import write_alpha_pdf, write_pdf, write_render_mode_pdf
 
 RUN_ID = "quarantine-run-1"
 SPEC_LINE = "The required characteristic is alpha."
@@ -425,3 +425,85 @@ def test_an_integrity_record_describing_other_bytes_is_not_attached(
     document = summary.quarantine.documents[0]
     assert document.integrity_finding_id is None
     assert document.persistence_reason == "persisted_record_describes_other_bytes"
+
+
+def _build_with_cut_sheet(
+    tmp_path: Path, generator: CountingClaimGenerator, cut_sheet: Path
+) -> tuple[AuditRuntime, FakeFirestoreClient]:
+    """Bind a runtime to a clean specification and a caller-built submitted document."""
+    spec = write_pdf(tmp_path / "governing.pdf", [[SPEC_LINE], ["Second governing page."]])
+    client = FakeFirestoreClient()
+    tools = AuditTools(
+        firestore_client=client,
+        spec_path=spec,
+        cut_sheet_path=cut_sheet,
+        run_id=RUN_ID,
+        output_directory=tmp_path / "artifacts",
+    )
+    runtime = AuditRuntime(
+        claim_generator=generator,
+        tools=tools,
+        spec_path=spec,
+        cut_sheet_path=cut_sheet,
+        run_id=RUN_ID,
+    )
+    return runtime, client
+
+
+def test_a_zero_alpha_document_quarantines_the_run_end_to_end(tmp_path: Path) -> None:
+    """A detector other than render mode 3 stops the run on the same terms.
+
+    Nothing about the quarantine path is specific to render mode 3. This proves
+    it end to end for the ``zero_alpha`` rule: no model call, no message built,
+    the sentinel text in no message, one deterministic integrity record, and a
+    summary that names the detector that raised the flag.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    cut_sheet = write_alpha_pdf(tmp_path / "submitted.pdf", HIDDEN_SENTINEL, 0.0)
+    generator = CountingClaimGenerator(AuditClaimBatch(claims=[_claim()]))
+    runtime, client = _build_with_cut_sheet(tmp_path, generator, cut_sheet)
+
+    summary = asyncio.run(runtime.run())
+
+    assert generator.call_count == 0
+    assert generator.messages == []
+    assert all(HIDDEN_SENTINEL not in message for message in generator.messages)
+    assert summary.quarantined is True
+    assert summary.findings_persisted == 0
+    assert summary.rfi_path is None
+    assert summary.quarantine is not None
+    document = summary.quarantine.documents[0]
+    assert document.document_role is DocumentRole.SUBMITTED_DOCUMENT
+    assert document.detectors == [integrity.DETECTOR_ZERO_ALPHA]
+    assert document.flagged_pages == [1]
+    assert client.data.get(FINDINGS_COLLECTION, {}) == {}
+    assert client.data.get(REJECTIONS_COLLECTION, {}) == {}
+    records = list(client.data[INTEGRITY_FINDINGS_COLLECTION].values())
+    assert len(records) == 1
+    assert records[0]["detectors"] == [integrity.DETECTOR_ZERO_ALPHA]
+    assert records[0]["hidden_spans"][0]["detector"] == integrity.DETECTOR_ZERO_ALPHA
+    assert records[0]["hidden_spans"][0]["text"] == HIDDEN_SENTINEL
+    assert records[0]["hidden_spans"][0]["evidence"]
+    assert records[0]["screen_id"] == integrity.SCREEN_ID
+
+
+def test_a_clip_only_document_quarantines_the_run_end_to_end(tmp_path: Path) -> None:
+    """The content-stream rule quarantines on the same terms as every other rule."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    cut_sheet = write_render_mode_pdf(
+        tmp_path / "submitted.pdf", "Visible submitted line.", HIDDEN_SENTINEL, 7
+    )
+    generator = CountingClaimGenerator(AuditClaimBatch(claims=[_claim()]))
+    runtime, client = _build_with_cut_sheet(tmp_path, generator, cut_sheet)
+
+    summary = asyncio.run(runtime.run())
+
+    assert generator.call_count == 0
+    assert generator.messages == []
+    assert summary.quarantined is True
+    assert summary.quarantine is not None
+    assert summary.quarantine.documents[0].detectors == [
+        integrity.DETECTOR_CONTENT_STREAM_RENDER_MODE
+    ]
+    records = list(client.data[INTEGRITY_FINDINGS_COLLECTION].values())
+    assert records[0]["hidden_spans"][0]["text"] == HIDDEN_SENTINEL
