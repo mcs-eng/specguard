@@ -24,14 +24,19 @@ from tests.fixtures_pdf import (
     write_alpha_pdf,
     write_cropped_pdf,
     write_edge_cropped_pdf,
+    write_fanned_out_xobject_pdf,
+    write_forged_inline_image_pdf,
     write_glyph_size_pdf,
     write_image_only_pdf,
     write_inline_image_pdf,
+    write_invalid_render_mode_pdf,
     write_matrix_scaled_pdf,
     write_path_clipped_pdf,
     write_pdf,
     write_render_mode_pdf,
     write_saved_render_mode_pdf,
+    write_transparent_fill_stroked_pdf,
+    write_transparent_stroke_pdf,
     write_xobject_render_mode_pdf,
 )
 
@@ -337,7 +342,8 @@ def test_zero_fill_alpha_is_flagged(tmp_path: Path) -> None:
     assert report.clean is False
     assert report.detectors == [integrity.DETECTOR_ZERO_ALPHA]
     assert [span.text for span in report.hidden_spans] == ["Fully transparent line."]
-    assert "fill alpha to 0 of 255" in report.hidden_spans[0].evidence
+    assert "alpha to 0 of 255" in report.hidden_spans[0].evidence
+    assert "filled" in report.hidden_spans[0].evidence
     assert report.hidden_spans[0].char_flags & integrity.CHAR_FLAG_FILLED
 
 
@@ -586,3 +592,117 @@ def test_a_report_from_every_detector_is_deterministic(tmp_path: Path) -> None:
 def test_the_screen_identity_names_the_widened_rule_set() -> None:
     """The stored screen identity must change when the rule set changes."""
     assert integrity.SCREEN_ID == "text_layer_integrity_v2"
+
+
+# ---------------------------------------------------------------------------
+# Corrections from the Phase 7b Codex review
+# ---------------------------------------------------------------------------
+
+
+def test_a_transparent_stroke_only_span_is_flagged(tmp_path: Path) -> None:
+    """Stroke-only mode 1 at stroke alpha 0 paints no ink at all.
+
+    MuPDF reports the stroke alpha as the span's alpha and sets the stroked
+    flag, not the filled one. A zero-alpha rule that looked only at filled
+    spans would let this through.
+    """
+    path = write_transparent_stroke_pdf(tmp_path / "stroke0.pdf", "Transparent outline.", 0.0)
+
+    report = check_text_layer(path)
+
+    assert report.clean is False
+    assert report.detectors == [integrity.DETECTOR_ZERO_ALPHA]
+    assert [span.text for span in report.hidden_spans] == ["Transparent outline."]
+    assert report.hidden_spans[0].char_flags & integrity.CHAR_FLAG_STROKED
+    assert "stroked" in report.hidden_spans[0].evidence
+
+
+def test_a_painted_stroke_only_span_is_not_flagged(tmp_path: Path) -> None:
+    """The same construction at full stroke alpha paints, so it stays unflagged."""
+    path = write_transparent_stroke_pdf(tmp_path / "stroke1.pdf", "Painted outline.", 1.0)
+
+    report = check_text_layer(path)
+
+    assert report.clean is True
+    assert report.pages[0].visible_text == "Painted outline.\n"
+
+
+def test_a_stroke_that_paints_under_a_transparent_fill_is_still_flagged(tmp_path: Path) -> None:
+    """Mode 2 with a transparent fill and a painted stroke is flagged anyway.
+
+    MuPDF reports fill-and-stroke mode 2 with the filled flag alone and gives no
+    way to see that the stroke still paints, so the rule cannot separate this
+    from an invisible mode-0 span. It errs toward the disclosure. This test
+    exists to keep that bias visible, not to bless it: it is the case the
+    :mod:`specguard.integrity` docstring names.
+    """
+    path = write_transparent_fill_stroked_pdf(tmp_path / "fill0stroke1.pdf", "Outlined heading.")
+
+    report = check_text_layer(path)
+
+    assert report.clean is False
+    assert report.detectors == [integrity.DETECTOR_ZERO_ALPHA]
+    with pymupdf.open(path) as document:
+        span = document[0].get_text("dict")["blocks"][0]["lines"][0]["spans"][0]
+    assert span["char_flags"] & integrity.CHAR_FLAG_STROKED == 0
+    assert span["alpha"] == integrity.TRANSPARENT_ALPHA
+
+
+def test_an_unfiltered_inline_image_cannot_forge_its_own_end(tmp_path: Path) -> None:
+    """A forged ``EI`` inside unfiltered pixel data does not end the step.
+
+    The image body carries a whitespace-delimited ``EI`` followed by ``0 Tr``.
+    A scan that stopped there would read pixel bytes as operators, reset its
+    tracked mode to 0, and report the page clean while the renderer stays in
+    mode 7. The exact length comes from the image's own ``/W``, ``/H``,
+    ``/BPC``, and ``/CS``.
+    """
+    path = write_forged_inline_image_pdf(tmp_path / "forged.pdf", "Clip only line.", filtered=False)
+
+    report = check_text_layer(path)
+
+    assert report.clean is False
+    assert report.detectors == [integrity.DETECTOR_CONTENT_STREAM_RENDER_MODE]
+    assert [span.text for span in report.hidden_spans] == ["Clip only line."]
+    assert "render mode 7" in report.hidden_spans[0].evidence
+
+
+def test_a_filtered_inline_image_of_unknown_extent_is_disclosed(tmp_path: Path) -> None:
+    """A filtered image's length is not computable, and the gap is reported.
+
+    The scan falls back to searching for ``EI``, which the body can forge. When
+    a hiding render mode is in effect there, the rule flags the uncertainty
+    rather than resolving it in the document's favour.
+    """
+    path = write_forged_inline_image_pdf(
+        tmp_path / "forged_filtered.pdf", "Clip only line.", filtered=True
+    )
+
+    report = check_text_layer(path)
+
+    assert report.clean is False
+    assert report.detectors == [integrity.DETECTOR_CONTENT_STREAM_RENDER_MODE]
+    evidence = " ".join(span.evidence for span in report.hidden_spans)
+    assert "extent this scan cannot compute" in evidence
+
+
+def test_a_fanned_out_xobject_chain_is_scanned_once_per_mode(tmp_path: Path) -> None:
+    """Repeated sibling invocations cannot expand the scan without bound.
+
+    Six levels invoking eight forms each is 262144 stream reads without a
+    cache. The deepest form still carries its mode-3 line, so the cache must
+    save work without losing evidence.
+    """
+    path = write_fanned_out_xobject_pdf(tmp_path / "fanned.pdf", "Hidden at the leaf.", 6, 8)
+
+    report = check_text_layer(path)
+
+    assert report.clean is False
+    assert "Hidden at the leaf." in " ".join(span.text for span in report.hidden_spans)
+
+
+def test_an_out_of_range_render_mode_operand_is_ignored(tmp_path: Path) -> None:
+    """PDF defines modes 0 to 7; any other operand sets no mode at all."""
+    path = write_invalid_render_mode_pdf(tmp_path / "badmode.pdf", "Ordinary painted line.")
+
+    assert check_text_layer(path).clean is True

@@ -25,11 +25,21 @@ read.
        while the text layer still carries the characters. That is render mode
        3, the mode an OCR layer uses over a scanned image.
    ``zero_alpha``
-       A span that MuPDF reports as filled, not stroked, and not clipped, whose
-       fill alpha is 0. The graphics state, not the render mode, made it
-       invisible. PyMuPDF 1.28.2 exposes ``alpha`` on every span of
-       ``page.get_text("dict")``; ``test_pymupdf_exposes_span_alpha`` pins that
-       it still does.
+       A span that MuPDF reports as painting and not clipping, whose alpha is
+       0. The graphics state, not the render mode, made it invisible. MuPDF
+       reports the fill alpha for a filled span and the stroke alpha for a
+       stroke-only one, so this rule covers both. PyMuPDF 1.28.2 exposes
+       ``alpha`` on every span of ``page.get_text("dict")``;
+       ``test_pymupdf_exposes_span_alpha`` pins that it still does.
+
+       One conservative bias is known and deliberate. MuPDF reports
+       fill-and-stroke render mode 2 with the filled flag alone, so a mode-2
+       span whose fill alpha is 0 while its stroke still paints is flagged
+       even though a reader can see it. Text that is stroked and not filled is
+       written in mode 1, not mode 2, so the case is rare; the rule prefers a
+       disclosure a human resolves over a miss nobody sees.
+       ``test_a_stroke_that_paints_under_a_transparent_fill_is_still_flagged``
+       pins the bias so it stays visible.
    ``sub_visible_glyph``
        A span whose effective size is below ``MINIMUM_READABLE_POINT_SIZE``.
        MuPDF reports ``size`` after the text matrix is applied, so a 10 pt font
@@ -40,6 +50,13 @@ read.
        shown under render mode 3 or 7 is flagged. This is the only rule that
        separates clip-only mode 7 from a filled-and-clipped mode 4, 5, or 6,
        because MuPDF reports the same character flags for both.
+
+       An inline image body is stepped over, never tokenized, so a crafted
+       image cannot forge an operator. An unfiltered image's extent is computed
+       from its own dictionary. A filtered image's is not computable, and its
+       body may contain a whitespace-delimited ``EI`` that ends the step early;
+       when a hiding mode is in effect there, the rule flags the uncertainty
+       rather than resolving it in the document's favour.
    ``out_of_crop_box``
        Text that sits inside the media box and outside the crop box. MuPDF
        clips extraction to the crop box, so this rule re-reads each page from a
@@ -359,26 +376,93 @@ def _read_hex_string(data: bytes, start: int) -> tuple[bytes, int]:
     return bytes.fromhex(digits.decode("ascii")), index + 1
 
 
-def _skip_inline_image(data: bytes, start: int) -> int:
-    """Return the offset just past one ``BI ... ID <bytes> EI`` block.
+#: Colour-space components per inline-image colour space, by the abbreviated and
+#: the full name an inline image dictionary may use.
+_INLINE_COMPONENTS = {
+    "G": 1,
+    "DeviceGray": 1,
+    "CalGray": 1,
+    "I": 1,
+    "Indexed": 1,
+    "RGB": 3,
+    "DeviceRGB": 3,
+    "CalRGB": 3,
+    "CMYK": 4,
+    "DeviceCMYK": 4,
+}
+
+
+def _inline_image_data_length(entries: dict[str, object]) -> int | None:
+    """Return the exact byte length of one unfiltered inline image, or ``None``.
+
+    A filtered image carries no computable length, and neither does an image
+    whose colour space is a named resource this scan cannot resolve. ``None``
+    means the scan must fall back to searching for ``EI``, which a crafted
+    image body can forge.
+    """
+    if "F" in entries or "Filter" in entries:
+        return None
+    width = entries.get("W", entries.get("Width"))
+    height = entries.get("H", entries.get("Height"))
+    if not isinstance(width, str) or not isinstance(height, str):
+        return None
+    if not width.isdigit() or not height.isdigit():
+        return None
+    mask = entries.get("IM", entries.get("ImageMask"))
+    if mask == "true":
+        bits, components = 1, 1
+    else:
+        depth = entries.get("BPC", entries.get("BitsPerComponent"))
+        space = entries.get("CS", entries.get("ColorSpace"))
+        if not isinstance(depth, str) or not depth.isdigit():
+            return None
+        if not isinstance(space, str) or not space.startswith("/"):
+            return None
+        if space[1:] not in _INLINE_COMPONENTS:
+            return None
+        bits, components = int(depth), _INLINE_COMPONENTS[space[1:]]
+    row = (int(width) * bits * components + 7) // 8
+    return row * int(height)
+
+
+def _skip_inline_image(data: bytes, start: int) -> tuple[int, bool]:
+    """Step over one ``BI ... ID <bytes> EI`` block.
 
     Inline image data is arbitrary bytes. Tokenizing it would let a crafted
-    image body forge operators, so the scan steps over the whole block.
+    image body forge operators, so the scan steps over the whole block. The
+    second return value states whether the end was computed exactly. An
+    unfiltered image has a length its own dictionary determines, and that
+    length is used. A filtered image does not, so the scan falls back to
+    searching for a whitespace-delimited ``EI``, which the image body can
+    contain: the caller is told the extent is uncertain rather than trusting a
+    boundary an untrusted document chose.
     """
     marker = data.find(b"ID", start)
     if marker < 0:
-        return len(data)
+        return len(data), True
+    entries: dict[str, object] = {}
+    key: str | None = None
+    for kind, value in _tokenize(data[start:marker]):
+        if kind == "name" and key is None:
+            key = str(value)
+        elif key is not None:
+            entries[key] = f"/{value}" if kind == "name" else value
+            key = str(value) if kind == "name" else None
     index = marker + 3
+    length = _inline_image_data_length(entries)
+    if length is not None:
+        end = data.find(b"EI", index + length)
+        return (len(data), True) if end < 0 else (end + 2, True)
     while index < len(data):
         end = data.find(b"EI", index)
         if end < 0:
-            return len(data)
+            return len(data), False
         before_is_space = end == 0 or data[end - 1] in _WHITESPACE
         after = data[end + 2 : end + 3]
         if before_is_space and (not after or after[0] in _WHITESPACE):
-            return end + 2
+            return end + 2, False
         index = end + 2
-    return len(data)
+    return len(data), False
 
 
 def _tokenize(data: bytes) -> Iterator[tuple[str, object]]:
@@ -432,7 +516,8 @@ def _tokenize(data: bytes) -> Iterator[tuple[str, object]]:
         token = data[index:end].decode("latin-1")
         index = end if end > index else index + 1
         if token == "BI":
-            index = _skip_inline_image(data, index)
+            index, exact = _skip_inline_image(data, index)
+            yield ("inline_image", exact)
             continue
         yield ("token", token)
 
@@ -464,13 +549,25 @@ class _RenderModeScan:
 
     def __init__(self, document: pymupdf.Document) -> None:
         self._document = document
+        self._scanned: set[tuple[int, int]] = set()
+        self._uncertain: set[int] = set()
 
-    def shown_text_by_mode(self, page: pymupdf.Page) -> dict[int, list[str]]:
-        """Return the text shown under each hiding render mode, in mode order."""
+    def shown_text_by_mode(self, page: pymupdf.Page) -> tuple[dict[int, list[str]], set[int]]:
+        """Return the text shown under each hiding render mode, in mode order.
+
+        The second value names the hiding modes that were in effect where the
+        scan could not determine an inline image's extent. That is a gap the
+        caller discloses rather than a gap the caller ignores.
+        """
         found: dict[int, list[str]] = {}
+        self._scanned = set()
+        self._uncertain = set()
         resources = {name: xref for xref, name, *_ in page.get_xobjects()}
         self._scan(page.read_contents(), resources, 0, 0, set(), found)
-        return {mode: found[mode] for mode in HIDING_RENDER_MODES if found.get(mode)}
+        return (
+            {mode: found[mode] for mode in HIDING_RENDER_MODES if found.get(mode)},
+            set(self._uncertain),
+        )
 
     def _xobject_resources(self, xref: int) -> dict[str, int]:
         """Map every Form XObject name a stream can invoke to its xref."""
@@ -503,6 +600,16 @@ class _RenderModeScan:
         operands: list[object] = []
         array: list[bytes] | None = None
         for kind, value in _tokenize(data):
+            if kind == "inline_image":
+                # A body whose extent the scan cannot compute may contain a
+                # whitespace-delimited "EI" of its own, so everything after the
+                # fallback boundary may be pixel data read as operators. When a
+                # hiding mode is in effect there, that uncertainty is disclosed
+                # instead of being resolved in the document's favour.
+                if not value and render_mode in HIDING_RENDER_MODES:
+                    self._uncertain.add(render_mode)
+                operands = []
+                continue
             if kind == "array_open":
                 array = []
                 continue
@@ -528,7 +635,12 @@ class _RenderModeScan:
             elif operator == "Q":
                 render_mode = saved.pop() if saved else render_mode
             elif operator == "Tr" and operands and _is_number(operands[-1]):
-                render_mode = int(float(str(operands[-1])))
+                requested = int(float(str(operands[-1])))
+                # PDF defines modes 0 to 7. Any other operand is invalid, and
+                # honouring it would also let one page mint unbounded keys for
+                # the per-form scan cache below.
+                if 0 <= requested <= 7:
+                    render_mode = requested
             elif operator in ("Tj", "TJ", "'", '"'):
                 shown = operands[-1] if operands and isinstance(operands[-1], bytes) else None
                 if shown is not None and render_mode in HIDING_RENDER_MODES:
@@ -548,13 +660,24 @@ class _RenderModeScan:
         path: set[int],
         found: dict[int, list[str]],
     ) -> None:
-        """Descend into one invoked Form XObject with the caller's render mode."""
+        """Descend into one invoked Form XObject with the caller's render mode.
+
+        Each (form, inherited render mode) pair is scanned once per page. The
+        path set alone stops a cycle but not repeated sibling invocations, and a
+        document whose forms each invoke the next many times would otherwise
+        expand to an unbounded number of scans. Rescanning a pair can add no
+        evidence the first scan did not already add, so the cache costs the
+        report nothing.
+        """
         name = operands[-1] if operands and isinstance(operands[-1], str) else None
         if not name or not name.startswith("/"):
             return
         xref = resources.get(name[1:])
-        if xref is None or xref in path or not self._is_form(xref):
+        if xref is None or xref in path or (xref, render_mode) in self._scanned:
             return
+        if not self._is_form(xref):
+            return
+        self._scanned.add((xref, render_mode))
         try:
             stream = self._document.xref_stream(xref)
         except (RuntimeError, ValueError):
@@ -597,18 +720,18 @@ def _span_flags(span: dict, page_number: int) -> list[HiddenSpan]:
             )
         )
     elif (
-        char_flags & CHAR_FLAG_FILLED
-        and not char_flags & CHAR_FLAG_STROKED
+        char_flags & PAINTING_CHAR_FLAGS
         and not char_flags & CHAR_FLAG_CLIPPED
         and alpha == TRANSPARENT_ALPHA
     ):
+        painted = "filled" if char_flags & CHAR_FLAG_FILLED else "stroked"
         flags.append(
             HiddenSpan(
                 **common,
                 detector=DETECTOR_ZERO_ALPHA,
                 evidence=(
-                    "The span is filled and not stroked, and the graphics state sets its "
-                    f"fill alpha to {alpha} of 255, so the fill paints nothing."
+                    f"MuPDF records this span as {painted} (char_flags={char_flags}) and the "
+                    f"graphics state sets its alpha to {alpha} of 255, so it paints nothing."
                 ),
             )
         )
@@ -667,7 +790,21 @@ def _content_stream_flags(
     """
     flags: list[HiddenSpan] = []
     concealed: set[tuple[str, tuple[float, float, float, float]]] = set()
-    for mode, shown in scan.shown_text_by_mode(page).items():
+    by_mode, uncertain = scan.shown_text_by_mode(page)
+    for mode in sorted(uncertain):
+        flags.append(
+            HiddenSpan(
+                page_number=page_number,
+                detector=DETECTOR_CONTENT_STREAM_RENDER_MODE,
+                evidence=(
+                    f"PDF text render mode {mode} was in effect at an inline image whose "
+                    "extent this scan cannot compute, because the image is filtered. Whatever "
+                    "the image body carries is therefore unread under a hiding render mode."
+                ),
+                text="(an inline image body of undetermined extent)",
+            )
+        )
+    for mode, shown in by_mode.items():
         if mode == 3 and span_flagged_mode_3:
             continue
         description = "paints nothing" if mode == 3 else "only adds the glyphs to the clip path"

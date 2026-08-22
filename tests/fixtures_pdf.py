@@ -23,10 +23,6 @@ FIXTURE_FONT = "notos"
 #: cannot, so the two builders that append raw operators use this font instead.
 SIMPLE_FONT = "helv"
 
-#: A base-14 font, whose single-byte encoding lets a raw content-stream string
-#: operand carry ordinary text. The subset CID encoding of ``FIXTURE_FONT``
-#: cannot, so the builders that append raw operators use this font instead.
-
 SOFT_HYPHEN = "\u00ad"
 NO_BREAK_SPACE = "\u00a0"
 FI_LIGATURE = "\ufb01"
@@ -366,6 +362,149 @@ def write_matrix_scaled_pdf(path: Path, text: str, fontsize: float, scale: float
         + f" {fontsize} Tf {scale} 0 0 {scale} 72 600 Tm (".encode("latin-1")
         + payload
         + b") Tj ET Q",
+    )
+    document.save(str(path))
+    document.close()
+    return path
+
+
+def write_transparent_stroke_pdf(path: Path, text: str, stroke_opacity: float) -> Path:
+    """Write one page whose only line is stroke-only at ``stroke_opacity``.
+
+    Render mode 1 outlines glyphs and fills nothing. MuPDF reports the stroke
+    alpha as the span's alpha, so ``0`` is a line that paints no ink at all.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_text(
+        (72.0, 100.0),
+        text,
+        fontname=SIMPLE_FONT,
+        fontsize=11,
+        render_mode=1,
+        stroke_opacity=stroke_opacity,
+    )
+    document.save(str(path))
+    document.close()
+    return path
+
+
+def write_transparent_fill_stroked_pdf(path: Path, text: str) -> Path:
+    """Write one page in fill-and-stroke mode 2 whose fill alone is transparent.
+
+    MuPDF reports this span with the filled flag and an alpha of 0, and gives
+    no way to see that the stroke still paints. It is the known conservative
+    bias of the zero-alpha rule.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_text(
+        (72.0, 100.0),
+        text,
+        fontname=SIMPLE_FONT,
+        fontsize=11,
+        render_mode=2,
+        fill_opacity=0,
+        stroke_opacity=1,
+    )
+    document.save(str(path))
+    document.close()
+    return path
+
+
+def write_forged_inline_image_pdf(path: Path, concealed: str, *, filtered: bool) -> Path:
+    """Write one page whose inline image body carries a whitespace-delimited ``EI``.
+
+    Render mode 7 is set before the image and the concealed line is shown after
+    it. The image body also carries ``0 Tr``. A scan that stopped at the forged
+    ``EI`` would read those pixel bytes as operators, reset its tracked mode to
+    0, and report the page as clean while the renderer stays in mode 7.
+
+    ``filtered=False`` writes an unfiltered image, whose exact length the scan
+    computes from ``/W``, ``/H``, ``/BPC``, and ``/CS``. ``filtered=True``
+    writes the same body behind ``/F /AHx``, whose length is not computable.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_text((72.0, 100.0), "Visible heading.", fontname=SIMPLE_FONT, fontsize=11)
+    reference = _font_reference(page).encode("latin-1")
+    payload = concealed.encode("latin-1").replace(b"\\", b"\\\\").replace(b"(", b"\\(")
+    body = b"xx EI 0 Tr yy"
+    body += b"Z" * (40 - len(body))
+    header = b"/W 40 /H 1 /CS /G /BPC 8" + (b" /F /AHx" if filtered else b"")
+    _append_operators(
+        document,
+        page,
+        b"7 Tr\nBI " + header + b" ID\n" + body + b"\nEI\n"
+        b"BT /" + reference + b" 11 Tf 1 0 0 1 72 500 Tm (" + payload + b") Tj ET",
+    )
+    document.save(str(path))
+    document.close()
+    return path
+
+
+def write_fanned_out_xobject_pdf(path: Path, concealed: str, levels: int, fan: int) -> Path:
+    """Write one page whose Form XObjects invoke each other ``fan`` times per level.
+
+    Without a per-form cache the scan would expand to ``fan ** levels`` stream
+    reads. The deepest form carries ``concealed`` under render mode 3, so a
+    cache that skipped work must still report it.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_text((72.0, 100.0), "Visible heading.", fontname=SIMPLE_FONT, fontsize=11)
+    reference = _font_reference(page)
+    font_xref = _font_xref(page, reference)
+    payload = concealed.encode("latin-1").replace(b"\\", b"\\\\").replace(b"(", b"\\(")
+
+    previous: int | None = None
+    for _level in range(levels):
+        if previous is None:
+            stream = (
+                b"BT /"
+                + reference.encode("latin-1")
+                + b" 11 Tf 3 Tr 1 0 0 1 72 600 Tm ("
+                + payload
+                + b") Tj ET"
+            )
+            resources = f"/Font<</{reference} {font_xref} 0 R>>"
+        else:
+            stream = b" ".join([b"/Fm Do"] * fan)
+            resources = f"/XObject<</Fm {previous} 0 R>>"
+        xref = document.get_new_xref()
+        document.update_object(
+            xref,
+            "<</Type/XObject/Subtype/Form"
+            f"/BBox[0 0 {PAGE_WIDTH} {PAGE_HEIGHT}]/Resources<<{resources}>>>>",
+        )
+        document.update_stream(xref, stream)
+        previous = xref
+
+    kind, value = document.xref_get_key(page.xref, "Resources")
+    resources_xref = int(value.split()[0]) if kind == "xref" else page.xref
+    resources_key = "XObject" if kind == "xref" else "Resources/XObject"
+    document.xref_set_key(resources_xref, resources_key, f"<</Fm0 {previous} 0 R>>")
+    _append_operators(document, page, b" ".join([b"/Fm0 Do"] * fan))
+    document.save(str(path))
+    document.close()
+    return path
+
+
+def write_invalid_render_mode_pdf(path: Path, text: str) -> Path:
+    """Write one page whose ``Tr`` operand is outside the defined range 0 to 7.
+
+    PDF defines eight render modes. An out-of-range operand sets no mode, and
+    honouring it would also let one page mint unbounded keys for the scan's
+    per-form cache.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_text((72.0, 100.0), text, fontname=SIMPLE_FONT, fontsize=11)
+    reference = _font_reference(page).encode("latin-1")
+    _append_operators(
+        document,
+        page,
+        b"q 99 Tr BT /" + reference + b" 11 Tf 1 0 0 1 72 600 Tm (Ordinary second line.) Tj ET Q",
     )
     document.save(str(path))
     document.close()
