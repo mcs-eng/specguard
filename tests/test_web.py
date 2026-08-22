@@ -23,11 +23,13 @@ from specguard.web.app import (
     GATE_DEFAULT_PAGE,
     GATE_DEFAULT_QUOTE,
     GATE_DEFAULT_RESULT,
+    LANDING_PAGE_RUNS,
     MAX_UPLOAD_BYTES,
     QUOTE_CONTEXT_CACHE_SIZE,
     SAMPLE_RUNS_PER_UTC_DAY,
     SECURITY_HEADERS,
     SUBMISSION_TOKEN_LIFETIME,
+    TOKEN_MINTS_PER_IP_HOUR,
     WebServices,
     WebSettings,
     create_app,
@@ -55,6 +57,7 @@ class FakeRunRepository:
         self.sample_runs_by_day: dict[str, int] = {}
         self.sample_runs_by_hour_ip: dict[tuple[str, str], int] = {}
         self.gate_checks_by_hour_ip: dict[tuple[str, str], int] = {}
+        self.token_mints_by_hour_ip: dict[tuple[str, str], int] = {}
         self.submission_tokens: dict[str, dict[str, Any]] = {}
         self.minted_tokens = 0
 
@@ -111,6 +114,14 @@ class FakeRunRepository:
         if current >= hourly_limit:
             return False
         self.gate_checks_by_hour_ip[bucket] = current + 1
+        return True
+
+    def reserve_token_mint(self, *, hour: str, client_ip: str, hourly_limit: int) -> bool:
+        bucket = (hour, client_ip)
+        current = self.token_mints_by_hour_ip.get(bucket, 0)
+        if current >= hourly_limit:
+            return False
+        self.token_mints_by_hour_ip[bucket] = current + 1
         return True
 
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -1073,6 +1084,98 @@ def test_the_landing_page_mints_and_records_every_submission_token() -> None:
     assert record["run_id"] is None
     lifetime = record["expires_at"] - datetime.now(UTC)
     assert timedelta(minutes=59) < lifetime <= SUBMISSION_TOKEN_LIFETIME
+
+
+def test_a_head_probe_mints_no_token() -> None:
+    """A probe never submits a form, so it never needs a token record."""
+    client, repository, _, _ = _client()
+    before = dict(repository.submission_tokens)
+
+    response = client.head("/")
+
+    assert response.status_code == 200
+    assert repository.minted_tokens == 0
+    assert repository.submission_tokens == before
+    assert repository.token_mints_by_hour_ip == {}
+
+
+def test_token_minting_is_capped_per_address_per_hour() -> None:
+    """A public read that writes a durable record must be bounded.
+
+    Minting on render is what makes the token one-time and expiring. It also
+    means an unauthenticated GET writes a Firestore document, so without a cap
+    a crawler grows that collection for as long as it keeps asking.
+    """
+    client, repository, _, _ = _client()
+
+    for _ in range(TOKEN_MINTS_PER_IP_HOUR):
+        assert client.get("/").status_code == 200
+
+    over_budget = client.get("/")
+
+    assert over_budget.status_code == 200
+    assert repository.minted_tokens == TOKEN_MINTS_PER_IP_HOUR
+    assert "The upload form is not available right now." in over_budget.text
+    assert 'id="audit-form"' not in over_budget.text
+    # The two routes that need no token still work from that same page.
+    assert "Run a sample audit" in over_budget.text
+    assert 'href="/gate"' in over_budget.text
+    assert client.post("/sample/caldra", follow_redirects=False).status_code == 303
+
+
+def test_the_landing_page_finds_sample_runs_behind_newer_upload_runs() -> None:
+    """Filtering after the query limit would empty the list; the scan is wider.
+
+    ``list_runs`` orders by creation time and limits. With more upload runs
+    than that limit newer than every sample run, a filter applied to those rows
+    returns nothing, and the public page claims no sample run exists.
+    """
+    client, repository, _, _ = _client()
+    for index in range(40):
+        run_id = f"upload-{index:03d}"
+        repository.runs[run_id] = {
+            "run_id": run_id,
+            "created_at": datetime(2026, 8, 22, tzinfo=UTC),
+            "status": "COMPLETED",
+            "source": "upload",
+            "summary": {"claims_made": 0, "rejected": 0, "retried": 0, "findings_persisted": 0},
+            "documents": {},
+            "rfi": None,
+        }
+    repository.runs["sample-buried"] = {
+        "run_id": "sample-buried",
+        "created_at": datetime(2026, 8, 21, tzinfo=UTC),
+        "status": "COMPLETED",
+        "source": "sample",
+        "summary": {"claims_made": 0, "rejected": 0, "retried": 0, "findings_persisted": 0},
+        "documents": {},
+        "rfi": None,
+    }
+
+    body = client.get("/").text
+
+    assert "sample-buried" in body
+    assert "upload-039" not in body
+
+
+def test_the_landing_page_shows_at_most_twenty_sample_runs() -> None:
+    """A wider scan feeds the filter; it does not widen the published list."""
+    client, repository, _, _ = _client()
+    for index in range(30):
+        run_id = f"sample-{index:03d}"
+        repository.runs[run_id] = {
+            "run_id": run_id,
+            "created_at": datetime(2026, 8, 22, tzinfo=UTC),
+            "status": "COMPLETED",
+            "source": "sample",
+            "summary": {"claims_made": 0, "rejected": 0, "retried": 0, "findings_persisted": 0},
+            "documents": {},
+            "rfi": None,
+        }
+
+    body = client.get("/").text
+
+    assert sum(f'title="sample-{index:03d}"' in body for index in range(30)) == LANDING_PAGE_RUNS
 
 
 def test_audit_refuses_a_submission_token_this_service_never_minted() -> None:

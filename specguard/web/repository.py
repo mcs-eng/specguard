@@ -20,6 +20,7 @@ RUNS_COLLECTION = "runs"
 SAMPLE_RUN_LIMITS_COLLECTION = "sample_run_limits"
 SAMPLE_IP_LIMITS_COLLECTION = "sample_ip_limits"
 GATE_CHECK_LIMITS_COLLECTION = "gate_check_limits"
+TOKEN_MINT_LIMITS_COLLECTION = "token_mint_limits"
 UPLOAD_SUBMISSION_TOKENS_COLLECTION = "upload_submission_tokens"
 
 
@@ -35,6 +36,9 @@ class RunRepository(Protocol):
 
     def mint_submission_token(self, submission_token: str, *, expires_at: datetime) -> None:
         """Record one submission token the service issued, with its expiry."""
+
+    def reserve_token_mint(self, *, hour: str, client_ip: str, hourly_limit: int) -> bool:
+        """Atomically reserve one submission-token mint within the hourly limit."""
 
     def create_upload_run(
         self, run: Mapping[str, Any], submission_token: str, *, now: datetime
@@ -63,7 +67,7 @@ class RunRepository(Protocol):
         """Atomically reserve one gate-playground check within the hourly limit."""
 
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Return the newest stored audit runs."""
+        """Return the newest stored audit runs, of every source."""
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         """Return one stored audit run."""
@@ -160,6 +164,17 @@ class FirestoreRunRepository:
 
         return reserve(self._client_for_transactions().transaction())
 
+    def reserve_token_mint(self, *, hour: str, client_ip: str, hourly_limit: int) -> bool:
+        """Reserve one submission-token mint, so a public read cannot write without bound.
+
+        Minting on page render is what makes a token one-time and expiring, but
+        it also means an unauthenticated GET writes a document. Without a cap, a
+        crawler or a probe grows that collection for as long as it keeps asking.
+        The cap is far above any human's reload count and turns an unbounded
+        write surface into a bounded one.
+        """
+        return self._reserve_hourly(TOKEN_MINT_LIMITS_COLLECTION, hour, client_ip, hourly_limit)
+
     def reserve_gate_check(self, *, hour: str, client_ip: str, hourly_limit: int) -> bool:
         """Reserve one gate-playground check in a transaction that survives cold starts.
 
@@ -167,9 +182,13 @@ class FirestoreRunRepository:
         is one read of a committed fixture. The limit keeps that read from
         being used as free compute; it rations no scarce resource.
         """
-        counter = self._collection(GATE_CHECK_LIMITS_COLLECTION).document(
-            _sample_ip_counter_id(hour, client_ip)
-        )
+        return self._reserve_hourly(GATE_CHECK_LIMITS_COLLECTION, hour, client_ip, hourly_limit)
+
+    def _reserve_hourly(
+        self, collection_name: str, hour: str, client_ip: str, hourly_limit: int
+    ) -> bool:
+        """Reserve one slot in an hourly per-address counter, or refuse it."""
+        counter = self._collection(collection_name).document(_sample_ip_counter_id(hour, client_ip))
 
         @firestore.transactional
         def reserve(transaction: firestore.Transaction) -> bool:

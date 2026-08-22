@@ -43,6 +43,12 @@ VERTEX_ENDPOINT_LABEL = os.environ.get("SPECGUARD_GEMMA_MODEL", "google-gemma3-g
 _SERVED_MODEL_FIELDS = ("modelDisplayName", "deployedModelId", "model")
 
 
+def _reported_model_version(response: Any) -> str | None:
+    """Return the model version a genai response reported, if it reported one."""
+    value = getattr(response, "model_version", None)
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def _served_model_id(payload: Any) -> str | None:
     """Return the model identifier the endpoint reported, if it reported one."""
     if not isinstance(payload, dict):
@@ -216,15 +222,21 @@ class GemmaSeverityClassifier:
                 return SeverityResult(
                     severity=Severity.UNCLASSIFIED,
                     model_id=None,
+                    endpoint_label=self.model_id,
                     status="fallback",
                     reason="Empty response text from Gemma",
                 )
 
             data = json.loads(text)
             parsed = SeverityClassification.model_validate(data)
+            # Same rule as the Vertex backend: model_id is what the response
+            # reported, and the configured request name is a label. This API
+            # 404s on a name it does not serve, so a 200 is good evidence, but
+            # evidence is not a report and the two fields mean different things.
             return SeverityResult(
                 severity=parsed.severity,
-                model_id=self.model_id,
+                model_id=_reported_model_version(response),
+                endpoint_label=self.model_id,
                 rationale=parsed.rationale,
                 status="classified",
                 reason=None,
@@ -235,6 +247,7 @@ class GemmaSeverityClassifier:
             return SeverityResult(
                 severity=Severity.UNCLASSIFIED,
                 model_id=None,
+                endpoint_label=self.model_id,
                 status="fallback",
                 reason=error_detail,
             )

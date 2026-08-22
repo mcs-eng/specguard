@@ -42,6 +42,21 @@ EXPECTED_UPLOAD_FIELDS = frozenset({"spec_pdf", "cut_sheet_pdf"})
 SAMPLE_RUNS_PER_IP_HOUR = 6
 SAMPLE_RUNS_PER_UTC_DAY = 60
 GATE_CHECKS_PER_IP_HOUR = 60
+
+#: How many upload submission tokens one address may have minted in a UTC hour.
+#: Minting on render is what makes a token one-time and expiring, and it also
+#: means an unauthenticated GET writes a Firestore document. This cap is far
+#: above any human's reload count and bounds that write surface.
+TOKEN_MINTS_PER_IP_HOUR = 30
+
+#: How many recent runs the landing page reads before it keeps the sample ones.
+#: The filter runs here rather than in the query, because an equality filter
+#: plus an ordering needs a Firestore composite index. Reading five pages'
+#: worth and keeping the samples costs one query and needs no index. If more
+#: than this many upload runs are newer than every sample run, the list is
+#: short; it is never wrong.
+LANDING_PAGE_RUN_SCAN = 100
+LANDING_PAGE_RUNS = 20
 QUOTE_CONTEXT_CACHE_SIZE = 32
 RUN_STALLED_AFTER = timedelta(minutes=10)
 
@@ -971,6 +986,40 @@ def _render_gate(
     )
 
 
+def _landing_page_runs(services: WebServices) -> list[dict[str, Any]]:
+    """Return the newest sample runs, read from a bounded window of recent runs."""
+    sample_runs = [
+        _display_run(run)
+        for run in services.repository.list_runs(LANDING_PAGE_RUN_SCAN)
+        if run.get("source") == "sample"
+    ]
+    return sample_runs[:LANDING_PAGE_RUNS]
+
+
+def _mint_submission_token(request: Request, services: WebServices) -> str | None:
+    """Mint and record one upload submission token, within a bounded budget.
+
+    Returns ``None`` when this address has exhausted its hourly mint budget, or
+    when the request is a HEAD probe. The page then renders without an upload
+    form and says so; the samples and the gate playground still work, because
+    neither needs a token.
+    """
+    if request.method == "HEAD":
+        return None
+    now = datetime.now(UTC)
+    if not services.repository.reserve_token_mint(
+        hour=now.strftime("%Y-%m-%dT%H:00Z"),
+        client_ip=_client_ip(request, services.settings.trust_forwarded_for),
+        hourly_limit=TOKEN_MINTS_PER_IP_HOUR,
+    ):
+        return None
+    submission_token = secrets.token_urlsafe(32)
+    services.repository.mint_submission_token(
+        submission_token, expires_at=now + SUBMISSION_TOKEN_LIFETIME
+    )
+    return submission_token
+
+
 def _token_has_expired(record: dict[str, Any], now: datetime) -> bool:
     """Treat a token record with no readable expiry as expired, never as valid."""
     expires_at = record.get("expires_at")
@@ -1351,20 +1400,12 @@ def _render_index(
     128-bit random run identifier is the whole access control, so listing one
     here would publish somebody else's submittal to every later visitor.
     """
-    submission_token = secrets.token_urlsafe(32)
-    services.repository.mint_submission_token(
-        submission_token, expires_at=datetime.now(UTC) + SUBMISSION_TOKEN_LIFETIME
-    )
     return templates.TemplateResponse(
         request=request,
         name="index.html",
         context={
-            "runs": [
-                _display_run(run)
-                for run in services.repository.list_runs()
-                if run.get("source") == "sample"
-            ],
-            "submission_token": submission_token,
+            "runs": _landing_page_runs(services),
+            "submission_token": _mint_submission_token(request, services),
             "error": error,
             "failed_run_id": failed_run_id,
         },

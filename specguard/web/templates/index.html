@@ -34,6 +34,12 @@
     {% if failed_run_id %}<p>The run and its stored source documents are recorded. <a href="/runs/{{ failed_run_id }}">Open run {{ failed_run_id }}</a> to read its final state.</p>{% endif %}
   </div>
   {% endif %}
+  {% if not submission_token %}
+  <div class="notice stop" role="alert">
+    <strong>The upload form is not available right now.</strong>
+    <p>This address has reloaded this page more times this hour than the upload budget allows. The four sample audits below and the <a href="/gate">gate playground</a> need no upload form and still work. Try again in the next hour.</p>
+  </div>
+  {% else %}
   <form id="audit-form" action="/audit" method="post" enctype="multipart/form-data">
     <input type="hidden" name="submission_token" value="{{ submission_token }}">
     <div id="audit-fields" class="fields">
@@ -72,6 +78,7 @@
       </div>
     </div>
   </form>
+  {% endif %}
 </section>
 <section class="card">
   <div class="section-head">

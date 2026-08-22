@@ -271,6 +271,7 @@ def test_gemma_severity_classifier_parses_valid_structured_response() -> None:
     mock_response.text = (
         '{"severity": "medium", "rationale": "Operating rating difference requiring review."}'
     )
+    mock_response.model_version = "gemma-4-31b-it-001"
     mock_client.models.generate_content.return_value = mock_response
 
     classifier = GemmaSeverityClassifier(
@@ -280,9 +281,32 @@ def test_gemma_severity_classifier_parses_valid_structured_response() -> None:
     result = classifier.classify("Discrepancy", "Spec quote", "Cut sheet quote")
 
     assert result.severity is Severity.MEDIUM
-    assert result.model_id == "gemma-4-31b-it"
+    assert result.model_id == "gemma-4-31b-it-001"
+    assert result.endpoint_label == "gemma-4-31b-it"
     assert result.status == "classified"
     assert "requiring review" in result.rationale
+
+
+def test_the_api_key_backend_reports_no_model_when_the_response_names_none() -> None:
+    """One provenance rule for both backends: model_id is reported, never configured.
+
+    The export documents model_id as the identifier the serving endpoint gave.
+    This backend used to fill it from the request name, which made the exported
+    field mean one thing on one backend and another on the other.
+    """
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = '{"severity": "low", "rationale": "Minor."}'
+    mock_response.model_version = None
+    mock_client.models.generate_content.return_value = mock_response
+
+    classifier = GemmaSeverityClassifier(model_id="gemma-4-31b-it", client=mock_client)
+    result = classifier.classify("Discrepancy", "Spec quote", "Cut sheet quote")
+
+    assert result.severity is Severity.LOW
+    assert result.status == "classified"
+    assert result.model_id is None
+    assert result.endpoint_label == "gemma-4-31b-it"
 
 
 def test_severity_update_cannot_alter_verification_status(tmp_path: Path) -> None:
