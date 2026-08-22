@@ -23,10 +23,12 @@ from specguard.web.app import (
     QUOTE_CONTEXT_CACHE_SIZE,
     SAMPLE_RUNS_PER_UTC_DAY,
     SECURITY_HEADERS,
+    SUBMISSION_TOKEN_LIFETIME,
     WebServices,
     WebSettings,
     create_app,
 )
+from specguard.web.repository import SubmissionTokenRefused
 from specguard.web.storage import StoredObject
 
 RUN_ID = "web-run-1234"
@@ -49,7 +51,8 @@ class FakeRunRepository:
         self.sample_runs_by_day: dict[str, int] = {}
         self.sample_runs_by_hour_ip: dict[tuple[str, str], int] = {}
         self.gate_checks_by_hour_ip: dict[tuple[str, str], int] = {}
-        self.submission_tokens: dict[str, str] = {}
+        self.submission_tokens: dict[str, dict[str, Any]] = {}
+        self.minted_tokens = 0
 
     def create_run(self, run: Mapping[str, Any]) -> None:
         self.create_calls += 1
@@ -57,16 +60,28 @@ class FakeRunRepository:
             raise RuntimeError("firestore write failed")
         self.runs[str(run["run_id"])] = dict(run)
 
-    def create_upload_run(self, run: Mapping[str, Any], submission_token: str) -> str | None:
-        existing_run_id = self.submission_tokens.get(submission_token)
-        if existing_run_id is not None:
-            return existing_run_id
+    def mint_submission_token(self, submission_token: str, *, expires_at: datetime) -> None:
+        self.minted_tokens += 1
+        self.submission_tokens[submission_token] = {"expires_at": expires_at, "run_id": None}
+
+    def create_upload_run(
+        self, run: Mapping[str, Any], submission_token: str, *, now: datetime
+    ) -> str | None:
+        record = self.submission_tokens.get(submission_token)
+        if record is None:
+            raise SubmissionTokenRefused("never minted")
+        if record.get("run_id"):
+            return str(record["run_id"])
+        expires_at = record.get("expires_at")
+        if not isinstance(expires_at, datetime) or expires_at <= now:
+            raise SubmissionTokenRefused("expired")
         self.create_run(run)
-        self.submission_tokens[submission_token] = str(run["run_id"])
+        record["run_id"] = str(run["run_id"])
         return None
 
-    def get_submission_run_id(self, submission_token: str) -> str | None:
-        return self.submission_tokens.get(submission_token)
+    def get_submission_token(self, submission_token: str) -> dict[str, Any] | None:
+        record = self.submission_tokens.get(submission_token)
+        return dict(record) if record is not None else None
 
     def reserve_sample_run(
         self,
@@ -197,6 +212,13 @@ def _client(
             audit_slots=asyncio.Semaphore(2),
         )
     )
+    # The landing page mints a submission token on every render. A route test
+    # that posts straight to /audit never renders it, so the token the tests
+    # send is minted here instead.
+    repository.mint_submission_token(
+        "test-token", expires_at=datetime.now(UTC) + timedelta(hours=1)
+    )
+    repository.minted_tokens = 0
     return TestClient(app), repository, storage, runner
 
 
@@ -958,6 +980,9 @@ def test_run_view_renders_classified_severity_badge_and_model_id() -> None:
 
 def test_upload_submission_token_replay_returns_the_first_run() -> None:
     client, repository, _, runner = _client()
+    repository.mint_submission_token(
+        "replay-token", expires_at=datetime.now(UTC) + timedelta(hours=1)
+    )
     data = {"demo_passphrase": "test-passphrase", "submission_token": "replay-token"}
 
     first = client.post("/audit", data=data, files=_files(), follow_redirects=False)
@@ -968,6 +993,99 @@ def test_upload_submission_token_replay_returns_the_first_run() -> None:
     assert second.headers["location"] == first.headers["location"]
     assert len(repository.runs) == 1
     assert len(runner.calls) == 1
+
+
+def test_the_landing_page_mints_and_records_every_submission_token() -> None:
+    """The token in the form is minted here, recorded here, and expires here.
+
+    Before this the page minted a random string and recorded nothing, so
+    ``POST /audit`` accepted any value a caller invented as a submission token.
+    """
+    client, repository, _, _ = _client()
+
+    first = client.get("/")
+    second = client.get("/")
+
+    assert repository.minted_tokens == 2
+    tokens = [token for token in repository.submission_tokens if f'value="{token}"' in first.text]
+    assert len(tokens) == 1
+    assert tokens[0] not in second.text
+    record = repository.submission_tokens[tokens[0]]
+    assert record["run_id"] is None
+    lifetime = record["expires_at"] - datetime.now(UTC)
+    assert timedelta(minutes=59) < lifetime <= SUBMISSION_TOKEN_LIFETIME
+
+
+def test_audit_refuses_a_submission_token_this_service_never_minted() -> None:
+    """An invented token starts no run and stores nothing."""
+    client, repository, _, runner = _client()
+
+    response = client.post(
+        "/audit",
+        data={"demo_passphrase": "test-passphrase", "submission_token": "invented-by-the-caller"},
+        files=_files(),
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert "This upload form is no longer valid." in response.text
+    assert repository.runs == {}
+    assert runner.calls == []
+
+
+def test_audit_refuses_an_expired_submission_token() -> None:
+    """A form left open past the token lifetime is refused, not run."""
+    client, repository, _, runner = _client()
+    repository.mint_submission_token(
+        "stale-token", expires_at=datetime.now(UTC) - timedelta(seconds=1)
+    )
+
+    response = client.post(
+        "/audit",
+        data={"demo_passphrase": "test-passphrase", "submission_token": "stale-token"},
+        files=_files(),
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert "This upload form is no longer valid." in response.text
+    assert repository.runs == {}
+    assert runner.calls == []
+
+
+def test_audit_refuses_a_token_that_expires_between_the_read_and_the_write() -> None:
+    """The transaction is the authority, not the read that preceded it.
+
+    The route checks the token before it spends a model call. That check races
+    the expiry, so the create-run transaction checks again and refuses. Nothing
+    is left behind: no run record, and no stored object.
+    """
+    client, repository, storage, runner = _client()
+    repository.mint_submission_token(
+        "racing-token", expires_at=datetime.now(UTC) + timedelta(hours=1)
+    )
+    original_create = repository.create_upload_run
+
+    def expire_then_create(
+        run: Mapping[str, Any], submission_token: str, *, now: datetime
+    ) -> str | None:
+        repository.submission_tokens[submission_token]["expires_at"] = now - timedelta(seconds=1)
+        return original_create(run, submission_token, now=now)
+
+    repository.create_upload_run = expire_then_create  # type: ignore[method-assign]
+
+    response = client.post(
+        "/audit",
+        data={"demo_passphrase": "test-passphrase", "submission_token": "racing-token"},
+        files=_files(),
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert "This upload form is no longer valid." in response.text
+    assert repository.runs == {}
+    assert runner.calls == []
+    assert storage.objects == {}
 
 
 def test_sample_limit_survives_a_cold_start() -> None:
@@ -1800,7 +1918,10 @@ def test_the_export_shows_no_hidden_span_field_the_run_page_withholds() -> None:
 
 def test_the_export_excludes_paths_passphrases_and_tokens() -> None:
     client, repository, _ = _fixture_run_client()
-    repository.submission_tokens["secret-token-value"] = FIXTURE_RUN_ID
+    repository.submission_tokens["secret-token-value"] = {
+        "expires_at": datetime.now(UTC) + timedelta(hours=1),
+        "run_id": FIXTURE_RUN_ID,
+    }
 
     payload = client.get(f"/runs/{FIXTURE_RUN_ID}/export.json").json()
     payload.pop("exclusions")

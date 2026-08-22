@@ -24,7 +24,11 @@ from starlette.datastructures import FormData
 from specguard import context, gate
 from specguard.models import AuditRunSummary
 from specguard.tools import QUOTES_VERIFIED_MEANING
-from specguard.web.repository import FirestoreRunRepository, RunRepository
+from specguard.web.repository import (
+    FirestoreRunRepository,
+    RunRepository,
+    SubmissionTokenRefused,
+)
 from specguard.web.runtime import AuditRunner, GoogleAuditRunner
 from specguard.web.storage import CloudStorage, ObjectStorage, StoredObject
 
@@ -40,6 +44,11 @@ SAMPLE_RUNS_PER_UTC_DAY = 60
 GATE_CHECKS_PER_IP_HOUR = 60
 QUOTE_CONTEXT_CACHE_SIZE = 32
 RUN_STALLED_AFTER = timedelta(minutes=10)
+
+#: How long a minted upload submission token stays claimable. A page left open
+#: overnight submits against a token this service no longer honours, and the
+#: reader is told to reload rather than being handed a run they did not intend.
+SUBMISSION_TOKEN_LIFETIME = timedelta(hours=1)
 FIXTURES_DIRECTORY = Path(__file__).parents[2] / "fixtures"
 TEMPLATES_DIRECTORY = Path(__file__).parent / "templates"
 STATIC_DIRECTORY = Path(__file__).parent / "static"
@@ -194,6 +203,15 @@ class AuditFailedError(Exception):
     def __init__(self, run_id: str | None) -> None:
         super().__init__("The audit could not complete.")
         self.run_id = run_id
+
+
+#: Shown for a submission token this service never minted, or one that expired.
+#: It names the fix, not the mechanism, because a reader who left a tab open
+#: overnight has done nothing wrong.
+STALE_SUBMISSION_TOKEN_ERROR = (
+    "This upload form is no longer valid. Reload the page and submit again. "
+    "A submission form is accepted for one hour after the page is served."
+)
 
 
 class UploadReplay(Exception):
@@ -354,16 +372,28 @@ def create_app(services: WebServices | None = None) -> FastAPI:
                 cut_sheet_bytes = await _read_pdf_upload(cut_sheet_pdf, "The cut sheet")
             except UploadValidationError as error:
                 return _render_index(request, app_services, error=str(error), status_code=400)
-            if not submission_token:
+            token_record = (
+                app_services.repository.get_submission_token(submission_token)
+                if submission_token
+                else None
+            )
+            if token_record is None:
                 return _render_index(
                     request,
                     app_services,
-                    error="The upload submission token is required.",
+                    error=STALE_SUBMISSION_TOKEN_ERROR,
                     status_code=400,
                 )
-            existing_run_id = app_services.repository.get_submission_run_id(submission_token)
-            if existing_run_id is not None:
+            existing_run_id = token_record.get("run_id")
+            if existing_run_id:
                 return RedirectResponse(url=f"/runs/{existing_run_id}", status_code=303)
+            if _token_has_expired(token_record, datetime.now(UTC)):
+                return _render_index(
+                    request,
+                    app_services,
+                    error=STALE_SUBMISSION_TOKEN_ERROR,
+                    status_code=400,
+                )
 
             run_id = uuid.uuid4().hex
             try:
@@ -377,6 +407,13 @@ def create_app(services: WebServices | None = None) -> FastAPI:
                 )
             except UploadReplay as replay:
                 return RedirectResponse(url=f"/runs/{replay.run_id}", status_code=303)
+            except SubmissionTokenRefused:
+                return _render_index(
+                    request,
+                    app_services,
+                    error=STALE_SUBMISSION_TOKEN_ERROR,
+                    status_code=400,
+                )
             except AuditFailedError as failure:
                 return _render_index(
                     request,
@@ -613,7 +650,13 @@ async def _run_audit(
         if submission_token is None:
             services.repository.create_run(pending_run)
         else:
-            existing_run_id = services.repository.create_upload_run(pending_run, submission_token)
+            try:
+                existing_run_id = services.repository.create_upload_run(
+                    pending_run, submission_token, now=datetime.now(UTC)
+                )
+            except SubmissionTokenRefused:
+                _delete_unrecorded_objects(services.storage, uploaded_names)
+                raise
             if existing_run_id is not None:
                 _delete_unrecorded_objects(services.storage, uploaded_names)
                 raise UploadReplay(existing_run_id)
@@ -646,7 +689,7 @@ async def _run_audit(
         )
         services.repository.create_run(run)
         return run
-    except UploadReplay:
+    except (UploadReplay, SubmissionTokenRefused):
         raise
     except Exception:
         if rfi_object_name is not None:
@@ -873,6 +916,14 @@ def _render_gate(
         },
         status_code=status_code,
     )
+
+
+def _token_has_expired(record: dict[str, Any], now: datetime) -> bool:
+    """Treat a token record with no readable expiry as expired, never as valid."""
+    expires_at = record.get("expires_at")
+    if not isinstance(expires_at, datetime):
+        return True
+    return expires_at <= now
 
 
 def _ledger_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1243,6 +1294,10 @@ def _render_index(
     128-bit random run identifier is the whole access control, so listing one
     here would publish somebody else's submittal to every later visitor.
     """
+    submission_token = secrets.token_urlsafe(32)
+    services.repository.mint_submission_token(
+        submission_token, expires_at=datetime.now(UTC) + SUBMISSION_TOKEN_LIFETIME
+    )
     return templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -1252,7 +1307,7 @@ def _render_index(
                 for run in services.repository.list_runs()
                 if run.get("source") == "sample"
             ],
-            "submission_token": secrets.token_urlsafe(32),
+            "submission_token": submission_token,
             "error": error,
             "failed_run_id": failed_run_id,
         },

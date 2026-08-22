@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any, Protocol
 
 from google.cloud import firestore
@@ -22,17 +23,30 @@ GATE_CHECK_LIMITS_COLLECTION = "gate_check_limits"
 UPLOAD_SUBMISSION_TOKENS_COLLECTION = "upload_submission_tokens"
 
 
+class SubmissionTokenRefused(Exception):
+    """An upload submission token this service never minted, or one that expired."""
+
+
 class RunRepository(Protocol):
     """The Firestore records that one findings-page request reads or writes."""
 
     def create_run(self, run: Mapping[str, Any]) -> None:
         """Store one completed, failed, or quarantined audit run."""
 
-    def create_upload_run(self, run: Mapping[str, Any], submission_token: str) -> str | None:
-        """Create an upload run and token atomically, or return its existing run ID."""
+    def mint_submission_token(self, submission_token: str, *, expires_at: datetime) -> None:
+        """Record one submission token the service issued, with its expiry."""
 
-    def get_submission_run_id(self, submission_token: str) -> str | None:
-        """Return the run that previously used an upload submission token."""
+    def create_upload_run(
+        self, run: Mapping[str, Any], submission_token: str, *, now: datetime
+    ) -> str | None:
+        """Claim a minted token and create its run, or return the run it already owns.
+
+        Raise :class:`SubmissionTokenRefused` for a token this service never
+        minted, or for one whose expiry has passed.
+        """
+
+    def get_submission_token(self, submission_token: str) -> dict[str, Any] | None:
+        """Return the stored record for a submission token, if one exists."""
 
     def reserve_sample_run(
         self,
@@ -75,8 +89,16 @@ class FirestoreRunRepository:
         """Write the run document under its public run identifier."""
         self._collection(RUNS_COLLECTION).document(str(run["run_id"])).set(dict(run))
 
-    def create_upload_run(self, run: Mapping[str, Any], submission_token: str) -> str | None:
-        """Create the initial upload run and token in one Firestore transaction."""
+    def mint_submission_token(self, submission_token: str, *, expires_at: datetime) -> None:
+        """Record a token this service issued, keyed by its digest rather than its value."""
+        self._collection(UPLOAD_SUBMISSION_TOKENS_COLLECTION).document(
+            _submission_token_id(submission_token)
+        ).set({"expires_at": expires_at, "run_id": None})
+
+    def create_upload_run(
+        self, run: Mapping[str, Any], submission_token: str, *, now: datetime
+    ) -> str | None:
+        """Claim a minted token and create its run in one Firestore transaction."""
         run_id = str(run["run_id"])
         run_ref = self._collection(RUNS_COLLECTION).document(run_id)
         token_ref = self._collection(UPLOAD_SUBMISSION_TOKENS_COLLECTION).document(
@@ -86,29 +108,28 @@ class FirestoreRunRepository:
         @firestore.transactional
         def create(transaction: firestore.Transaction) -> str | None:
             token = token_ref.get(transaction=transaction)
-            if token.exists:
-                recorded_run_id = token.to_dict().get("run_id")
-                if recorded_run_id:
-                    return str(recorded_run_id)
-                raise RuntimeError("the upload submission token has no run identifier")
+            if not token.exists:
+                raise SubmissionTokenRefused("the upload submission token was never minted")
+            record = token.to_dict() or {}
+            recorded_run_id = record.get("run_id")
+            if recorded_run_id:
+                return str(recorded_run_id)
+            if _token_has_expired(record, now):
+                raise SubmissionTokenRefused("the upload submission token expired")
             transaction.set(run_ref, dict(run))
-            transaction.set(token_ref, {"run_id": run_id})
+            transaction.set(token_ref, {"run_id": run_id}, merge=True)
             return None
 
         return create(self._client_for_transactions().transaction())
 
-    def get_submission_run_id(self, submission_token: str) -> str | None:
-        """Look up an existing run without exposing the token in its document ID."""
+    def get_submission_token(self, submission_token: str) -> dict[str, Any] | None:
+        """Read one token record without exposing the token value in its document ID."""
         snapshot = (
             self._collection(UPLOAD_SUBMISSION_TOKENS_COLLECTION)
             .document(_submission_token_id(submission_token))
             .get()
         )
-        if not snapshot.exists:
-            return None
-        data = snapshot.to_dict() or {}
-        run_id = data.get("run_id")
-        return str(run_id) if run_id else None
+        return _snapshot_data(snapshot) if snapshot.exists else None
 
     def reserve_sample_run(
         self,
@@ -208,6 +229,14 @@ def _submission_token_id(submission_token: str) -> str:
 def _sample_ip_counter_id(hour: str, client_ip: str) -> str:
     """Keep the internal rate-limit key stable without storing the raw IP address."""
     return hashlib.sha256(f"{hour}:{client_ip}".encode()).hexdigest()
+
+
+def _token_has_expired(record: Mapping[str, Any], now: datetime) -> bool:
+    """Treat a token with no readable expiry as expired, never as valid."""
+    expires_at = record.get("expires_at")
+    if not isinstance(expires_at, datetime):
+        return True
+    return expires_at <= now
 
 
 def _counter_count(snapshot: Any) -> int:
