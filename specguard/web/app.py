@@ -317,7 +317,18 @@ def _sample_audit_bytes(case: SampleAuditCase) -> tuple[bytes, bytes]:
 
 
 def _client_ip(request: Request) -> str:
-    """Return the ASGI peer address used for the per-client sample limit."""
+    """Return the client address used for the per-client sample limit.
+
+    Cloud Run appends the real peer address as the last entry of
+    ``X-Forwarded-For``, after any value the caller supplied. Reading the last
+    entry, rather than the first, means a caller cannot claim a fresh limit
+    bucket by sending its own header. The ASGI peer address is only the local
+    fallback, because behind Cloud Run it is the front-end proxy.
+    """
+    forwarded = request.headers.get("x-forwarded-for", "")
+    appended = forwarded.rsplit(",", 1)[-1].strip()
+    if appended:
+        return appended
     return request.client.host if request.client is not None else "unknown"
 
 

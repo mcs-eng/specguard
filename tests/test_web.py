@@ -219,6 +219,47 @@ def test_sample_audit_per_ip_limit_returns_a_plain_429_page() -> None:
     assert sum(repository.sample_runs_by_day.values()) == 6
 
 
+def test_sample_audit_per_ip_limit_reads_the_address_cloud_run_appended() -> None:
+    client, _, _, runner = _client()
+    spoofed = {"x-forwarded-for": "203.0.113.9, 198.51.100.4"}
+
+    for _ in range(6):
+        response = client.post("/sample/caldra", headers=spoofed, follow_redirects=False)
+        assert response.status_code == 303
+
+    blocked = client.post("/sample/caldra", headers=spoofed, follow_redirects=False)
+    other_client = client.post(
+        "/sample/caldra",
+        headers={"x-forwarded-for": "203.0.113.9, 198.51.100.5"},
+        follow_redirects=False,
+    )
+
+    assert blocked.status_code == 429
+    assert other_client.status_code == 303
+    assert len(runner.calls) == 7
+
+
+def test_sample_audit_per_ip_limit_ignores_a_caller_supplied_prefix() -> None:
+    client, _, _, runner = _client()
+
+    for index in range(6):
+        response = client.post(
+            "/sample/caldra",
+            headers={"x-forwarded-for": f"10.0.0.{index}, 198.51.100.4"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+    response = client.post(
+        "/sample/caldra",
+        headers={"x-forwarded-for": "10.0.0.99, 198.51.100.4"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 429
+    assert len(runner.calls) == 6
+
+
 def test_sample_audit_global_limit_returns_a_plain_429_page() -> None:
     client, repository, _, runner = _client()
     today = datetime.now(UTC).date().isoformat()

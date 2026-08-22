@@ -14,4 +14,4 @@ RUN uv sync --frozen --no-dev
 
 EXPOSE 8080
 
-CMD ["uv", "run", "--no-sync", "uvicorn", "specguard.web.app:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips", "*"]
+CMD ["uv", "run", "--no-sync", "uvicorn", "specguard.web.app:app", "--host", "0.0.0.0", "--port", "8080"]
