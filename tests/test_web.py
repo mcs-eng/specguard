@@ -1341,6 +1341,31 @@ def test_gate_playground_shows_the_normalized_quote_the_gate_compared() -> None:
     assert "conductor terminations" in response.text
 
 
+def test_the_gate_verdict_is_read_before_the_form_that_produced_it() -> None:
+    """The answer comes first; a verdict below the form can sit off screen."""
+    client, _, _, _ = _client()
+
+    body = client.get("/gate").text
+
+    assert body.index('id="gate-result"') < body.index('id="gate-form"')
+
+
+def test_the_gate_verdict_card_is_coloured_by_its_own_outcome() -> None:
+    """A judge should read the outcome without reading the words."""
+    client, _, _, _ = _client()
+
+    verified = client.get("/gate").text
+    rejected = client.get(
+        "/gate",
+        params={"fixture": "specification", "page": "4", "quote": SPEC_QUOTE},
+    ).text
+
+    assert "card verdict verdict-ok" in verified
+    assert "card verdict verdict-bad" in rejected
+    assert ".verdict-ok { border-left-color: var(--ok-line); }" in verified
+    assert ".verdict-bad { border-left-color: var(--bad-line); }" in rejected
+
+
 def test_gate_playground_lists_both_one_click_near_misses() -> None:
     client, _, _, _ = _client()
 
