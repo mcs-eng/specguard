@@ -23,9 +23,14 @@ from starlette.datastructures import FormData
 
 from specguard import context, gate
 from specguard.models import AuditRunSummary
+from specguard.tools import QUOTES_VERIFIED_MEANING
 from specguard.web.repository import FirestoreRunRepository, RunRepository
 from specguard.web.runtime import AuditRunner, GoogleAuditRunner
 from specguard.web.storage import CloudStorage, ObjectStorage, StoredObject
+
+#: The stored ``verification_status`` a findings record must carry to be part
+#: of the ledger. The run page and the JSON export read only these records.
+LEDGER_VERIFICATION_STATUS = "verified"
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_IN_FLIGHT_AUDITS = 2
@@ -435,7 +440,7 @@ def create_app(services: WebServices | None = None) -> FastAPI:
         if run is None:
             raise HTTPException(status_code=404, detail="Audit run not found.")
         run = _display_run(run)
-        findings = app_services.repository.get_findings(run_id)
+        findings = _ledger_findings(app_services.repository.get_findings(run_id))
         rejections = app_services.repository.get_rejections(run_id)
         integrity_records = app_services.repository.get_integrity_records(run_id)
         return templates.TemplateResponse(
@@ -446,6 +451,7 @@ def create_app(services: WebServices | None = None) -> FastAPI:
                 "findings": _findings_with_context(app_services, run, findings),
                 "rejections": [_rejection_view(rejection) for rejection in rejections],
                 "integrity_records": integrity_records,
+                "quotes_verified_meaning": QUOTES_VERIFIED_MEANING,
             },
         )
 
@@ -464,7 +470,7 @@ def create_app(services: WebServices | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Audit run not found.")
         payload = _export_payload(
             _display_run(run),
-            findings=app_services.repository.get_findings(run_id),
+            findings=_ledger_findings(app_services.repository.get_findings(run_id)),
             rejections=app_services.repository.get_rejections(run_id),
             integrity_records=app_services.repository.get_integrity_records(run_id),
         )
@@ -869,6 +875,23 @@ def _render_gate(
     )
 
 
+def _ledger_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only the findings records that carry a verified status.
+
+    The findings collection is read by run identifier. Every record the audit
+    path writes there carries ``verification_status == "verified"``, but the
+    read side must not depend on that, because a record that lost the field, or
+    that some other writer created, would otherwise be rendered under the same
+    heading as a gate-verified finding. Each row then states its own stored
+    status rather than inheriting the heading's.
+    """
+    return [
+        finding
+        for finding in findings
+        if finding.get("verification_status") == LEDGER_VERIFICATION_STATUS
+    ]
+
+
 def _findings_with_context(
     services: WebServices, run: dict[str, Any], findings: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -1153,6 +1176,7 @@ def _export_finding(finding: dict[str, Any]) -> dict[str, Any]:
         "submittal_id": finding.get("submittal_id"),
         "claim_text": finding.get("claim_text"),
         "verification_status": finding.get("verification_status"),
+        "verification_meaning": QUOTES_VERIFIED_MEANING,
         "spec_locator": finding.get("spec_locator"),
         "cut_sheet_locator": finding.get("cut_sheet_locator"),
         "spec_quote": _export_quote(finding.get("spec_quote")),

@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from specguard import gate
 from specguard.models import AuditRunSummary, DocumentRole, QuarantinedDocument, RunQuarantine
+from specguard.tools import QUOTES_VERIFIED_MEANING
 from specguard.web.app import (
     GATE_CHECKS_PER_IP_HOUR,
     MAX_UPLOAD_BYTES,
@@ -692,6 +693,7 @@ def test_run_view_renders_findings_rejections_and_hidden_integrity_text() -> Non
             "spec_quote": {"page_number": 3, "text": "Provide 480V."},
             "cut_sheet_quote": {"page_number": 1, "text": "Nominal system: 208V."},
             "severity": "unclassified",
+            "verification_status": "verified",
         }
     ]
     repository.rejections[RUN_ID] = [
@@ -717,7 +719,7 @@ def test_run_view_renders_findings_rejections_and_hidden_integrity_text() -> Non
     response = client.get(f"/runs/{RUN_ID}")
 
     assert response.status_code == 200
-    assert "VERIFIED" in response.text
+    assert "QUOTES VERIFIED" in response.text
     assert "REJECTED" in response.text
     assert "QUARANTINED" in response.text
     assert "The submitted voltage conflicts with the requirement." in response.text
@@ -785,6 +787,85 @@ def test_quarantined_run_stores_no_rfi() -> None:
     assert f"{run_id}/rfi.pdf" not in storage.objects
 
 
+def test_run_view_omits_a_findings_record_that_is_not_verified() -> None:
+    """A findings record without a verified status is never rendered as a finding.
+
+    The heading carries one badge for the whole table, so an unverified record
+    listed under it would read as gate-verified. The page filters on the stored
+    status and every row states its own.
+    """
+    client, repository, _, _ = _client()
+    repository.runs[RUN_ID] = {
+        "run_id": RUN_ID,
+        "created_at": datetime(2026, 8, 22, tzinfo=UTC),
+        "status": "COMPLETED",
+        "source": "sample",
+        "summary": {"claims_made": 2, "rejected": 0, "retried": 0, "findings_persisted": 1},
+        "documents": {},
+        "rfi": None,
+    }
+    repository.findings[RUN_ID] = [
+        {
+            "claim_text": "A verified claim.",
+            "spec_quote": {"page_number": 3, "text": "Provide 480V."},
+            "cut_sheet_quote": {"page_number": 1, "text": "Nominal system: 208V."},
+            "severity": "high",
+            "verification_status": "verified",
+        },
+        {
+            "claim_text": "A record with no verification status at all.",
+            "spec_quote": {"page_number": 3, "text": "Provide 480V."},
+            "cut_sheet_quote": {"page_number": 1, "text": "Nominal system: 208V."},
+            "severity": "high",
+        },
+    ]
+
+    response = client.get(f"/runs/{RUN_ID}")
+
+    assert response.status_code == 200
+    assert "A verified claim." in response.text
+    assert "A record with no verification status at all." not in response.text
+
+    export = client.get(f"/runs/{RUN_ID}/export.json")
+    claims = [finding["claim_text"] for finding in export.json()["findings"]]
+    assert claims == ["A verified claim."]
+
+
+def test_run_view_states_what_the_verified_badge_means() -> None:
+    """The badge reads QUOTES VERIFIED and the page says what that does not mean."""
+    client, repository, _, _ = _client()
+    repository.runs[RUN_ID] = {
+        "run_id": RUN_ID,
+        "created_at": datetime(2026, 8, 22, tzinfo=UTC),
+        "status": "COMPLETED",
+        "source": "sample",
+        "summary": {"claims_made": 1, "rejected": 0, "retried": 0, "findings_persisted": 1},
+        "documents": {},
+        "rfi": None,
+    }
+    repository.findings[RUN_ID] = [
+        {
+            "claim_text": "A verified claim.",
+            "spec_quote": {"page_number": 3, "text": "Provide 480V."},
+            "cut_sheet_quote": {"page_number": 1, "text": "Nominal system: 208V."},
+            "severity": "high",
+            "verification_status": "verified",
+        }
+    ]
+
+    response = client.get(f"/runs/{RUN_ID}")
+
+    assert response.status_code == 200
+    assert response.text.count("QUOTES VERIFIED") == 2
+    assert QUOTES_VERIFIED_MEANING in response.text
+    assert ">VERIFIED<" not in response.text
+
+    export = client.get(f"/runs/{RUN_ID}/export.json")
+    finding = export.json()["findings"][0]
+    assert finding["verification_status"] == "verified"
+    assert finding["verification_meaning"] == QUOTES_VERIFIED_MEANING
+
+
 def test_run_view_renders_classified_severity_badge_and_model_id() -> None:
     client, repository, _, _ = _client()
     repository.runs[RUN_ID] = {
@@ -814,6 +895,7 @@ def test_run_view_renders_classified_severity_badge_and_model_id() -> None:
             "cut_sheet_quote": {"page_number": 1, "text": "Nominal system: 208V."},
             "severity": "high",
             "severity_model_id": "gemma-3-27b-it",
+            "verification_status": "verified",
         }
     ]
 
@@ -970,6 +1052,7 @@ def test_run_view_renders_fallback_severity_reason_and_audit_usage() -> None:
             "severity": "unclassified",
             "severity_status": "fallback",
             "severity_reason": fallback_reason,
+            "verification_status": "verified",
         }
     ]
 

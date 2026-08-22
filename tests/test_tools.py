@@ -27,6 +27,7 @@ from specguard.tools import (
     DOCUMENTS_COLLECTION,
     FINDINGS_COLLECTION,
     INTEGRITY_FINDINGS_COLLECTION,
+    QUOTES_VERIFIED_MEANING,
     REJECTIONS_COLLECTION,
     AuditTools,
     _RfiWriter,
@@ -372,6 +373,8 @@ def test_draft_rfi_contains_required_evidence_and_hash_metadata(tmp_path: Path) 
     assert "Submittal ID: run-1234abcd" in text
     assert "Run ID: run-1234abcd" in text
     assert "Date issued: " in text
+    assert "FINDINGS - QUOTES VERIFIED" in text
+    assert QUOTES_VERIFIED_MEANING in text
     assert "Claim Specification quote Submitted quote Severity" in text
     assert 'Page 1: "Requirement alpha."' in text
     assert 'Page 1: "Submitted characteristic beta."' in text

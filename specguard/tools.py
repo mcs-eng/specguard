@@ -28,6 +28,15 @@ FINDINGS_COLLECTION = "findings"
 REJECTIONS_COLLECTION = "rejections"
 INTEGRITY_FINDINGS_COLLECTION = "integrity_findings"
 
+#: What the verified label on a finding means, in one line. The RFI draft, the
+#: run page, and the JSON export all state it, because "VERIFIED" alone reads
+#: as a judgment that the discrepancy is real, and the gate makes no such
+#: judgment.
+QUOTES_VERIFIED_MEANING = (
+    "Both quotes were found at their cited pages. This is not a judgment that "
+    "the discrepancy is real."
+)
+
 #: First baseline an RFI page uses for content.
 CONTENT_TOP = 54.0
 
@@ -421,7 +430,8 @@ class AuditTools:
         )
         writer.space(10)
 
-        writer.heading("FINDINGS", size=12)
+        writer.heading("FINDINGS - QUOTES VERIFIED", size=12)
+        writer.paragraph(QUOTES_VERIFIED_MEANING)
         writer.paragraph(
             "Every quote below was located on its cited page by the verification gate, "
             "once when the finding was written and once again before this page rendered."

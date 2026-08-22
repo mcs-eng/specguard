@@ -62,15 +62,15 @@
 </section>
 <section class="card">
   <div class="section-head">
-    <h2>Findings <span class="badge verified">VERIFIED</span></h2>
-    <p>Each quote below passed the verification gate against its cited page.</p>
+    <h2>Findings <span class="badge verified">QUOTES VERIFIED</span></h2>
+    <p>{{ quotes_verified_meaning }}</p>
   </div>
   {% if findings %}
-  <div class="table-wrap"><table><thead><tr><th scope="col">Claim</th><th scope="col">Specification quote in context</th><th scope="col">Submitted quote in context</th><th scope="col">Severity</th></tr></thead><tbody>
-  {% for finding in findings %}<tr><td>{{ finding.claim_text }}{% if finding.context_unavailable %}<p class="context-missing">{{ finding.context_unavailable }}</p>{% endif %}</td><td><span class="locator">Specification page {{ finding.spec_quote.page_number }}</span><q class="quote">{{ finding.spec_quote.text }}</q>{{ page_context(finding.spec_context, 'Specification page ' ~ finding.spec_quote.page_number) }}</td><td><span class="locator">Submitted page {{ finding.cut_sheet_quote.page_number }}</span><q class="quote">{{ finding.cut_sheet_quote.text }}</q>{{ page_context(finding.cut_sheet_context, 'Submitted page ' ~ finding.cut_sheet_quote.page_number) }}</td><td><span class="badge severity-{{ (finding.severity or 'unclassified')|lower }}">{{ (finding.severity or 'unclassified')|upper }}</span>{% if finding.severity_model_id %}<span class="locator">{{ finding.severity_model_id }}</span>{% elif finding.severity_status %}<span class="locator">{{ finding.severity_status }}</span>{% endif %}{% if finding.severity_reason %}<p class="severity-reason">Reason: {{ finding.severity_reason }}</p>{% endif %}<p class="severity-caption">Severity is an advisory Gemma annotation on already-verified findings. It is not part of verification.</p></td></tr>{% endfor %}
+  <div class="table-wrap"><table><thead><tr><th scope="col">Status</th><th scope="col">Claim</th><th scope="col">Specification quote in context</th><th scope="col">Submitted quote in context</th><th scope="col">Severity</th></tr></thead><tbody>
+  {% for finding in findings %}<tr><td><span class="badge verified">{% if finding.verification_status == 'verified' %}QUOTES VERIFIED{% else %}{{ (finding.verification_status or 'unknown')|upper }}{% endif %}</span></td><td>{{ finding.claim_text }}{% if finding.context_unavailable %}<p class="context-missing">{{ finding.context_unavailable }}</p>{% endif %}</td><td><span class="locator">Specification page {{ finding.spec_quote.page_number }}</span><q class="quote">{{ finding.spec_quote.text }}</q>{{ page_context(finding.spec_context, 'Specification page ' ~ finding.spec_quote.page_number) }}</td><td><span class="locator">Submitted page {{ finding.cut_sheet_quote.page_number }}</span><q class="quote">{{ finding.cut_sheet_quote.text }}</q>{{ page_context(finding.cut_sheet_context, 'Submitted page ' ~ finding.cut_sheet_quote.page_number) }}</td><td><span class="badge severity-{{ (finding.severity or 'unclassified')|lower }}">{{ (finding.severity or 'unclassified')|upper }}</span>{% if finding.severity_model_id %}<span class="locator">{{ finding.severity_model_id }}</span>{% elif finding.severity_status %}<span class="locator">{{ finding.severity_status }}</span>{% endif %}{% if finding.severity_reason %}<p class="severity-reason">Reason: {{ finding.severity_reason }}</p>{% endif %}<p class="severity-caption">Severity is an advisory Gemma annotation on already-verified findings. It is not part of verification.</p></td></tr>{% endfor %}
   </tbody></table></div>
   <p class="muted context-note">Each shaded block is the cited page as the gate read it: extracted with PyMuPDF, then normalized by the gate's own normalizer, and bounded to a window either side of the quote. The highlighted run is the exact text the gate matched. <a href="/gate">Run the same check yourself.</a></p>
-  {% else %}<p class="empty">No verified findings were persisted for this run.</p>{% endif %}
+  {% else %}<p class="empty">No finding with verified quotes is stored for this run.</p>{% endif %}
 </section>
 <section class="card">
   <div class="section-head">
