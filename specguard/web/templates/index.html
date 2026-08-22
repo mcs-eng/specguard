@@ -61,7 +61,7 @@
     </div>
     <div class="submit-row">
       <button id="audit-submit" type="submit">Run audit</button>
-      <span class="submit-note muted">One submit starts one audit run.</span>
+      <span class="submit-note muted">One submit starts one audit run. Its run URL is the only way back to it: an upload run is never listed on this page.</span>
     </div>
     <div id="audit-progress" class="running-panel" role="status" aria-live="polite" tabindex="-1" hidden>
       <span class="pulse" aria-hidden="true"></span>
@@ -95,8 +95,8 @@
 </section>
 <section class="card">
   <div class="section-head">
-    <h2>Recent runs</h2>
-    <p>Newest first. Open a run to read its quotes, page locators, and rejection reasons.</p>
+    <h2>Recent sample runs</h2>
+    <p>Newest first. Open a run to read its quotes, page locators, and rejection reasons. Only sample runs are listed here. An uploaded submittal is reachable by the run URL its uploader receives, and by nothing else.</p>
   </div>
   {% if runs %}
   <div class="table-wrap">
@@ -116,7 +116,7 @@
       </tbody>
     </table>
   </div>
-  {% else %}<p class="empty">No audit runs are stored yet.</p>{% endif %}
+  {% else %}<p class="empty">No sample audit run is stored yet.</p>{% endif %}
 </section>
 <style>
   .explainer .steps { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin: 0; padding: 0; list-style: none; counter-reset: none; }

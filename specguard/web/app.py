@@ -1235,12 +1235,23 @@ def _render_index(
     failed_run_id: str | None = None,
     status_code: int = 200,
 ) -> Response:
-    """Render the shared landing page with a controlled user-facing error."""
+    """Render the shared landing page with a controlled user-facing error.
+
+    The recent-runs list carries sample runs only. An upload run is reachable
+    by its own URL, which the uploader receives on the redirect, and by no
+    other route: it is never listed, never linked, and never enumerated. A
+    128-bit random run identifier is the whole access control, so listing one
+    here would publish somebody else's submittal to every later visitor.
+    """
     return templates.TemplateResponse(
         request=request,
         name="index.html",
         context={
-            "runs": [_display_run(run) for run in services.repository.list_runs()],
+            "runs": [
+                _display_run(run)
+                for run in services.repository.list_runs()
+                if run.get("source") == "sample"
+            ],
             "submission_token": secrets.token_urlsafe(32),
             "error": error,
             "failed_run_id": failed_run_id,

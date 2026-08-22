@@ -292,6 +292,16 @@ uv run uvicorn specguard.web.app:app --host 127.0.0.1 --port 8080
 
 7. Measure and reset. `uv run python scripts/eval_fixtures.py -n 5` runs every fixture case N times against the live model path and rewrites `EVAL.md` and the table above. `uv run python scripts/reset_demo_ledger.py --confirm` archives the four run-scoped ledger collections and every bucket object under one timestamped key and then leaves them empty; without `--confirm` it prints what it would do and exits 2.
 
+### Who can read a run
+
+An upload run is reachable by its own URL and by nothing else. This is a capability-URL model, and it is stated here rather than implied.
+
+- `POST /audit` redirects the uploader to `/runs/{run_id}`. That URL is the capability: anyone holding it can read the run page, the JSON export, and the RFI draft. Anyone without it cannot, because nothing publishes it.
+- The run identifier is 128 bits from `uuid.uuid4().hex`. It is not sequential, not derived from the upload, and not guessable.
+- The landing page lists sample runs only. An upload run is never listed, never linked from another page, and never enumerated by any route. There is no index of runs beyond that sample list.
+- The consequence is the part a capability URL always carries: the URL is the credential. Whoever receives it, by a shared link, a browser history, or a copied address bar, can read that run. SpecGuard adds no second check, so an upload is as private as its URL is kept.
+- The demo passphrase gates who may *start* an upload run. It does not gate who may read one afterwards.
+
 ### Service limits
 
 The public GET routes are read-only. `POST /audit` requires the demo passphrase, accepts only `application/pdf`, and limits each upload to 5 MB. The landing page mints a one-time submission token. Firestore creates the token record and its `RUNNING` upload record in one transaction, so a replay returns the original run. Public sample audits are limited to six starts per final Cloud Run-appended address per UTC hour and 60 starts per UTC day. A refused request renders as a page that says nothing failed and nothing was recorded, and the sample limit points the reader at the gate playground, which makes no model call. The gate playground is limited to 60 checks per that address per UTC hour, and its default example costs nothing because it reads a fixed committed input. Firestore owns both counters, so a cold start cannot reset either budget. The service is deployed with `--max-instances 1` and `--concurrency 2`, and each instance runs at most two in-flight audits, so in steady state the service accepts two concurrent audits. The instance cap is the load-bearing half of that number: with two instances the same request concurrency would allow four. The cap is a per-revision target rather than a hard service-wide ceiling, because Cloud Run may briefly run additional instances during a deployment or a traffic split, so two is the steady-state figure and not a guarantee for every instant. Cloud Run compute is ephemeral. The uploaded PDFs and generated RFI PDFs are durable Cloud Storage objects keyed by run ID, with each object SHA-256 recorded in the Firestore run document. A failed audit remains visible as `FAILED` with its stored source-object records. If both FAILED writes fail, Firestore keeps `RUNNING`; a read older than ten minutes displays `STALLED` without changing the stored record. A completed run with no persisted findings has no RFI and displays `No RFI — no discrepancies found.`
@@ -342,6 +352,8 @@ This board mirrors the Phase 6d board in `HANDOFF.md`. `FIXED` rows name the cha
 | P6e | `/healthz` reports process liveness only, never dependency health. | ACCEPTED — a check that called Firestore or Vertex would report that dependency's health under this route's name; disclosed in [Service hardening](#service-hardening). |
 | P6e | The Cloud Run front end answers `/healthz` itself and never forwards it. | ACCEPTED — the platform owns that path; `/health` serves the same handler and is the reachable path on the deployed service; disclosed in [Service hardening](#service-hardening). |
 | P6e | The JSON export is a read-side view and proves nothing the run page does not. | ACCEPTED — it serves the same persisted records from an allowlist; the ledger invariant is enforced at write time, not at export. |
+| Review 7a | The landing page published every run, so an upload run reached every later visitor. | FIXED — `PLACEHOLDER_ITEM3` lists sample runs only; an upload run is reachable by its own 128-bit URL and is never enumerated; disclosed in [Who can read a run](#who-can-read-a-run). |
+| Review 7a | A run URL is the whole access control on an upload run. | ACCEPTED — this is a capability-URL model: the URL is the credential, and anyone holding it can read the run; disclosed in [Who can read a run](#who-can-read-a-run). |
 
 ## Review records
 

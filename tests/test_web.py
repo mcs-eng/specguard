@@ -223,7 +223,7 @@ def test_findings_page_shows_the_upload_form_and_no_runs() -> None:
     assert "Veylan 208V" in response.text
     assert "Torven 70 deg C" in response.text
     assert "Veylan altered (integrity screen)" in response.text
-    assert "No audit runs are stored yet." in response.text
+    assert "No sample audit run is stored yet." in response.text
 
 
 @pytest.mark.parametrize(
@@ -787,6 +787,51 @@ def test_quarantined_run_stores_no_rfi() -> None:
     assert f"{run_id}/rfi.pdf" not in storage.objects
 
 
+def test_landing_page_lists_sample_runs_only() -> None:
+    """An upload run is never published to the landing page.
+
+    A 128-bit run identifier is the whole access control on ``/runs/{id}``. If
+    the landing page listed upload runs, every later visitor would receive the
+    identifier of somebody else's submittal, and the identifier would stop
+    being a capability at all.
+    """
+    client, repository, _, _ = _client()
+    for run_id, source in (("sample-run-1", "sample"), ("upload-run-1", "upload")):
+        repository.runs[run_id] = {
+            "run_id": run_id,
+            "created_at": datetime(2026, 8, 22, tzinfo=UTC),
+            "status": "COMPLETED",
+            "source": source,
+            "summary": {"claims_made": 0, "rejected": 0, "retried": 0, "findings_persisted": 0},
+            "documents": {},
+            "rfi": None,
+        }
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "sample-run-1" in response.text
+    assert "upload-run-1" not in response.text
+
+
+def test_an_upload_run_url_still_resolves_while_unlisted() -> None:
+    """Withholding a run from the list does not withhold it from its own URL."""
+    client, repository, _, _ = _client()
+    repository.runs["upload-run-2"] = {
+        "run_id": "upload-run-2",
+        "created_at": datetime(2026, 8, 22, tzinfo=UTC),
+        "status": "COMPLETED",
+        "source": "upload",
+        "summary": {"claims_made": 0, "rejected": 0, "retried": 0, "findings_persisted": 0},
+        "documents": {},
+        "rfi": None,
+    }
+
+    assert "upload-run-2" not in client.get("/").text
+    assert client.get("/runs/upload-run-2").status_code == 200
+    assert client.get("/runs/upload-run-2/export.json").status_code == 200
+
+
 def test_run_view_omits_a_findings_record_that_is_not_verified() -> None:
     """A findings record without a verified status is never rendered as a finding.
 
@@ -973,6 +1018,7 @@ def test_stalled_run_is_a_read_side_status_on_list_and_detail() -> None:
         "run_id": RUN_ID,
         "created_at": datetime.now(UTC) - timedelta(minutes=11),
         "status": "RUNNING",
+        "source": "sample",
         "summary": {"claims_made": 0, "rejected": 0, "retried": 0, "findings_persisted": 0},
         "documents": {},
         "rfi": None,
@@ -994,6 +1040,7 @@ def test_completed_zero_finding_run_says_why_it_has_no_rfi() -> None:
         "run_id": RUN_ID,
         "created_at": datetime.now(UTC),
         "status": "COMPLETED",
+        "source": "sample",
         "summary": {"claims_made": 0, "rejected": 0, "retried": 0, "findings_persisted": 0},
         "documents": {},
         "rfi": None,
@@ -1009,6 +1056,7 @@ def test_completed_rejected_claims_do_not_claim_no_discrepancies() -> None:
         "run_id": RUN_ID,
         "created_at": datetime.now(UTC),
         "status": "COMPLETED",
+        "source": "sample",
         "summary": {"claims_made": 1, "rejected": 1, "retried": 1, "findings_persisted": 0},
         "documents": {},
         "rfi": None,
