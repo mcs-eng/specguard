@@ -90,6 +90,18 @@ class FakeClaimGenerator:
         return AuditClaimBatch.model_validate(response)
 
 
+def _rfi_text(rfi_path: Path | str | None) -> str:
+    """Read a generated RFI as one whitespace-normalized string.
+
+    The RFI now lays its findings out in a table, so a cell wraps its text
+    across several extracted lines. Collapsing whitespace lets a test assert on
+    the sentence a reader sees rather than on the column width.
+    """
+    assert rfi_path is not None
+    with pymupdf.open(rfi_path) as document:
+        return " ".join(" ".join(page.get_text().split()) for page in document)
+
+
 def _claim(
     *,
     spec_quote: str = "The required characteristic is alpha.",
@@ -350,9 +362,7 @@ def test_runtime_annotates_persisted_finding_with_severity(tmp_path: Path) -> No
     assert stored_finding["verification_status"] == "verified"
 
     # Verify RFI carries classified severity and model
-    with pymupdf.open(summary.rfi_path) as document:
-        text = "\n".join(page.get_text() for page in document)
-    assert "Severity: HIGH (model: gemma-4-31b-it)" in text
+    assert "HIGH - model: gemma-4-31b-it" in _rfi_text(summary.rfi_path)
 
 
 def test_runtime_records_fallback_outcome_on_failure(
@@ -379,9 +389,9 @@ def test_runtime_records_fallback_outcome_on_failure(
     assert "HTTP 429" in (stored_finding.get("severity_reason") or "")
     assert stored_finding["verification_status"] == "verified"
 
-    with pymupdf.open(summary.rfi_path) as document:
-        text = "\n".join(page.get_text() for page in document)
-    assert "Severity: UNCLASSIFIED" in text
+    text = _rfi_text(summary.rfi_path)
+    assert "UNCLASSIFIED - status: fallback" in text
+    assert "reason: HTTP 429" in text
 
 
 def test_vertex_endpoint_classifier_parses_single_token() -> None:

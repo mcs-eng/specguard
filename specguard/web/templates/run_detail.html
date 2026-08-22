@@ -1,5 +1,15 @@
 {% extends "base.html" %}
 {% block title %}SpecGuard Run {{ run.run_id }}{% endblock %}
+{% macro page_context(window, label) %}
+{% if window and window.found %}
+<div class="context">
+  <span class="locator">{{ label }}, as the gate read it</span>
+  <p class="page-window">{% if window.truncated_before %}&hellip;{% endif %}{{ window.before }}<mark>{{ window.match }}</mark>{{ window.after }}{% if window.truncated_after %}&hellip;{% endif %}</p>
+</div>
+{% elif window %}
+<p class="context-missing">The gate does not locate this quote in the stored copy of the document today.</p>
+{% endif %}
+{% endmacro %}
 {% block content %}
 <a class="backlink" href="/">Back to recent runs</a>
 <section class="card">
@@ -27,6 +37,7 @@
     <div><dt>Retried</dt><dd>{{ run.summary.retried }}</dd></div>
   </dl>
   {% if run.rfi %}<p class="rfi-link"><a href="/runs/{{ run.run_id }}/rfi.pdf">Open the RFI draft PDF</a></p>{% elif run.status == 'COMPLETED' and run.summary.findings_persisted == 0 and run.summary.rejected == 0 %}<p class="rfi-link muted">No RFI — no discrepancies found.</p>{% elif run.status == 'COMPLETED' and run.summary.findings_persisted == 0 %}<p class="rfi-link muted">No RFI — no findings were verified. Read the rejected claims below.</p>{% endif %}
+  <p class="export-link"><a href="/runs/{{ run.run_id }}/export.json">Export this run as JSON</a> <span class="muted">Findings, rejections, integrity records, document hashes, severity, token usage, and timestamps. No filesystem path and no passphrase.</span></p>
 </section>
 <section class="card">
   <div class="section-head">
@@ -51,9 +62,10 @@
     <p>Each quote below passed the verification gate against its cited page.</p>
   </div>
   {% if findings %}
-  <div class="table-wrap"><table><thead><tr><th scope="col">Claim</th><th scope="col">Specification quote</th><th scope="col">Submitted quote</th><th scope="col">Severity</th></tr></thead><tbody>
-  {% for finding in findings %}<tr><td>{{ finding.claim_text }}</td><td><span class="locator">Specification page {{ finding.spec_quote.page_number }}</span><q class="quote">{{ finding.spec_quote.text }}</q></td><td><span class="locator">Submitted page {{ finding.cut_sheet_quote.page_number }}</span><q class="quote">{{ finding.cut_sheet_quote.text }}</q></td><td><span class="badge severity-{{ (finding.severity or 'unclassified')|lower }}">{{ (finding.severity or 'unclassified')|upper }}</span>{% if finding.severity_model_id %}<span class="locator">{{ finding.severity_model_id }}</span>{% elif finding.severity_status %}<span class="locator">{{ finding.severity_status }}</span>{% endif %}{% if finding.severity_reason %}<p class="severity-reason">Reason: {{ finding.severity_reason }}</p>{% endif %}<p class="severity-caption">Severity is an advisory Gemma annotation on already-verified findings. It is not part of verification.</p></td></tr>{% endfor %}
+  <div class="table-wrap"><table><thead><tr><th scope="col">Claim</th><th scope="col">Specification quote in context</th><th scope="col">Submitted quote in context</th><th scope="col">Severity</th></tr></thead><tbody>
+  {% for finding in findings %}<tr><td>{{ finding.claim_text }}{% if finding.context_unavailable %}<p class="context-missing">{{ finding.context_unavailable }}</p>{% endif %}</td><td><span class="locator">Specification page {{ finding.spec_quote.page_number }}</span><q class="quote">{{ finding.spec_quote.text }}</q>{{ page_context(finding.spec_context, 'Specification page ' ~ finding.spec_quote.page_number) }}</td><td><span class="locator">Submitted page {{ finding.cut_sheet_quote.page_number }}</span><q class="quote">{{ finding.cut_sheet_quote.text }}</q>{{ page_context(finding.cut_sheet_context, 'Submitted page ' ~ finding.cut_sheet_quote.page_number) }}</td><td><span class="badge severity-{{ (finding.severity or 'unclassified')|lower }}">{{ (finding.severity or 'unclassified')|upper }}</span>{% if finding.severity_model_id %}<span class="locator">{{ finding.severity_model_id }}</span>{% elif finding.severity_status %}<span class="locator">{{ finding.severity_status }}</span>{% endif %}{% if finding.severity_reason %}<p class="severity-reason">Reason: {{ finding.severity_reason }}</p>{% endif %}<p class="severity-caption">Severity is an advisory Gemma annotation on already-verified findings. It is not part of verification.</p></td></tr>{% endfor %}
   </tbody></table></div>
+  <p class="muted context-note">Each shaded block is the cited page as the gate read it: extracted with PyMuPDF, then normalized by the gate's own normalizer, and bounded to a window either side of the quote. The highlighted run is the exact text the gate matched. <a href="/gate">Run the same check yourself.</a></p>
   {% else %}<p class="empty">No verified findings were persisted for this run.</p>{% endif %}
 </section>
 <section class="card">
@@ -62,9 +74,10 @@
     <p>Claims the gate refused, with the exact reason code it returned.</p>
   </div>
   {% if rejections %}
-  <div class="table-wrap"><table><thead><tr><th scope="col">Claim</th><th scope="col">Reason</th></tr></thead><tbody>
-  {% for rejection in rejections %}<tr><td>{{ rejection.claim_text }}</td><td><code>{{ rejection.reason }}</code></td></tr>{% endfor %}
+  <div class="table-wrap"><table><thead><tr><th scope="col">Claim</th><th scope="col">Reason</th><th scope="col">Gate feedback</th></tr></thead><tbody>
+  {% for rejection in rejections %}<tr><td>{{ rejection.claim_text }}</td><td>{% if rejection.details %}{% for detail in rejection.details %}<code>{{ detail.rejection_reason }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}<code>{{ rejection.reason }}</code>{% endif %}</td><td>{% if rejection.details %}{% for detail in rejection.details %}<div class="context"><span class="locator">Normalized quote, {{ detail.page_count }}-page document</span><p class="page-window">{{ detail.normalized_quote }}</p></div>{% endfor %}{% else %}<p class="context-missing">This rejection carries no per-quote gate feedback. No verified anchor exists for this claim, so no page context can be shown.</p>{% endif %}</td></tr>{% endfor %}
   </tbody></table></div>
+  <p class="muted context-note">A rejected claim has no verified anchor, so it gets no page window. What is shown instead is the machine reason the gate returned and the normalized quote it failed to find.</p>
   {% else %}<p class="empty">No claims were rejected for this run.</p>{% endif %}
 </section>
 <section class="card">
@@ -99,6 +112,14 @@
   .run-head h2 { margin: 0; }
   .run-head p { margin: .15rem 0 0; font-size: .9rem; }
   .rfi-link { margin: 1.2rem 0 0; }
+  .export-link { margin: 1rem 0 0; font-size: .9rem; }
+  .export-link .muted { display: block; margin-top: .2rem; font-size: .84rem; }
+  .context { margin: .55rem 0 0; }
+  .context .locator { margin-bottom: .2rem; }
+  .page-window { margin: 0; border: 1px solid var(--line-soft); border-radius: .3rem; background: var(--field); padding: .5rem .6rem; max-width: 26rem; font-family: "Cascadia Mono", "SF Mono", Consolas, "Liberation Mono", monospace; font-size: .8rem; line-height: 1.5; color: var(--ink-soft); overflow-wrap: anywhere; }
+  .page-window mark { background: var(--ok-bg); color: var(--ok-ink); font-weight: 700; padding: 0 .1rem; border-radius: .15rem; }
+  .context-missing { margin: .55rem 0 0; max-width: 26rem; color: var(--ink-soft); font-size: .84rem; font-style: italic; }
+  .context-note { margin: .9rem 0 0; font-size: .88rem; }
   .severity-reason { margin: .5rem 0 0; max-width: 22rem; color: var(--ink); font-size: .86rem; overflow-wrap: anywhere; }
   .severity-caption { margin: .5rem 0 0; max-width: 22rem; color: var(--ink-soft); font-size: .82rem; }
   .rfi-link a { display: inline-block; border: 1px solid var(--accent); border-radius: .35rem; padding: .55rem 1rem; font-weight: 700; text-decoration: none; transition: transform 140ms var(--ease-out), background-color 160ms var(--ease-out); }

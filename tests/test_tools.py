@@ -36,6 +36,18 @@ from tests.fixtures_pdf import write_pdf
 FIXED_TIME = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
 
 
+def _rfi_text(rfi_path: Path | str | None) -> str:
+    """Read a generated RFI as one whitespace-normalized string.
+
+    The RFI now lays its findings out in a table, so a cell wraps its text
+    across several extracted lines. Collapsing whitespace lets a test assert on
+    the sentence a reader sees rather than on the column width.
+    """
+    assert rfi_path is not None
+    with pymupdf.open(rfi_path) as document:
+        return " ".join(" ".join(page.get_text().split()) for page in document)
+
+
 def _source_pdfs(tmp_path: Path) -> tuple[Path, Path]:
     spec = write_pdf(
         tmp_path / "spec.pdf",
@@ -350,22 +362,32 @@ def test_draft_rfi_contains_required_evidence_and_hash_metadata(tmp_path: Path) 
 
     tools = _tools(tmp_path, client, spec, cut_sheet)
     result = tools.draft_rfi([finding])
-    with pymupdf.open(tools.rfi_path_for(result["rfi_id"])) as document:
-        text = "\n".join(page.get_text() for page in document)
+    text = _rfi_text(tools.rfi_path_for(result["rfi_id"]))
 
     assert result["rfi_number"] == "SG-RUN-1234"
+    assert "RFI number: SG-RUN-1234" in text
     assert "Project: Fictional Workshop" in text
     assert "Owner: Fictional Public Authority" in text
-    assert "Severity: UNCLASSIFIED" in text
-    assert "Severity reason: severity endpoint not deployed outside demo windows" in text
-    assert "Specification quote - page 1" in text
-    assert "Submitted document quote - page 1" in text
-    assert "Requirement alpha." in text
-    assert "Submitted characteristic beta." in text
+    assert "Submittal ID: run-1234abcd" in text
+    assert "Run ID: run-1234abcd" in text
+    assert "Date issued: " in text
+    assert "Claim Specification quote Submitted quote Severity" in text
+    assert 'Page 1: "Requirement alpha."' in text
+    assert 'Page 1: "Submitted characteristic beta."' in text
+    assert "UNCLASSIFIED - status: fallback" in text
+    assert "reason: severity endpoint not deployed outside demo windows" in text
+    assert "TEXT-LAYER INTEGRITY SCREEN" in text
+    assert "Document Screen Pages read Result" in text
+    assert "specification text_layer_render_mode_v1" in text
+    assert "submitted document text_layer_render_mode_v1" in text
+    assert "Clean: no span is hidden by render mode." in text
     assert "CHAIN-OF-CUSTODY METADATA" in text
     assert spec_hash in text
     assert cut_hash in text
-    assert "They do not prove accuracy." in text
+    assert "They are chain-of-custody metadata only." in text
+    assert "They do not prove accuracy" in text
+    assert "Reviewed by (print)" in text
+    assert "Signature" in text
 
 
 def test_draft_rfi_refuses_hashes_that_do_not_match_the_bound_sources(tmp_path: Path) -> None:

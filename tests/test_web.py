@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,10 +14,13 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from specguard import gate
 from specguard.models import AuditRunSummary, DocumentRole, QuarantinedDocument, RunQuarantine
 from specguard.web.app import (
+    GATE_CHECKS_PER_IP_HOUR,
     MAX_UPLOAD_BYTES,
     SAMPLE_RUNS_PER_UTC_DAY,
+    SECURITY_HEADERS,
     WebServices,
     WebSettings,
     create_app,
@@ -41,6 +46,7 @@ class FakeRunRepository:
         self.create_calls = 0
         self.sample_runs_by_day: dict[str, int] = {}
         self.sample_runs_by_hour_ip: dict[tuple[str, str], int] = {}
+        self.gate_checks_by_hour_ip: dict[tuple[str, str], int] = {}
         self.submission_tokens: dict[str, str] = {}
 
     def create_run(self, run: Mapping[str, Any]) -> None:
@@ -76,6 +82,14 @@ class FakeRunRepository:
             return False
         self.sample_runs_by_day[day] = daily_current + 1
         self.sample_runs_by_hour_ip[bucket] = hourly_current + 1
+        return True
+
+    def reserve_gate_check(self, *, hour: str, client_ip: str, hourly_limit: int) -> bool:
+        bucket = (hour, client_ip)
+        current = self.gate_checks_by_hour_ip.get(bucket, 0)
+        if current >= hourly_limit:
+            return False
+        self.gate_checks_by_hour_ip[bucket] = current + 1
         return True
 
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -298,31 +312,35 @@ def test_findings_page_shows_running_states_that_block_repeat_submits() -> None:
     client, _, _, _ = _client()
 
     response = client.get("/")
+    script = client.get("/static/index.js")
 
     assert response.status_code == 200
+    assert script.status_code == 200
     assert "Audit running. Do not submit again." in response.text
     assert "A repeated submit returns the first run." in response.text
     assert "#audit-submit:disabled" in response.text
-    assert "auditSubmit.disabled = true" in response.text
-    assert "if (submitting) { event.preventDefault(); return; }" in response.text
+    assert "auditSubmit.disabled = true" in script.text
+    assert "if (submitting) { event.preventDefault(); return; }" in script.text
     assert "Sample audit running. Do not submit again." in response.text
     assert "All sample buttons are disabled until this run opens." in response.text
     assert ".sample-grid button:disabled" in response.text
-    assert "for (const button of sampleButtons) button.disabled = true;" in response.text
-    assert "if (sampleSubmitting) { event.preventDefault(); return; }" in response.text
+    assert "for (const button of sampleButtons) button.disabled = true;" in script.text
+    assert "if (sampleSubmitting) { event.preventDefault(); return; }" in script.text
 
 
 def test_findings_page_confirms_each_chosen_file_before_the_run_starts() -> None:
     client, _, _, _ = _client()
 
     response = client.get("/")
+    script = client.get("/static/index.js")
 
     assert response.status_code == 200
+    assert script.status_code == 200
     assert "No file chosen" in response.text
     assert "Choose PDF" in response.text
-    assert "Replace PDF" in response.text
+    assert "Replace PDF" in script.text
     assert ".drop-zone[data-filled]" in response.text
-    assert "This file is larger than 5 MB." in response.text
+    assert "This file is larger than 5 MB." in script.text
 
 
 def test_findings_page_gives_the_submit_button_press_feedback() -> None:
@@ -984,3 +1002,616 @@ def test_run_view_renders_recorded_usage_unavailability_reason() -> None:
 
     assert response.status_code == 200
     assert unavailable_reason in response.text
+
+
+# --- Phase 6e: production basics, gate playground, context, JSON export ---
+
+FIXTURE_DIRECTORY = Path(__file__).resolve().parents[1] / "fixtures"
+SPECIFICATION_FIXTURE = FIXTURE_DIRECTORY / "asterquay_learning_workshop_specification.pdf"
+CUT_SHEET_FIXTURE = FIXTURE_DIRECTORY / "torven_70c_termination_switchboard.pdf"
+SPEC_QUOTE = "Conductor terminations shall be rated 90 deg C minimum."
+SPEC_QUOTE_PAGE = 5
+CUT_SHEET_QUOTE = "Field conductor termination rating: 158 deg F."
+CUT_SHEET_QUOTE_PAGE = 2
+FIXTURE_RUN_ID = "fixture-run-6e"
+
+
+class ExplodingRepository:
+    """A repository that refuses every call, to prove a route reads nothing."""
+
+    def __getattr__(self, name: str) -> Any:
+        def explode(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError(f"the route must not call repository.{name}")
+
+        return explode
+
+
+class ExplodingStorage:
+    """Object storage that refuses every call, to prove a route reads nothing."""
+
+    def __getattr__(self, name: str) -> Any:
+        def explode(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError(f"the route must not call storage.{name}")
+
+        return explode
+
+
+def _fixture_run_client() -> tuple[TestClient, FakeRunRepository, FakeObjectStorage]:
+    """Build a client holding one completed run over the committed fixtures."""
+    client, repository, storage, _ = _client()
+    spec_bytes = SPECIFICATION_FIXTURE.read_bytes()
+    cut_sheet_bytes = CUT_SHEET_FIXTURE.read_bytes()
+    spec_hash = hashlib.sha256(spec_bytes).hexdigest()
+    cut_sheet_hash = hashlib.sha256(cut_sheet_bytes).hexdigest()
+    storage.objects[f"{FIXTURE_RUN_ID}/specification.pdf"] = spec_bytes
+    storage.objects[f"{FIXTURE_RUN_ID}/submitted-document.pdf"] = cut_sheet_bytes
+    storage.objects[f"{FIXTURE_RUN_ID}/rfi.pdf"] = RFI_BYTES
+    created_at = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
+    repository.runs[FIXTURE_RUN_ID] = {
+        "run_id": FIXTURE_RUN_ID,
+        "created_at": created_at,
+        "source": "sample",
+        "status": "COMPLETED",
+        "summary": {
+            "claims_made": 2,
+            "rejected": 1,
+            "retried": 1,
+            "findings_persisted": 1,
+            "quarantine": None,
+            "audit_model_usage": {
+                "prompt_tokens": 4527,
+                "output_tokens": 15,
+                "total_tokens": 5652,
+                "unavailable_reason": None,
+            },
+        },
+        "documents": {
+            "specification": {
+                "object_name": f"{FIXTURE_RUN_ID}/specification.pdf",
+                "sha256": spec_hash,
+                "content_type": "application/pdf",
+            },
+            "submitted_document": {
+                "object_name": f"{FIXTURE_RUN_ID}/submitted-document.pdf",
+                "sha256": cut_sheet_hash,
+                "content_type": "application/pdf",
+            },
+        },
+        "rfi": {
+            "object_name": f"{FIXTURE_RUN_ID}/rfi.pdf",
+            "sha256": hashlib.sha256(RFI_BYTES).hexdigest(),
+            "content_type": "application/pdf",
+        },
+    }
+    repository.findings[FIXTURE_RUN_ID] = [
+        {
+            "finding_id": "finding-6e-1",
+            "run_id": FIXTURE_RUN_ID,
+            "submittal_id": FIXTURE_RUN_ID,
+            "claim_text": "The submitted termination rating is below the specified minimum.",
+            "spec_quote": {
+                "text": SPEC_QUOTE,
+                "page_number": SPEC_QUOTE_PAGE,
+                "document_sha256": spec_hash,
+            },
+            "cut_sheet_quote": {
+                "text": CUT_SHEET_QUOTE,
+                "page_number": CUT_SHEET_QUOTE_PAGE,
+                "document_sha256": cut_sheet_hash,
+            },
+            "severity": "high",
+            "severity_model_id": "google-gemma3-gemma-3-1b-it",
+            "severity_status": "classified",
+            "severity_reason": None,
+            "verification_status": "verified",
+            "spec_locator": f"Page {SPEC_QUOTE_PAGE}",
+            "cut_sheet_locator": f"Page {CUT_SHEET_QUOTE_PAGE}",
+            "created_at": created_at,
+        }
+    ]
+    repository.rejections[FIXTURE_RUN_ID] = [
+        {
+            "run_id": FIXTURE_RUN_ID,
+            "claim_text": "An invented conflict the gate refused.",
+            "reason": json.dumps(
+                [
+                    {
+                        "normalized_quote": "invented gamma quote.",
+                        "page_count": 7,
+                        "rejection_reason": "quote_not_found_on_cited_page",
+                    }
+                ],
+                sort_keys=True,
+            ),
+            "timestamp": created_at,
+        },
+        {
+            "run_id": FIXTURE_RUN_ID,
+            "claim_text": "Initial model output",
+            "reason": "model_output_invalid",
+            "timestamp": created_at,
+        },
+    ]
+    repository.integrity_records[FIXTURE_RUN_ID] = [
+        {
+            "integrity_finding_id": "integrity-6e-1",
+            "run_id": FIXTURE_RUN_ID,
+            "screen_id": "text_layer_render_mode_v1",
+            "document_role": "submitted_document",
+            "document_sha256": cut_sheet_hash,
+            "page_count": 2,
+            "flagged_pages": [1],
+            "hidden_spans": [
+                {
+                    "page_number": 1,
+                    "text": "Nominal system: 209V, 3-phase, 4-wire.",
+                    "font": "NotoSans",
+                    "size": 9.0,
+                    "char_flags": 8,
+                    "bbox": [10.0, 20.0, 30.0, 40.0],
+                }
+            ],
+            "created_at": created_at,
+        }
+    ]
+    return client, repository, storage
+
+
+# --- 5. Production basics ------------------------------------------------
+
+
+def test_healthz_returns_200_without_reading_any_dependency() -> None:
+    app = create_app(
+        WebServices(
+            settings=WebSettings(project_id="p", bucket_name="b", demo_passphrase="x"),
+            repository=ExplodingRepository(),
+            storage=ExplodingStorage(),
+            audit_runner=FakeAuditRunner(),
+            audit_slots=asyncio.Semaphore(2),
+        )
+    )
+
+    response = TestClient(app).get("/healthz")
+
+    assert response.status_code == 200
+    assert response.text == "ok"
+
+
+@pytest.mark.parametrize(
+    "path", ["/", "/gate", "/healthz", "/static/index.js", "/runs/does-not-exist"]
+)
+def test_every_response_carries_the_security_headers(path: str) -> None:
+    client, _, _, _ = _client()
+
+    response = client.get(path)
+
+    for name, value in SECURITY_HEADERS.items():
+        assert response.headers[name] == value
+
+
+def test_the_content_security_policy_allows_no_inline_script() -> None:
+    client, _, _, _ = _client()
+
+    policy = client.get("/").headers["Content-Security-Policy"]
+
+    assert "script-src 'self'" in policy
+    assert "'unsafe-inline'" not in policy.split("script-src")[1].split(";")[0]
+    assert "'unsafe-eval'" not in policy
+    assert "default-src 'none'" in policy
+    assert "frame-ancestors 'none'" in policy
+
+
+@pytest.mark.parametrize("path", ["/", "/gate"])
+def test_no_page_carries_an_inline_script_body(path: str) -> None:
+    """Every script element loads a same-origin file and carries no code."""
+    client, _, _, _ = _client()
+
+    body = client.get(path).text
+
+    for opening_tag, contents in re.findall(r"(<script\b[^>]*>)(.*?)</script>", body, re.DOTALL):
+        assert "src=" in opening_tag
+        assert contents.strip() == ""
+
+
+def test_the_static_script_is_served_and_holds_the_landing_page_behaviour() -> None:
+    client, _, _, _ = _client()
+
+    response = client.get("/static/index.js")
+
+    assert response.status_code == 200
+    assert "auditForm.addEventListener('submit'" in response.text
+    assert '<script src="/static/index.js" defer></script>' in client.get("/").text
+
+
+def test_the_security_headers_name_the_four_required_controls() -> None:
+    assert SECURITY_HEADERS["X-Content-Type-Options"] == "nosniff"
+    assert SECURITY_HEADERS["X-Frame-Options"] == "DENY"
+    assert SECURITY_HEADERS["Referrer-Policy"] == "no-referrer"
+    assert "Content-Security-Policy" in SECURITY_HEADERS
+
+
+# --- 1. Gate playground --------------------------------------------------
+
+
+def test_gate_playground_verifies_the_prefilled_example() -> None:
+    client, repository, _, _ = _client()
+
+    response = client.get("/gate")
+
+    assert response.status_code == 200
+    assert "VERIFIED" in response.text
+    assert SPEC_QUOTE in response.text
+    assert "the same function the runtime calls" in response.text
+    assert "specguard.gate.verify_quote" in response.text
+    assert repository.gate_checks_by_hour_ip == {}
+
+
+def test_gate_playground_reports_the_page_count_and_no_rejection_reason() -> None:
+    client, _, _, _ = _client()
+
+    body = client.get("/gate").text
+
+    assert "Page count" in body
+    assert ">7<" in body
+    assert "A verified quote carries no rejection reason." in body
+
+
+def test_gate_playground_rejects_one_changed_digit() -> None:
+    client, _, _, _ = _client()
+
+    response = client.get(
+        "/gate",
+        params={
+            "fixture": "specification",
+            "page": str(SPEC_QUOTE_PAGE),
+            "quote": "Conductor terminations shall be rated 80 deg C minimum.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "REJECTED" in response.text
+    assert "quote_not_found_on_cited_page" in response.text
+
+
+def test_gate_playground_rejects_a_real_quote_cited_to_the_wrong_page() -> None:
+    client, _, _, _ = _client()
+
+    response = client.get(
+        "/gate", params={"fixture": "specification", "page": "4", "quote": SPEC_QUOTE}
+    )
+
+    assert "REJECTED" in response.text
+    assert "quote_not_found_on_cited_page" in response.text
+
+
+def test_gate_playground_reports_a_page_outside_the_document() -> None:
+    client, _, _, _ = _client()
+
+    response = client.get(
+        "/gate", params={"fixture": "specification", "page": "99", "quote": SPEC_QUOTE}
+    )
+
+    assert "REJECTED" in response.text
+    assert "page_out_of_range" in response.text
+
+
+def test_gate_playground_shows_the_normalized_quote_the_gate_compared() -> None:
+    client, _, _, _ = _client()
+
+    response = client.get(
+        "/gate",
+        params={"fixture": "specification", "page": "5", "quote": "  CONDUCTOR   TERMINATIONS  "},
+    )
+
+    assert gate.normalize("  CONDUCTOR   TERMINATIONS  ") in response.text
+    assert "conductor terminations" in response.text
+
+
+def test_gate_playground_lists_both_one_click_near_misses() -> None:
+    client, _, _, _ = _client()
+
+    body = client.get("/gate").text
+
+    assert "One digit changed: 90 becomes 80" in body
+    assert "Right quote, wrong page: cited to page 4" in body
+    assert "page=4" in body
+
+
+def test_gate_playground_refuses_a_fixture_it_does_not_hold() -> None:
+    client, _, _, _ = _client()
+
+    response = client.get("/gate", params={"fixture": "some-other-file", "page": "1", "quote": "x"})
+
+    assert response.status_code == 400
+    assert "Choose one of the committed fixtures." in response.text
+
+
+@pytest.mark.parametrize("page", ["0", "-3", "two", ""])
+def test_gate_playground_refuses_a_page_that_is_not_a_positive_number(page: str) -> None:
+    client, _, _, _ = _client()
+
+    response = client.get(
+        "/gate", params={"fixture": "specification", "page": page, "quote": SPEC_QUOTE}
+    )
+
+    assert response.status_code == 400
+    assert "whole number of at least 1" in response.text
+
+
+def test_gate_playground_refuses_an_empty_quote() -> None:
+    client, _, _, _ = _client()
+
+    response = client.get("/gate", params={"fixture": "specification", "page": "5", "quote": "  "})
+
+    assert response.status_code == 400
+    assert "Enter a quote to check." in response.text
+
+
+def test_gate_playground_never_shows_a_filesystem_path() -> None:
+    client, _, _, _ = _client()
+
+    body = client.get(
+        "/gate", params={"fixture": "specification", "page": "5", "quote": SPEC_QUOTE}
+    ).text
+
+    assert str(SPECIFICATION_FIXTURE) not in body
+    assert str(SPECIFICATION_FIXTURE.parent) not in body
+    assert "pdf_path" not in body
+
+
+def test_gate_playground_limits_checks_per_address_per_hour() -> None:
+    client, repository, _, _ = _client()
+    params = {"fixture": "specification", "page": "5", "quote": SPEC_QUOTE}
+
+    for _ in range(GATE_CHECKS_PER_IP_HOUR):
+        assert client.get("/gate", params=params).status_code == 200
+
+    blocked = client.get("/gate", params=params)
+
+    assert blocked.status_code == 429
+    assert "The gate playground limit is reached. Try again later." in blocked.text
+    assert sum(repository.gate_checks_by_hour_ip.values()) == GATE_CHECKS_PER_IP_HOUR
+
+
+def test_gate_playground_writes_no_run_and_calls_no_model() -> None:
+    client, repository, storage, runner = _client()
+
+    client.get("/gate", params={"fixture": "caldra", "page": "1", "quote": "Caldra"})
+
+    assert repository.runs == {}
+    assert storage.objects == {}
+    assert runner.calls == []
+
+
+# --- 6. Page explainer ---------------------------------------------------
+
+
+def test_the_findings_page_explains_the_three_steps_and_links_to_the_gate() -> None:
+    client, _, _, _ = _client()
+
+    body = client.get("/").text
+
+    assert "Screen" in body
+    assert "Audit" in body
+    assert "Gate" in body
+    assert "Gemini 3.7 Flash via Vertex AI" in body
+    assert "verbatim quote" in body
+    assert "RFI draft" in body
+    assert "Uncited claims are blocked from the ledger." in body
+    assert 'href="/gate"' in body
+    assert "The runtime enforces the gate." in body
+
+
+# --- 2. Quote in context -------------------------------------------------
+
+
+def test_the_run_page_shows_each_verified_quote_inside_its_cited_page() -> None:
+    client, _, _ = _fixture_run_client()
+
+    body = client.get(f"/runs/{FIXTURE_RUN_ID}").text
+
+    spec_window = " ".join(gate.normalize(SPEC_QUOTE).split())
+    cut_sheet_window = " ".join(gate.normalize(CUT_SHEET_QUOTE).split())
+    assert f"<mark>{spec_window}</mark>" in body
+    assert f"<mark>{cut_sheet_window}</mark>" in body
+    assert "Specification page 5, as the gate read it" in body
+    assert "Submitted page 2, as the gate read it" in body
+
+
+def test_the_window_beside_a_quote_holds_neighbouring_page_text() -> None:
+    client, _, _ = _fixture_run_client()
+
+    body = client.get(f"/runs/{FIXTURE_RUN_ID}").text
+
+    assert "2.1 terminations" in body
+    assert "use listed terminals" in body
+
+
+def test_the_run_page_context_is_deterministic() -> None:
+    client, _, _ = _fixture_run_client()
+
+    first = client.get(f"/runs/{FIXTURE_RUN_ID}").text
+    second = client.get(f"/runs/{FIXTURE_RUN_ID}").text
+
+    assert first == second
+
+
+def test_a_rejected_claim_shows_its_gate_reason_where_a_window_would_be() -> None:
+    client, _, _ = _fixture_run_client()
+
+    body = client.get(f"/runs/{FIXTURE_RUN_ID}").text
+
+    assert "quote_not_found_on_cited_page" in body
+    assert "invented gamma quote." in body
+    assert "Normalized quote, 7-page document" in body
+    assert "model_output_invalid" in body
+    assert "no per-quote gate feedback" in body
+
+
+def test_an_unreadable_source_document_says_so_instead_of_guessing() -> None:
+    client, _, storage = _fixture_run_client()
+    storage.objects.pop(f"{FIXTURE_RUN_ID}/specification.pdf")
+
+    body = client.get(f"/runs/{FIXTURE_RUN_ID}").text
+
+    assert "The stored source document could not be read" in body
+    assert "<mark>" not in body
+
+
+def test_the_run_page_context_never_prints_a_filesystem_path() -> None:
+    client, _, _ = _fixture_run_client()
+
+    body = client.get(f"/runs/{FIXTURE_RUN_ID}").text
+
+    assert str(SPECIFICATION_FIXTURE) not in body
+    assert "specguard-context-" not in body
+
+
+# --- 4. JSON export ------------------------------------------------------
+
+
+def test_the_json_export_carries_every_persisted_record_of_a_run() -> None:
+    client, _, _ = _fixture_run_client()
+
+    response = client.get(f"/runs/{FIXTURE_RUN_ID}/export.json")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert payload["schema"] == "specguard.run.export.v1"
+    assert payload["run"]["run_id"] == FIXTURE_RUN_ID
+    assert payload["run"]["status"] == "COMPLETED"
+    assert payload["run"]["created_at"] == "2026-08-22T12:00:00+00:00"
+    assert payload["summary"]["findings_persisted"] == 1
+    assert payload["summary"]["rejected"] == 1
+    assert payload["summary"]["audit_model_usage"]["total_tokens"] == 5652
+    assert {document["role"] for document in payload["documents"]} == {
+        "specification",
+        "submitted_document",
+    }
+    assert all(len(document["sha256"]) == 64 for document in payload["documents"])
+    assert payload["rfi"]["object_name"] == f"{FIXTURE_RUN_ID}/rfi.pdf"
+
+
+def test_the_exported_finding_carries_both_anchors_and_its_severity_record() -> None:
+    client, _, _ = _fixture_run_client()
+
+    finding = client.get(f"/runs/{FIXTURE_RUN_ID}/export.json").json()["findings"][0]
+
+    assert finding["finding_id"] == "finding-6e-1"
+    assert finding["verification_status"] == "verified"
+    assert finding["spec_quote"]["text"] == SPEC_QUOTE
+    assert finding["spec_quote"]["page_number"] == SPEC_QUOTE_PAGE
+    assert len(finding["spec_quote"]["document_sha256"]) == 64
+    assert finding["cut_sheet_quote"]["page_number"] == CUT_SHEET_QUOTE_PAGE
+    assert finding["severity"] == {
+        "label": "high",
+        "status": "classified",
+        "model_id": "google-gemma3-gemma-3-1b-it",
+        "reason": None,
+    }
+    assert finding["created_at"] == "2026-08-22T12:00:00+00:00"
+
+
+def test_the_export_carries_rejections_with_their_parsed_gate_feedback() -> None:
+    client, _, _ = _fixture_run_client()
+
+    rejections = client.get(f"/runs/{FIXTURE_RUN_ID}/export.json").json()["rejections"]
+
+    assert len(rejections) == 2
+    assert rejections[0]["details"][0]["rejection_reason"] == "quote_not_found_on_cited_page"
+    assert rejections[0]["details"][0]["page_count"] == 7
+    assert rejections[0]["timestamp"] == "2026-08-22T12:00:00+00:00"
+    assert rejections[1]["reason"] == "model_output_invalid"
+    assert rejections[1]["details"] == []
+
+
+def test_the_export_carries_integrity_records_with_their_document_hashes() -> None:
+    client, _, _ = _fixture_run_client()
+
+    records = client.get(f"/runs/{FIXTURE_RUN_ID}/export.json").json()["integrity_records"]
+
+    assert records[0]["screen_id"] == "text_layer_render_mode_v1"
+    assert records[0]["flagged_pages"] == [1]
+    assert len(records[0]["document_sha256"]) == 64
+    assert records[0]["hidden_spans"][0]["text"] == "Nominal system: 209V, 3-phase, 4-wire."
+
+
+def test_the_export_shows_no_hidden_span_field_the_run_page_withholds() -> None:
+    """The export mirrors the run page's span columns and adds nothing."""
+    client, _, _ = _fixture_run_client()
+
+    span = client.get(f"/runs/{FIXTURE_RUN_ID}/export.json").json()["integrity_records"][0][
+        "hidden_spans"
+    ][0]
+
+    assert set(span) == {"page_number", "text", "font", "size"}
+
+
+def test_the_export_excludes_paths_passphrases_and_tokens() -> None:
+    client, repository, _ = _fixture_run_client()
+    repository.submission_tokens["secret-token-value"] = FIXTURE_RUN_ID
+
+    payload = client.get(f"/runs/{FIXTURE_RUN_ID}/export.json").json()
+    payload.pop("exclusions")
+    body = json.dumps(payload)
+
+    assert "document_path" not in body
+    assert "pdf_path" not in body
+    assert "rfi_path" not in body
+    assert "passphrase" not in body.lower()
+    assert "secret-token-value" not in body
+    assert "submission_token" not in body
+    assert str(SPECIFICATION_FIXTURE) not in body
+    assert "C:\\" not in body
+    assert "/tmp" not in body
+    assert "specguard-context-" not in body
+
+
+def test_the_export_states_its_own_exclusions() -> None:
+    client, _, _ = _fixture_run_client()
+
+    exclusions = client.get(f"/runs/{FIXTURE_RUN_ID}/export.json").json()["exclusions"]
+
+    assert any("filesystem path" in line for line in exclusions)
+    assert any("passphrase" in line for line in exclusions)
+    assert any("hidden-span" in line for line in exclusions)
+
+
+def test_the_export_of_a_quarantined_run_carries_its_disclosure() -> None:
+    client, repository, _ = _fixture_run_client()
+    repository.runs[FIXTURE_RUN_ID]["status"] = "QUARANTINED"
+    repository.runs[FIXTURE_RUN_ID]["summary"]["quarantine"] = {
+        "reason": "text_layer_integrity_screen",
+        "documents": [
+            {
+                "document_role": "submitted_document",
+                "document_sha256": "ab" * 32,
+                "page_count": 2,
+                "flagged_pages": [1],
+                "hidden_span_count": 2,
+                "integrity_finding_id": "integrity-6e-1",
+                "persistence_reason": None,
+            }
+        ],
+    }
+
+    payload = client.get(f"/runs/{FIXTURE_RUN_ID}/export.json").json()
+
+    assert payload["run"]["status"] == "QUARANTINED"
+    assert payload["summary"]["quarantine"]["reason"] == "text_layer_integrity_screen"
+    assert payload["summary"]["quarantine"]["documents"][0]["hidden_span_count"] == 2
+
+
+def test_the_export_of_an_unknown_run_is_a_404() -> None:
+    client, _, _, _ = _client()
+
+    assert client.get("/runs/no-such-run/export.json").status_code == 404
+
+
+def test_the_run_page_links_to_its_json_export() -> None:
+    client, _, _ = _fixture_run_client()
+
+    body = client.get(f"/runs/{FIXTURE_RUN_ID}").text
+
+    assert f'href="/runs/{FIXTURE_RUN_ID}/export.json"' in body

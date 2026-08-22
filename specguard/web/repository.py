@@ -18,6 +18,7 @@ from specguard.tools import (
 RUNS_COLLECTION = "runs"
 SAMPLE_RUN_LIMITS_COLLECTION = "sample_run_limits"
 SAMPLE_IP_LIMITS_COLLECTION = "sample_ip_limits"
+GATE_CHECK_LIMITS_COLLECTION = "gate_check_limits"
 UPLOAD_SUBMISSION_TOKENS_COLLECTION = "upload_submission_tokens"
 
 
@@ -43,6 +44,9 @@ class RunRepository(Protocol):
         daily_limit: int,
     ) -> bool:
         """Atomically reserve one sample run within both durable limits."""
+
+    def reserve_gate_check(self, *, hour: str, client_ip: str, hourly_limit: int) -> bool:
+        """Atomically reserve one gate-playground check within the hourly limit."""
 
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         """Return the newest stored audit runs."""
@@ -131,6 +135,28 @@ class FirestoreRunRepository:
                 return False
             transaction.set(daily_counter, {"day": day, "count": daily_count + 1})
             transaction.set(ip_counter, {"hour": hour, "count": ip_count + 1})
+            return True
+
+        return reserve(self._client_for_transactions().transaction())
+
+    def reserve_gate_check(self, *, hour: str, client_ip: str, hourly_limit: int) -> bool:
+        """Reserve one gate-playground check in a transaction that survives cold starts.
+
+        The playground makes no model call and writes no run, so its only cost
+        is one read of a committed fixture. The limit keeps that read from
+        being used as free compute; it rations no scarce resource.
+        """
+        counter = self._collection(GATE_CHECK_LIMITS_COLLECTION).document(
+            _sample_ip_counter_id(hour, client_ip)
+        )
+
+        @firestore.transactional
+        def reserve(transaction: firestore.Transaction) -> bool:
+            snapshot = counter.get(transaction=transaction)
+            count = _counter_count(snapshot)
+            if count >= hourly_limit:
+                return False
+            transaction.set(counter, {"hour": hour, "count": count + 1})
             return True
 
         return reserve(self._client_for_transactions().transaction())

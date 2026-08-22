@@ -364,56 +364,88 @@ class AuditTools:
             if any(not result.verified for result in verification_results):
                 raise ValueError("finding contains a quote rejected by the verification gate")
         project, owner = self._read_project_header()
+        screens = self._screen_bound_documents()
         self._output_directory.mkdir(parents=True, exist_ok=True)
         output_path = self._output_directory / f"rfi-{self._run_id}.pdf"
         rfi_number = f"SG-{self._run_id[:8].upper()}"
+        issued = self._now().strftime("%Y-%m-%d")
 
         document = pymupdf.open()
         writer = _RfiWriter(document, rfi_number)
         writer.heading("REQUEST FOR INFORMATION - DRAFT", size=16)
-        writer.line(f"RFI number: {rfi_number}", bold=True)
-        writer.line(f"Project: {project}")
-        writer.line(f"Owner: {owner}")
+        writer.field_block(
+            [
+                ("RFI number", rfi_number),
+                ("Project", project),
+                ("Owner", owner),
+                ("Submittal ID", self._run_id),
+                ("Run ID", self._run_id),
+                ("Date issued", issued),
+                ("Findings in this draft", str(len(findings))),
+            ]
+        )
+        writer.paragraph(
+            "This runtime uses the audit run identifier as the submittal identifier, "
+            "so those two fields carry the same value."
+        )
         writer.space(8)
         writer.line("DRAFT - HUMAN REVIEW REQUIRED", bold=True)
         writer.paragraph(
             "This draft presents quoted text anchors for review. "
             "It does not establish that any finding is accurate."
         )
-        writer.space(8)
+        writer.space(10)
 
-        for index, finding in enumerate(findings, start=1):
-            writer.heading(f"FINDING {index}", size=12)
-            writer.paragraph(finding.claim_text)
-            severity_val = (
-                finding.severity.value.upper()
-                if isinstance(finding.severity, Severity)
-                else str(finding.severity).upper()
-            )
-            if finding.severity_model_id:
-                writer.line(
-                    f"Severity: {severity_val} (model: {finding.severity_model_id})", bold=True
-                )
-            else:
-                writer.line(f"Severity: {severity_val}", bold=True)
-            if finding.severity_reason:
-                writer.line(f"Severity reason: {finding.severity_reason}")
-            writer.line(f"Specification quote - page {finding.spec_quote.page_number}", bold=True)
-            writer.paragraph(f'"{finding.spec_quote.text}"')
-            writer.line(
-                f"Submitted document quote - page {finding.cut_sheet_quote.page_number}",
-                bold=True,
-            )
-            writer.paragraph(f'"{finding.cut_sheet_quote.text}"')
-            writer.space(8)
+        writer.heading("FINDINGS", size=12)
+        writer.paragraph(
+            "Every quote below was located on its cited page by the verification gate, "
+            "once when the finding was written and once again before this page rendered."
+        )
+        writer.space(4)
+        writer.table(
+            ["Claim", "Specification quote", "Submitted quote", "Severity"],
+            [_finding_row(finding) for finding in findings],
+            [144.0, 130.0, 130.0, 100.0],
+        )
+        writer.space(4)
+        writer.paragraph(
+            "Severity is an advisory annotation applied after verification. "
+            "It is not a compliance determination and it changes no verification status."
+        )
+        writer.space(10)
+
+        writer.heading("TEXT-LAYER INTEGRITY SCREEN", size=12)
+        writer.paragraph(
+            "Both documents were screened for text that the PDF render mode keeps off "
+            "the visible page. A flagged document stops its run before any model call, "
+            "so a document listed here as flagged could not have produced this draft."
+        )
+        writer.space(4)
+        writer.table(
+            ["Document", "Screen", "Pages read", "Result"],
+            screens,
+            [150.0, 120.0, 70.0, 164.0],
+        )
+        writer.space(10)
 
         writer.heading("CHAIN-OF-CUSTODY METADATA", size=12)
         writer.paragraph(f"Specification document SHA-256: {spec_document.sha256}")
         writer.paragraph(f"Submitted document SHA-256: {cut_sheet_document.sha256}")
         writer.paragraph(
             "These hashes identify the source byte streams used for this run. "
-            "They do not prove accuracy."
+            "They are chain-of-custody metadata only. They do not prove accuracy, "
+            "and no part of the verification gate reads them."
         )
+        writer.space(14)
+
+        writer.reserve(130)
+        writer.heading("REVIEW", size=12)
+        writer.paragraph(
+            "This draft is not issued until a human reviewer signs it. SpecGuard signs nothing."
+        )
+        writer.space(6)
+        writer.signature_line("Reviewed by (print)", "Date")
+        writer.signature_line("Signature", "Date")
         writer.finish()
         document.set_metadata(
             {
@@ -482,6 +514,35 @@ class AuditTools:
         owner = _value_after_label(text, "Owner:") or "Not identified in source text"
         return project, owner
 
+    def _screen_bound_documents(self) -> list[list[str]]:
+        """Re-run the text-layer screen over both bound documents for the RFI.
+
+        The screen result printed in the RFI is read from the files here, not
+        copied from a caller. A reader of the draft therefore sees what the
+        screen reports about the same bytes the chain-of-custody block names.
+        """
+        rows: list[list[str]] = []
+        for role, path in (
+            (DocumentRole.SPECIFICATION, self._spec_path),
+            (DocumentRole.SUBMITTED_DOCUMENT, self._cut_sheet_path),
+        ):
+            report = integrity.check_text_layer(path)
+            result = (
+                "Clean: no span is hidden by render mode."
+                if report.clean
+                else f"FLAGGED on pages {report.flagged_pages}: "
+                f"{len(report.hidden_spans)} hidden spans."
+            )
+            rows.append(
+                [
+                    role.value.replace("_", " "),
+                    integrity.SCREEN_ID,
+                    str(report.page_count),
+                    result,
+                ]
+            )
+        return rows
+
 
 class _RfiWriter:
     """Small text writer with deterministic wrapping and page breaks."""
@@ -509,6 +570,123 @@ class _RfiWriter:
         self._ensure(points)
         self._y += points
 
+    def reserve(self, points: float) -> None:
+        """Start a new page unless ``points`` of vertical room remain.
+
+        A signature block split across a page break reads as two half-signed
+        pages. Reserving the whole block keeps it together.
+        """
+        self._ensure(points)
+
+    def field_block(self, fields: list[tuple[str, str]]) -> None:
+        """Write a boxed header block, one ``Label: value`` line per field.
+
+        Each label and its value share one text run. A split run would place
+        them on separate extracted lines, so a reader of the extracted text
+        would no longer see which value belongs to which label.
+        """
+        fontsize = 9.5
+        line_height = fontsize + 4
+        lines = [
+            wrapped
+            for label, value in fields
+            for wrapped in self._wrap(
+                f"{label}: {value}", fontname="helv", fontsize=fontsize, max_width=484.0
+            )
+        ]
+        height = len(lines) * line_height + 14
+        self._ensure(height + 6)
+        top = self._y
+        self._page.draw_rect(
+            pymupdf.Rect(54, top, 558, top + height),
+            color=(0.72, 0.76, 0.80),
+            fill=(0.95, 0.96, 0.98),
+            width=0.6,
+        )
+        y = top + 7 + fontsize
+        for line in lines:
+            self._page.insert_text((64, y), line, fontname="helv", fontsize=fontsize)
+            y += line_height
+        # ``_y`` is the baseline of the next line, so clearing the box border
+        # needs the box height plus one line of ascent.
+        self._y = top + height + 6 + fontsize
+
+    def signature_line(self, left_label: str, right_label: str) -> None:
+        """Draw two ruled signature fields side by side."""
+        self._ensure(34)
+        baseline = self._y + 16
+        self._page.draw_line((54, baseline), (360, baseline), color=(0.4, 0.4, 0.4), width=0.6)
+        self._page.draw_line((390, baseline), (558, baseline), color=(0.4, 0.4, 0.4), width=0.6)
+        self._page.insert_text((54, baseline + 11), left_label, fontname="helv", fontsize=8)
+        self._page.insert_text((390, baseline + 11), right_label, fontname="helv", fontsize=8)
+        self._y = baseline + 26
+
+    def table(self, headers: list[str], rows: list[list[str]], widths: list[float]) -> None:
+        """Write a bordered table, repeating the header row after a page break."""
+        fontsize = 8.0
+        padding = 4.0
+        self._write_table_header(headers, widths, fontsize, padding)
+        for row in rows:
+            cells = [
+                self._wrap(
+                    str(value), fontname="helv", fontsize=fontsize, max_width=width - 2 * padding
+                )
+                for value, width in zip(row, widths, strict=True)
+            ]
+            height = max(len(lines) for lines in cells) * (fontsize + 2.6) + 2 * padding
+            if self._y + height > 730:
+                self._new_page()
+                self._write_table_header(headers, widths, fontsize, padding)
+            self._write_table_row(cells, widths, fontsize, padding, height)
+        # Leave the table's bottom border clear of the next baseline.
+        self._y += fontsize + 4
+
+    def _write_table_header(
+        self, headers: list[str], widths: list[float], fontsize: float, padding: float
+    ) -> None:
+        height = fontsize + 2 * padding + 2
+        self._ensure(height + 20)
+        top = self._y
+        self._page.draw_rect(
+            pymupdf.Rect(54, top, 54 + sum(widths), top + height),
+            color=(0.65, 0.65, 0.65),
+            fill=(0.92, 0.94, 0.96),
+            width=0.5,
+        )
+        x = 54.0
+        for header, width in zip(headers, widths, strict=True):
+            self._page.insert_text(
+                (x + padding, top + padding + fontsize),
+                header,
+                fontname="hebo",
+                fontsize=fontsize,
+            )
+            x += width
+        self._y = top + height
+
+    def _write_table_row(
+        self,
+        cells: list[list[str]],
+        widths: list[float],
+        fontsize: float,
+        padding: float,
+        height: float,
+    ) -> None:
+        top = self._y
+        self._page.draw_rect(
+            pymupdf.Rect(54, top, 54 + sum(widths), top + height),
+            color=(0.78, 0.78, 0.78),
+            width=0.5,
+        )
+        x = 54.0
+        for lines, width in zip(cells, widths, strict=True):
+            y = top + padding + fontsize
+            for line in lines:
+                self._page.insert_text((x + padding, y), line, fontname="helv", fontsize=fontsize)
+                y += fontsize + 2.6
+            x += width
+        self._y = top + height
+
     def finish(self) -> None:
         for page_number, page in enumerate(self._document, start=1):
             page.draw_line((54, 748), (558, 748), color=(0.65, 0.65, 0.65), width=0.5)
@@ -535,12 +713,29 @@ class _RfiWriter:
         if self._y + height > 730:
             self._new_page()
 
-    def _write_wrapped(self, text: str, *, fontname: str, fontsize: float) -> None:
-        max_width = 504.0
-        words = text.split()
+    def _write_wrapped(
+        self, text: str, *, fontname: str, fontsize: float, left: float = 54.0
+    ) -> None:
+        lines = self._wrap(text, fontname=fontname, fontsize=fontsize, max_width=558.0 - left)
+        line_height = fontsize + 3
+        for line in lines:
+            self._ensure(line_height)
+            self._page.insert_text((left, self._y), line, fontname=fontname, fontsize=fontsize)
+            self._y += line_height
+
+    @staticmethod
+    def _wrap(text: str, *, fontname: str, fontsize: float, max_width: float) -> list[str]:
+        """Break text into lines that fit ``max_width`` at this font and size."""
         lines: list[str] = []
         current = ""
-        for word in words:
+        pieces = [
+            piece
+            for word in text.split()
+            for piece in _RfiWriter._split_long_word(
+                word, fontname=fontname, fontsize=fontsize, max_width=max_width
+            )
+        ]
+        for word in pieces:
             candidate = word if not current else f"{current} {word}"
             if (
                 pymupdf.get_text_length(candidate, fontname=fontname, fontsize=fontsize)
@@ -553,12 +748,57 @@ class _RfiWriter:
                 current = word
         if current or not lines:
             lines.append(current)
+        return lines
 
-        line_height = fontsize + 3
-        for line in lines:
-            self._ensure(line_height)
-            self._page.insert_text((54, self._y), line, fontname=fontname, fontsize=fontsize)
-            self._y += line_height
+    @staticmethod
+    def _split_long_word(
+        word: str, *, fontname: str, fontsize: float, max_width: float
+    ) -> list[str]:
+        """Split one word that cannot fit a line, so it never runs past a border.
+
+        A model identifier or a hash is one long token. Word wrapping alone
+        leaves it hanging outside its table cell, so a token wider than the
+        cell is broken by character instead.
+        """
+        if pymupdf.get_text_length(word, fontname=fontname, fontsize=fontsize) <= max_width:
+            return [word]
+        pieces: list[str] = []
+        current = ""
+        for character in word:
+            candidate = current + character
+            if (
+                pymupdf.get_text_length(candidate, fontname=fontname, fontsize=fontsize) > max_width
+                and current
+            ):
+                pieces.append(current)
+                current = character
+            else:
+                current = candidate
+        if current:
+            pieces.append(current)
+        return pieces
+
+
+def _finding_row(finding: PersistedFinding) -> list[str]:
+    """Render one persisted finding as four table cells."""
+    severity_label = (
+        finding.severity.value.upper()
+        if isinstance(finding.severity, Severity)
+        else str(finding.severity).upper()
+    )
+    severity_cell = [severity_label]
+    if finding.severity_model_id:
+        severity_cell.append(f"model: {finding.severity_model_id}")
+    elif finding.severity_status:
+        severity_cell.append(f"status: {finding.severity_status}")
+    if finding.severity_reason:
+        severity_cell.append(f"reason: {finding.severity_reason}")
+    return [
+        finding.claim_text,
+        f'Page {finding.spec_quote.page_number}: "{finding.spec_quote.text}"',
+        f'Page {finding.cut_sheet_quote.page_number}: "{finding.cut_sheet_quote.text}"',
+        " - ".join(severity_cell),
+    ]
 
 
 def _value_after_label(text: str, label: str) -> str | None:

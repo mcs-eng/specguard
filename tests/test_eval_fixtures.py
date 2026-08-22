@@ -19,9 +19,12 @@ from scripts.eval_fixtures import (
     RunOutcome,
     aggregate,
     build_run_outcome,
+    compare_to_previous,
+    current_code_revision,
     load_eval_cases,
     load_evidence_pairs,
     overall_catch_rate,
+    read_previous_readme_section,
     render_eval_markdown,
     render_readme_section,
     render_results_table,
@@ -616,3 +619,145 @@ def test_eval_markdown_names_unusable_runs() -> None:
 
     assert "1 runs produced no usable model turn" in document
     assert "## Cases that did not match the manifest" in document
+
+
+# --- Phase 6e: the code revision and the change-from-previous statement ---
+
+
+def _one_case_results() -> list[CaseResult]:
+    return aggregate([FINDING_CASE], {"E-02": [_outcome(FINDING_CASE)]})
+
+
+def _readme_with(section: str) -> str:
+    return f"# SpecGuard\n\n{section}\n\nAfter the block.\n"
+
+
+def test_the_eval_header_names_the_code_revision_the_numbers_describe() -> None:
+    document = render_eval_markdown(
+        _one_case_results(),
+        iterations=1,
+        run_date="2026-08-22",
+        model_id="gemini-3.7-flash",
+        severity_model_id="none",
+        vertex_spend="unavailable",
+        code_revision="abc1234",
+    )
+
+    assert "- Code revision these numbers describe: `abc1234`" in document
+
+
+def test_the_readme_block_names_the_code_revision() -> None:
+    section = render_readme_section(
+        _one_case_results(), iterations=1, run_date="2026-08-22", code_revision="abc1234"
+    )
+
+    assert "on code revision `abc1234`" in section
+
+
+def test_an_unreadable_revision_is_recorded_as_unrecorded() -> None:
+    document = render_eval_markdown(
+        _one_case_results(),
+        iterations=1,
+        run_date="2026-08-22",
+        model_id="gemini-3.7-flash",
+        severity_model_id="none",
+        vertex_spend="unavailable",
+    )
+
+    assert "- Code revision these numbers describe: `not recorded for this run`" in document
+
+
+def test_current_code_revision_reads_this_repository() -> None:
+    revision = current_code_revision()
+
+    assert revision
+    assert revision == "not recorded for this run" or revision.isalnum()
+
+
+def test_the_previous_published_table_is_read_back_from_the_readme() -> None:
+    section = render_readme_section(
+        _one_case_results(), iterations=1, run_date="2026-08-21", code_revision="old1234"
+    )
+
+    previous = read_previous_readme_section(_readme_with(section))
+
+    assert previous is not None
+    assert previous.run_date == "2026-08-21"
+    assert "E-02" in previous.rows
+
+
+def test_an_unchanged_table_says_no_number_moved() -> None:
+    results = _one_case_results()
+    section = render_readme_section(
+        results, iterations=1, run_date="2026-08-21", code_revision="old1234"
+    )
+    previous = read_previous_readme_section(_readme_with(section))
+
+    assert "No number in this table moved from the 2026-08-21 run." in compare_to_previous(
+        results, previous
+    )
+
+
+def test_a_changed_number_is_named_plainly() -> None:
+    before = aggregate([FINDING_CASE], {"E-02": [_outcome(FINDING_CASE)]})
+    section = render_readme_section(
+        before, iterations=1, run_date="2026-08-21", code_revision="old1234"
+    )
+    previous = read_previous_readme_section(_readme_with(section))
+    after = aggregate(
+        [FINDING_CASE],
+        {"E-02": [_outcome(FINDING_CASE), _outcome(FINDING_CASE, caught_expected_pair=False)]},
+    )
+
+    statement = compare_to_previous(after, previous)
+
+    assert "Numbers moved from the 2026-08-21 run." in statement
+    assert "`E-02`" in statement
+    assert "superseded, not corrected" in statement
+
+
+def test_the_readme_block_carries_the_comparison_statement() -> None:
+    results = _one_case_results()
+    section = render_readme_section(
+        results, iterations=1, run_date="2026-08-21", code_revision="old1234"
+    )
+    previous = read_previous_readme_section(_readme_with(section))
+
+    republished = render_readme_section(
+        results,
+        iterations=1,
+        run_date="2026-08-22",
+        code_revision="new1234",
+        previous=previous,
+    )
+
+    assert "No number in this table moved from the 2026-08-21 run." in republished
+    assert republished.startswith(README_TABLE_START)
+    assert republished.endswith(README_TABLE_END)
+
+
+def test_the_eval_document_carries_the_comparison_statement() -> None:
+    results = _one_case_results()
+    section = render_readme_section(
+        results, iterations=1, run_date="2026-08-21", code_revision="old1234"
+    )
+    previous = read_previous_readme_section(_readme_with(section))
+
+    document = render_eval_markdown(
+        results,
+        iterations=1,
+        run_date="2026-08-22",
+        model_id="gemini-3.7-flash",
+        severity_model_id="none",
+        vertex_spend="unavailable",
+        code_revision="new1234",
+        previous=previous,
+    )
+
+    assert "## Change from the previous published run" in document
+    assert "No number in this table moved from the 2026-08-21 run." in document
+
+
+def test_a_readme_with_no_earlier_block_says_there_is_nothing_to_compare() -> None:
+    assert read_previous_readme_section("# SpecGuard\n\nNo markers here.\n") is None
+    assert "No earlier measured table" in compare_to_previous(_one_case_results(), None)

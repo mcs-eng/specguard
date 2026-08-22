@@ -157,7 +157,7 @@ def test_mixed_batch_keeps_findings_and_rejections_disjoint(tmp_path: Path) -> N
     assert harness.client.batches[0].committed is True
 
     with pymupdf.open(summary.rfi_path) as document:
-        rfi_text = "\n".join(page.get_text() for page in document)
+        rfi_text = " ".join(" ".join(page.get_text().split()) for page in document)
     assert CUT_LINE in rfi_text
     assert "Invented gamma quote." not in rfi_text
     assert "Invented delta quote." not in rfi_text

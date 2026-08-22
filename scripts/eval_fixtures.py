@@ -48,6 +48,9 @@ README_TABLE_START = "<!-- eval-table-start -->"
 README_TABLE_END = "<!-- eval-table-end -->"
 EVIDENCE_PATTERN = re.compile(r"<!-- fixture-evidence\s*(\[.*?\])\s*-->", re.DOTALL)
 EVAL_CASES_PATTERN = re.compile(r"<!-- eval-cases\s*(\[.*?\])\s*-->", re.DOTALL)
+MEASURED_ON_PATTERN = re.compile(r"Measured on (\d{4}-\d{2}-\d{2}) by")
+TABLE_ROW_PATTERN = re.compile(r"^\| `(E-\d+)` \|(.*)\|\s*$", re.MULTILINE)
+UNRECORDED_REVISION = "not recorded for this run"
 
 OUTCOME_FINDING = "finding"
 OUTCOME_NO_FINDING = "no_finding"
@@ -466,6 +469,8 @@ def render_eval_markdown(
     model_id: str,
     severity_model_id: str,
     vertex_spend: str,
+    code_revision: str = UNRECORDED_REVISION,
+    previous: PreviousRun | None = None,
 ) -> str:
     """Render the whole of EVAL.md, including what each number means."""
     catch_rate = overall_catch_rate(results)
@@ -474,6 +479,7 @@ def render_eval_markdown(
         "# SpecGuard measured evaluation",
         "",
         f"- Date: {run_date}",
+        f"- Code revision these numbers describe: `{code_revision}`",
         f"- Iterations per case: {iterations}",
         f"- Audit model: `{model_id}` via Vertex AI",
         f"- Severity model, measured from the persisted findings: {_measured_severity(results)}",
@@ -537,6 +543,9 @@ def render_eval_markdown(
     lines.extend(["", "## What this run did not exercise", ""])
     lines.extend(_unexercised_notes(results))
 
+    lines.extend(["", "## Change from the previous published run", ""])
+    lines.append(compare_to_previous(results, previous))
+
     lines.extend(["", "## Cases that did not match the manifest", ""])
     if not failures:
         lines.append("None. Every case matched its declared expected outcome in every run.")
@@ -579,11 +588,69 @@ def render_eval_markdown(
     return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class PreviousRun:
+    """The measured table the README carried before this run overwrote it."""
+
+    run_date: str
+    rows: dict[str, list[str]]
+
+
+def read_previous_readme_section(readme_text: str) -> PreviousRun | None:
+    """Read the README's current eval block so this run can be compared to it.
+
+    A published number that moves is the one thing a reader must not have to
+    diff by hand. Reading the block before it is replaced lets the new block
+    state, in print, whether anything changed.
+    """
+    start = readme_text.find(README_TABLE_START)
+    end = readme_text.find(README_TABLE_END)
+    if start == -1 or end == -1 or end < start:
+        return None
+    block = readme_text[start:end]
+    measured_on = MEASURED_ON_PATTERN.search(block)
+    if measured_on is None:
+        return None
+    rows = {
+        case_id: [cell.strip() for cell in cells.split("|")]
+        for case_id, cells in TABLE_ROW_PATTERN.findall(block)
+    }
+    return PreviousRun(run_date=measured_on.group(1), rows=rows)
+
+
+def compare_to_previous(results: Sequence[CaseResult], previous: PreviousRun | None) -> str:
+    """State plainly whether any published number moved since the last run."""
+    if previous is None:
+        return "No earlier measured table was published in this README to compare against."
+    current = {
+        case_id: [cell.strip() for cell in cells.split("|")]
+        for case_id, cells in TABLE_ROW_PATTERN.findall(render_results_table(results))
+    }
+    moved = [
+        case_id
+        for case_id in sorted(set(previous.rows) | set(current))
+        if previous.rows.get(case_id) != current.get(case_id)
+    ]
+    if not moved:
+        return (
+            f"No number in this table moved from the {previous.run_date} run. "
+            "Every case reports the same measurement it reported then."
+        )
+    return (
+        f"Numbers moved from the {previous.run_date} run. These cases now measure "
+        f"differently: {', '.join(f'`{case_id}`' for case_id in moved)}. "
+        "The table above is the current measurement; the earlier figures are "
+        "superseded, not corrected."
+    )
+
+
 def render_readme_section(
     results: Sequence[CaseResult],
     *,
     iterations: int,
     run_date: str,
+    code_revision: str = UNRECORDED_REVISION,
+    previous: PreviousRun | None = None,
 ) -> str:
     """Render the README block between the eval-table markers."""
     catch_rate = overall_catch_rate(results)
@@ -607,10 +674,13 @@ def render_readme_section(
             README_TABLE_START,
             "",
             f"Measured on {run_date} by `scripts/eval_fixtures.py`, {iterations} runs per case "
-            f"against the deployed Vertex AI model path. Catch rate: {headline}. "
+            f"against the deployed Vertex AI model path, on code revision `{code_revision}`. "
+            f"Catch rate: {headline}. "
             f"{honesty} Column definitions and the full record are in [EVAL.md](EVAL.md).",
             "",
             render_results_table(results),
+            "",
+            compare_to_previous(results, previous),
             "",
             README_TABLE_END,
         ]
@@ -703,7 +773,40 @@ def _parser() -> argparse.ArgumentParser:
         default="",
         help="Severity model identifier to record in the EVAL.md header.",
     )
+    parser.add_argument(
+        "--code-revision",
+        default="",
+        help=(
+            "Code revision these numbers describe. Defaults to the current "
+            "git commit; recorded as unavailable when git cannot report one."
+        ),
+    )
     return parser
+
+
+def current_code_revision() -> str:
+    """Return the git revision of the working tree, or an explicit non-answer.
+
+    The published numbers describe one state of the code. Naming that state is
+    part of the measurement, so a revision that cannot be read is recorded as
+    unread rather than left out.
+    """
+    import subprocess
+
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return UNRECORDED_REVISION
+    revision = completed.stdout.strip()
+    if completed.returncode != 0 or not revision:
+        return UNRECORDED_REVISION
+    return revision
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -739,6 +842,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     results = aggregate(cases, outcomes)
     run_date = datetime.now(UTC).strftime("%Y-%m-%d")
+    code_revision = args.code_revision or current_code_revision()
+    readme_text = README_PATH.read_text(encoding="utf-8")
+    previous = read_previous_readme_section(readme_text)
     EVAL_PATH.write_text(
         render_eval_markdown(
             results,
@@ -747,20 +853,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             model_id=MODEL_ID,
             severity_model_id=severity_model,
             vertex_spend=args.vertex_spend,
+            code_revision=code_revision,
+            previous=previous,
         ),
         encoding="utf-8",
     )
     README_PATH.write_text(
         write_readme_section(
-            README_PATH.read_text(encoding="utf-8"),
-            render_readme_section(results, iterations=args.iterations, run_date=run_date),
+            readme_text,
+            render_readme_section(
+                results,
+                iterations=args.iterations,
+                run_date=run_date,
+                code_revision=code_revision,
+                previous=previous,
+            ),
         ),
         encoding="utf-8",
     )
 
     catch_rate = overall_catch_rate(results)
     print(
-        f"EVAL SUMMARY date={run_date} iterations={args.iterations} "
+        f"EVAL SUMMARY date={run_date} code_revision={code_revision} "
+        f"iterations={args.iterations} "
         f"cases={len(results)} runs={sum(r.iterations for r in results)} "
         f"catch_rate={_percent(catch_rate)} "
         f"false_positives={sum(r.false_positives for r in results)} "

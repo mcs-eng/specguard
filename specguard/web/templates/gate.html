@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}SpecGuard Gate Playground{% endblock %}
+{% block content %}
+<a class="backlink" href="/">Back to recent runs</a>
+<section class="card">
+  <div class="section-head">
+    <h2>Gate playground</h2>
+    <p>Check any quote against any page of the committed fixtures.</p>
+  </div>
+  <p class="lede">This page calls <code>specguard.gate.verify_quote</code> — the same function the runtime calls before a finding reaches the ledger, and again at write time inside <code>persist_finding</code>, and again before the RFI renders. No model runs here. Nothing is stored. No passphrase is needed.</p>
+  {% if error %}
+  <div class="notice stop" role="alert"><strong>{{ error }}</strong></div>
+  {% endif %}
+  <form id="gate-form" action="/gate" method="get">
+    <div class="gate-grid">
+      <label class="field" for="gate-fixture">
+        <span>Fixture</span>
+        <select id="gate-fixture" name="fixture">
+          {% for fixture_id, fixture in fixtures.items() %}
+          <option value="{{ fixture_id }}"{% if fixture_id == selected_fixture %} selected{% endif %}>{{ fixture.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field" for="gate-page">
+        <span>Cited page</span>
+        <input id="gate-page" name="page" type="number" min="1" step="1" value="{{ page_text }}">
+      </label>
+    </div>
+    <label class="field quote-field" for="gate-quote">
+      <span>Quote</span>
+      <textarea id="gate-quote" name="quote" rows="3" spellcheck="false">{{ quote_text }}</textarea>
+    </label>
+    <div class="submit-row">
+      <button id="gate-submit" type="submit">Run the gate</button>
+      <span class="submit-note muted">Deterministic. The same input always returns the same verdict.</span>
+    </div>
+  </form>
+</section>
+{% if result %}
+<section class="card" id="gate-result">
+  <div class="section-head">
+    <h2>Verdict <span class="badge {% if result.verified %}verified{% else %}rejected{% endif %}">{% if result.verified %}VERIFIED{% else %}REJECTED{% endif %}</span></h2>
+    <p>{% if result.verified %}The normalized quote sits on the cited page, on token boundaries.{% else %}The gate refused this quote and returned a machine-readable reason.{% endif %}</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <tbody>
+        <tr><th scope="row">Document</th><td>{{ result.fixture_label }} <span class="locator"><code>{{ result.fixture_filename }}</code></span></td></tr>
+        <tr><th scope="row">Cited page</th><td class="num">{{ result.page_number }}</td></tr>
+        <tr><th scope="row">Page count</th><td class="num">{{ result.page_count }}</td></tr>
+        <tr><th scope="row">Machine reason</th><td>{% if result.rejection_reason %}<code>{{ result.rejection_reason }}</code>{% else %}<span class="muted">None. A verified quote carries no rejection reason.</span>{% endif %}</td></tr>
+        <tr><th scope="row">Normalized quote</th><td><q class="quote">{{ result.normalized_quote }}</q></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="muted note">The normalized quote is what the gate actually compared: NFKC, soft hyphens resolved, casefolded, whitespace collapsed. The gate reads the cited page and no other page, and it does no fuzzy matching.</p>
+</section>
+{% endif %}
+<section class="card">
+  <div class="section-head">
+    <h2>Two near misses</h2>
+    <p>One click each. Both are refused, for different recorded reasons.</p>
+  </div>
+  <ul class="near-misses">
+    {% for near_miss in near_misses %}
+    <li>
+      <a href="/gate?fixture={{ near_miss.fixture | urlencode }}&amp;page={{ near_miss.page }}&amp;quote={{ near_miss.quote | urlencode }}">{{ near_miss.label }}</a>
+      <span class="muted">{{ near_miss.note }}</span>
+      <q class="quote">{{ near_miss.quote }}</q>
+      <span class="locator">Cited to page {{ near_miss.page }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="muted note">The passing example is <q>{{ default_quote }}</q> on page {{ default_page }} of the specification. <a href="/gate">Reset to it.</a></p>
+</section>
+<style>
+  .gate-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .field { display: grid; gap: .35rem; margin: 0 0 1rem; }
+  .field span { font-size: .76rem; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-soft); }
+  .field select, .field input, .field textarea { padding: .55rem .6rem; border: 1px solid var(--line); border-radius: .35rem; background: var(--surface); color: var(--ink); font: inherit; }
+  .field textarea { font-family: "Cascadia Mono", "SF Mono", Consolas, "Liberation Mono", monospace; font-size: .92rem; resize: vertical; }
+  .field select:focus-visible, .field input:focus-visible, .field textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .quote-field { margin-bottom: 0; }
+  .submit-row { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem; margin-top: 1.35rem; }
+  .submit-note { font-size: .86rem; }
+  #gate-submit { background: var(--accent); color: var(--on-accent); border: 1px solid var(--accent); border-radius: .35rem; padding: .7rem 1.4rem; font: inherit; font-weight: 700; letter-spacing: .02em; cursor: pointer; transition: transform 140ms var(--ease-out), background-color 160ms var(--ease-out); }
+  #gate-submit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #gate-submit:active { transform: scale(0.97); }
+  #gate-result th { width: 12rem; }
+  .note { margin: .9rem 0 0; font-size: .88rem; }
+  .near-misses { display: grid; gap: .9rem; margin: 0; padding: 0; list-style: none; }
+  .near-misses li { display: grid; gap: .3rem; border: 1px solid var(--line-soft); border-radius: .45rem; background: var(--field); padding: .8rem .9rem; }
+  .near-misses a { font-weight: 700; }
+  .near-misses .muted { font-size: .88rem; }
+  @media (hover: hover) and (pointer: fine) {
+    #gate-submit:hover { filter: brightness(1.12); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #gate-submit { transition: background-color 160ms ease; }
+    #gate-submit:active { transform: none; }
+  }
+</style>
+{% endblock %}
