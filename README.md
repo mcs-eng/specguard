@@ -18,9 +18,9 @@ The gate establishes one narrow thing: each quoted text anchor occurs on its cit
 - `scripts/eval_fixtures.py` and `EVAL.md`: the measured evaluation harness and its committed record.
 - `scripts/reset_demo_ledger.py`: archive-then-clear for the demo ledger.
 - `fixtures/`: five fictional, generated, text-based PDFs and their manifest.
-- `tests/`: 254 tests. No test requires the network or credentials; every model, Firestore, and storage dependency is an in-process fake. `HANDOFF.md`, `REVIEW-P3.md`, and `REVIEW-CLAIMS.md` hold the receipts and the review findings behind every claim in this file.
+- `tests/`: 276 tests. No test requires the network or credentials; every model, Firestore, and storage dependency is an in-process fake. `HANDOFF.md`, `REVIEW-P3.md`, and `REVIEW-CLAIMS.md` hold the receipts and the review findings behind every claim in this file.
 
-Deployed service: `https://specguard-108657628939.us-central1.run.app` (Cloud Run, us-central1, revision `specguard-00008-25s` as of 2026-08-21). The GET routes are public and read-only. `POST /audit` requires a demo passphrase that is not in this repository.
+Deployed service: `https://specguard-108657628939.us-central1.run.app` (Cloud Run, us-central1, revision `specguard-00013-99g` as of 2026-08-22). The GET routes are public and read-only. `POST /audit` requires a demo passphrase that is not in this repository.
 
 **Try it.** Judges can run four public sample audits without a passphrase: Caldra (compliant), Veylan 208V, Torven 70 deg C, and Veylan altered (integrity screen). Uploading arbitrary PDFs stays gated to protect the demo budget.
 
@@ -288,12 +288,12 @@ This board mirrors the Phase 6d board in `HANDOFF.md`. `FIXED` rows name the cha
 | P4 | The passphrase is checked after multipart parsing. | ACCEPTED — multipart form fields require parsing first; Cloud Run bounds request size; disclosed in `HANDOFF.md` Phase 5 review. |
 | P4 | Browser-side file checks are advisory. | ACCEPTED — server validation remains authoritative; disclosed in `HANDOFF.md` Phase 5 UI pass. |
 | P4 | Cloud Run concurrency is a steady-state target, not an instant-wide maximum. | ACCEPTED — Cloud Run may overlap instances during deploys or traffic splits; disclosed in [Service limits](#service-limits). |
-| P4 | A run can remain `RUNNING` if both FAILED-record writes fail. | FIXED — the Phase 6d commit displays `STALLED` after ten minutes without rewriting Firestore; disclosed in [Service limits](#service-limits). |
+| P4 | A run can remain `RUNNING` if both FAILED-record writes fail. | FIXED — `f058e65` displays `STALLED` after ten minutes without rewriting Firestore; disclosed in [Service limits](#service-limits). |
 | P4 | A reset can race with a live writer. | ACCEPTED — the reset is for one operator on an idle service; disclosed in `HANDOFF.md` Phase 6a. |
-| P6c | A cold start reset the six-per-address hourly sample limit. | FIXED — the Phase 6d commit stores the hourly and daily reservations in one Firestore transaction. |
-| P6c | The run page omitted the recorded severity reason. | FIXED — the Phase 6d commit renders the reason on the run page and in the RFI. |
-| P6c | A completed zero-finding run created an empty RFI. | FIXED — the Phase 6d commit creates no RFI and shows `No RFI — no discrepancies found.` only when no claim was rejected. |
-| P6d | A zero-finding run with rejected claims could claim that no discrepancy existed. | FIXED — the Phase 6d commit says that no finding was verified and directs the reader to rejections. |
+| P6c | A cold start reset the six-per-address hourly sample limit. | FIXED — `f058e65` stores the hourly and daily reservations in one Firestore transaction. |
+| P6c | The run page omitted the recorded severity reason. | FIXED — `f058e65` renders the reason on the run page and in the RFI. |
+| P6c | A completed zero-finding run created an empty RFI. | FIXED — `f058e65` creates no RFI and shows `No RFI — no discrepancies found.` only when no claim was rejected. |
+| P6d | A zero-finding run with rejected claims could claim that no discrepancy existed. | FIXED — `f058e65` says that no finding was verified and directs the reader to rejections. |
 | Severity | An endpoint timeout or error can leave severity unclassified. | ACCEPTED — severity is advisory; one 15-second retry handles a timeout or 5xx response, then the recorded fallback reason explains the result. |
 | Severity | Severity does not prove verification or compliance. | ACCEPTED — it is an annotation after gate verification; disclosed in [Gemma severity annotation](#gemma-severity-annotation). |
 | Evaluation | The 2026-08-21 run has no historical Vertex spend or Gemini token totals. | ACCEPTED — the old output exposed neither value; disclosed in `EVAL.md`. |

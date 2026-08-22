@@ -1302,8 +1302,106 @@ COMPLETED          1c94812c 1 0 RFI PDF 2026-08-21 22:22:57
 
 The `1c94812c` row is a Phase 6a upload run. It carries no badge because it predates the `source` field. Only runs created from this revision onward are labelled.
 
-### 9. Known limits recorded, not fixed
+### 9. Limits closed in Phase 6d
 
-- The per-IP limiter is in memory on one instance. The service runs `--max-instances 1`, so today there is one bucket set; a scale-out or a cold start resets it. The Firestore day cap of 60 is the limit that actually bounds spend.
-- The severity reason is persisted but not rendered. A judge reading the page sees `UNCLASSIFIED fallback` without the sentence explaining why. Rendering it is a candidate for a later pass.
-- The compliant `caldra` run still writes an RFI object with zero findings. That is pre-existing behaviour, unchanged by this phase.
+- `f058e65` moves the per-address hourly sample budget to Firestore. One transaction reserves both the six-start address-hour counter and the 60-start UTC-day counter, so a cold start cannot reset either.
+- `f058e65` renders `severity_reason` beside every fallback label on the run page and inside its RFI.
+- `f058e65` creates no RFI when no finding persisted. A completed run with no rejected claims reads `No RFI — no discrepancies found.`
+
+## Phase 6d — close the open-items board
+
+Date: 2026-08-22. Scope: the bounded Phase 6d work order, followed by one direct user-reported sample-submit UI correction. `PLAN.md`, `SETUP.md`, prompts, fixtures, and `specguard/gate.py` remain unchanged.
+
+### Delivered capability
+
+- A completed run with no persisted finding creates no RFI. A reader sees `No RFI — no discrepancies found.` only when no claim was rejected. A zero-finding run with a rejected claim instead says no finding was verified and directs the reader to the rejection record.
+- The run page and generated RFI show the recorded severity fallback reason.
+- Firestore atomically creates an upload's `RUNNING` record and its hashed one-time submission-token record. A repeat POST redirects to the original run.
+- Firestore atomically reserves a sample start against both the six-per-final-appended-address UTC-hour limit and the 60-per-UTC-day limit. A cold start cannot reset those counters.
+- A `RUNNING` record older than ten minutes displays as `STALLED` on read. Firestore keeps its stored `RUNNING` value.
+- A Gemma endpoint timeout or any 5xx response gets one retry. Each attempt keeps the 15-second timeout. A fallback records only after the second failed attempt.
+- Each audit stores exact Gemini prompt, output, and total token counts when ADK exposes them. A no-metadata path stores an explicit unavailability reason. SpecGuard never estimates token counts.
+- `2850af9` adds a visible sample-audit running state. It disables all sample buttons after the first submit and prevents later submit events in that page.
+
+### Complete open-items board
+
+Every row below is either `FIXED` with its commit or `ACCEPTED` with its reason and disclosure location.
+
+| Origin | Recorded item | State |
+| --- | --- | --- |
+| P3 | An RFI could render hand-built, unverified findings. | FIXED — `206378a` re-verifies both quotes before rendering. |
+| P3 | A process with direct Firestore credentials can bypass the application path. | ACCEPTED — SpecGuard cannot control independent credentials; disclosed in README.md, Verification contract. |
+| P3 | A concurrent source-file replacement can race the hash checks. | ACCEPTED — one local audit has no practical lock over another writer; disclosed in README.md, Verification contract. |
+| P3 | A malformed model turn could abort without a recorded rejection. | FIXED — `206378a` records `model_output_invalid`. |
+| P3 | No receipt proves a model initiated a registered tool call. | ACCEPTED — the runtime owns extraction, verification, persistence, and RFI creation; disclosed in README.md, introduction. |
+| P3 | The Firestore fake does not model all transaction semantics. | ACCEPTED — current writes are flat and the real transaction paths have route coverage; disclosed in REVIEW-P3.md F7. |
+| P3 | A retry can replace its rejected claim with another verified claim. | ACCEPTED — claim identity is prompt-governed and no safe semantic comparator exists; disclosed in REVIEW-P3.md F9. |
+| P3 | Casefolding can merge case-sensitive units. | ACCEPTED — the gate contract requires casefolding; disclosed in README.md, What the contract does not claim. |
+| P3 | NFKC can flatten superscripts or subscripts. | ACCEPTED — the gate contract requires NFKC; disclosed in README.md, What the contract does not claim. |
+| P3 | Whitespace collapse can join separate layout regions. | ACCEPTED — layout recovery needs a different gate; disclosed in README.md, What the contract does not claim. |
+| P3 | Text-layer matching differs from the visible page and cannot read image-only PDFs. | ACCEPTED — the gate remains text-based; disclosed in README.md, What the contract does not claim. |
+| P3 | The schema cannot prove the gate ran. | ACCEPTED — write-time re-verification is the enforcement point; disclosed in README.md, What the contract does not claim. |
+| P3.5 | Raster text is not visible to the text-layer integrity screen. | ACCEPTED — the screen performs no OCR or raster comparison; disclosed in README.md, What it does not detect. |
+| P3.5 | Clip-only render mode 7 cannot be separated from painted text. | ACCEPTED — MuPDF exposes the same flags; disclosed in README.md, What it does not detect. |
+| P3.5 | White-on-white text, zero alpha, text outside the crop box, and covering rectangles can conceal text. | ACCEPTED — these methods retain filled or stroked flags; disclosed in README.md, What it does not detect. |
+| P3.5 | The screen cannot determine concealment intent. | ACCEPTED — it reports evidence, not a motive; disclosed in README.md, What it does not detect. |
+| P4 | The passphrase is checked after multipart parsing. | ACCEPTED — multipart form fields require parsing first and Cloud Run bounds request size; disclosed in Phase 5 review. |
+| P4 | Browser-side file checks are advisory. | ACCEPTED — server validation remains authoritative; disclosed in Phase 5 UI pass. |
+| P4 | Cloud Run concurrency is a steady-state target, not an instant-wide maximum. | ACCEPTED — deploys or traffic splits can overlap instances; disclosed in README.md, Service limits. |
+| P4 | A run can remain `RUNNING` if both FAILED-record writes fail. | FIXED — `f058e65` displays `STALLED` after ten minutes without rewriting Firestore; disclosed in README.md, Service limits. |
+| P4 | A reset can race with a live writer. | ACCEPTED — the reset is for one operator on an idle service; disclosed in Phase 6a. |
+| P6c | A cold start reset the six-per-address hourly sample limit. | FIXED — `f058e65` stores both rate-limit reservations in one Firestore transaction. |
+| P6c | The run page omitted the recorded severity reason. | FIXED — `f058e65` renders the reason on the run page and in the RFI. |
+| P6c | A completed zero-finding run created an empty RFI. | FIXED — `f058e65` creates no RFI and shows the no-discrepancy message only when no claim was rejected. |
+| P6d review | A zero-finding run with rejected claims could claim that no discrepancy existed. | FIXED — `f058e65` says that no finding was verified and directs the reader to rejections. |
+| Severity | An endpoint timeout or error can leave severity unclassified. | ACCEPTED — severity is advisory; `f058e65` retries once, then records the fallback reason. |
+| Severity | Severity does not prove verification or compliance. | ACCEPTED — it is an annotation after gate verification; disclosed in README.md, Gemma severity annotation. |
+| Evaluation | The 2026-08-21 run has no historical Vertex spend or Gemini token totals. | ACCEPTED — the old output exposed neither value; disclosed in EVAL.md. |
+| Evaluation | Per-run Gemini usage is unavailable when ADK omits usage metadata. | ACCEPTED — SpecGuard records that fact and never estimates tokens; disclosed on each run page and in EVAL.md. |
+| Evaluation | Fixture evaluation did not exercise live gate rejections or retries. | ACCEPTED — the fixtures produced no rejected claim; disclosed in README.md, Measured evaluation. |
+| Evaluation | Fixture results do not show accuracy on real documents. | ACCEPTED — the suite uses fictional fixtures only; disclosed in EVAL.md. |
+
+### One authorized Codex review and correction
+
+One read-only `codex review --uncommitted` ran after the first green suite. It returned one P1 finding: a completed run with zero persisted findings and one or more rejected claims displayed `No RFI — no discrepancies found.` That sentence over-claimed because a rejected claim is not proof that no discrepancy exists. `f058e65` fixes the detail and list views. They now show the no-discrepancy message only when the rejected count is zero. A rejected zero-finding run says that no finding was verified and points the reader to its rejection record. No second Codex review ran.
+
+### Final quality receipts
+
+All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code below is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `276 passed, 2 warnings in 20.60s`. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `44 files already formatted`. |
+| `git diff --check` | 0 | No whitespace errors. Git printed an existing LF-to-CRLF warning for README.md. |
+| `codex review --uncommitted` | 0 | One P1 finding, fixed in `f058e65`; no second review ran. |
+
+### Deployment receipts
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `.\deploy-specguard.ps1` | 0 | Revision `specguard-00011-kfz` deployed after `f058e65`. |
+| `.\deploy-specguard.ps1` | 0 | Revision `specguard-00012-pmd` deployed after `2850af9`. |
+| `.\deploy-specguard.ps1` | 0 | Cold-start revision `specguard-00013-99g` deployed for the durable per-address limit check. |
+| `gcloud run services describe specguard --region us-central1 --project specguard-hack --format="value(status.latestReadyRevisionName,status.traffic[0].percent,status.url)"` | 0 | `specguard-00013-99g`, `100`, `https://specguard-ypkohkbwgq-uc.a.run.app`. |
+
+The public judge URL remains `https://specguard-108657628939.us-central1.run.app`.
+
+### Four required live receipts
+
+1. **Compliant sample, no RFI.** `curl.exe -sS -o NUL -w "%{http_code} %{redirect_url}" -X POST -H "Content-Length: 0" https://specguard-108657628939.us-central1.run.app/sample/caldra` exited 0 and returned `303` to run `82312aa6c4864e58bd1652a3dc15f3dd`. A subsequent unpiped `curl.exe` GET exited 0 and returned HTTP `200`. The page reports COMPLETED, zero claims, zero findings, zero rejected claims, and `No RFI — no discrepancies found.` It also records exact ADK usage: 4,527 prompt tokens, 15 output tokens, and 5,652 total tokens.
+2. **Fallback severity reason.** The same unpiped `curl.exe` sample POST form for `veylan-208v` exited 0 and returned `303` to run `422f2f99d7e64054beb23e814f319061`. Its unpiped `curl.exe` GET exited 0 and returned HTTP `200`. The run page shows `UNCLASSIFIED`, `fallback`, and `Reason: severity endpoint not deployed outside demo windows` beside the verified finding.
+3. **Replayed upload returns the original run.** Mason submitted the fictional Veylan upload in the browser, then used Back and submitted the same cached form again. Both browser responses opened `https://specguard-108657628939.us-central1.run.app/runs/bb7992f01b7e4f099820745461ba6f41`. The unpiped `curl.exe` GET of that URL exited 0 and returned HTTP `200`; it shows one completed UPLOAD run, not two. The passphrase value was never displayed or recorded.
+4. **Per-address 429 after a cold start.** Six unpiped `curl.exe` POSTs to `sample/veylan-altered` exited 0 and each returned `303`, to runs `90b0870424d0408a813673465b27a11e`, `e3baf82c8f054127aeb8c7ebd0fcb760`, `42747b9475d14b8eb2520a0ad743eb48`, `3f55ee03638c4a7e92ad83e3ae24380c`, `574e1f90194649d0baa6b8636c8b8538`, and `f9171555d94e4139b88f81c57b9a115b`. After deployment of cold-start revision `specguard-00013-99g`, the authorized seventh unpiped `curl.exe` POST exited 0 and returned HTTP `429`. Its body reads: `Too many sample audits` and `The sample audit limit is reached. Try again later.` The hourly reservation persisted across the revision change.
+
+### Direct user-reported UI correction
+
+Mason reported that sample audit buttons gave no running feedback and allowed accidental duplicate clicks. `2850af9` adds the running panel and disables every sample button for the active page submit. Mason then observed the exact panel text in the deployed page. Two subsequent sample run pages, `d6b49ff83bb34a2c90b9a3017771267f` and `c9865519f5964424adabc62f4d80d865`, were fetched with unpiped `curl.exe` GET commands that exited 0 and returned HTTP `200`; both were COMPLETED.
+
+### Local commits
+
+| Commit | Subject |
+| --- | --- |
+| `f058e65` | Close Phase 6d runtime gaps |
+| `2850af9` | Show sample audit running state |
