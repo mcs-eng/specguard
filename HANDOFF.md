@@ -1341,10 +1341,15 @@ Every row below is either `FIXED` with its commit or `ACCEPTED` with its reason 
 | P3 | Whitespace collapse can join separate layout regions. | ACCEPTED — layout recovery needs a different gate; disclosed in README.md, What the contract does not claim. |
 | P3 | Text-layer matching differs from the visible page and cannot read image-only PDFs. | ACCEPTED — the gate remains text-based; disclosed in README.md, What the contract does not claim. |
 | P3 | The schema cannot prove the gate ran. | ACCEPTED — write-time re-verification is the enforcement point; disclosed in README.md, What the contract does not claim. |
-| P3.5 | Raster text is not visible to the text-layer integrity screen. | ACCEPTED — the screen performs no OCR or raster comparison; disclosed in README.md, What it does not detect. |
-| P3.5 | Clip-only render mode 7 cannot be separated from painted text. | ACCEPTED — MuPDF exposes the same flags; disclosed in README.md, What it does not detect. |
-| P3.5 | White-on-white text, zero alpha, text outside the crop box, and covering rectangles can conceal text. | ACCEPTED — these methods retain filled or stroked flags; disclosed in README.md, What it does not detect. |
-| P3.5 | The screen cannot determine concealment intent. | ACCEPTED — it reports evidence, not a motive; disclosed in README.md, What it does not detect. |
+| P3.5 | Raster text is not visible to the text-layer integrity screen. | ACCEPTED — the screen performs no OCR or raster comparison; disclosed in README.md, Not detected (and why), and pinned by `test_rasterized_text_is_not_detected`. |
+| P3.5 | Clip-only render mode 7 cannot be separated from painted text. | FIXED — `d421262` reads the mode from the content stream, which the character flags cannot reach; disclosed in README.md, Detected (and how). |
+| P3.5 | Zero fill alpha can conceal text. | FIXED — `d421262` reads the span's own alpha; disclosed in README.md, Detected (and how). |
+| P3.5 | Text outside the crop box can conceal text. | FIXED — `d421262` re-reads each cropped page with the crop box widened to the media box; disclosed in README.md, Detected (and how). |
+| P3.5 | White-on-white text and covering rectangles can conceal text. | ACCEPTED — both need the colour of what is painted behind the text, so a heuristic would quarantine honest cut sheets and redacted submittals; disclosed in README.md, Not detected (and why). |
+| P3.5 | The screen cannot determine concealment intent. | ACCEPTED — it reports evidence, not a motive; disclosed in README.md, Not detected (and why). |
+| P7b | Sub-point glyphs can carry text no reader can read. | FIXED — `d421262` flags any span whose effective size is below 1.0 pt, matrix scaling included; disclosed in README.md, Detected (and how). |
+| P7b | Text placed outside the media box is invisible to the screen. | ACCEPTED — MuPDF drops those glyphs from every extraction path; disclosed in README.md, Not detected (and why). |
+| P7b | A content-stream string operand is rendered as Latin-1, which a subset-encoded font does not honour. | ACCEPTED — the rule's claim is the render mode, read from the operator; disclosed in README.md, Not detected (and why). |
 | P4 | The passphrase is checked after multipart parsing. | ACCEPTED — multipart form fields require parsing first and Cloud Run bounds request size; disclosed in Phase 5 review. |
 | P4 | Browser-side file checks are advisory. | ACCEPTED — server validation remains authoritative; disclosed in Phase 5 UI pass. |
 | P4 | Cloud Run concurrency is a steady-state target, not an instant-wide maximum. | ACCEPTED — deploys or traffic splits can overlap instances; disclosed in README.md, Service limits. |

@@ -40,7 +40,7 @@ Deployed service: `https://specguard-108657628939.us-central1.run.app` (Cloud Ru
 flowchart TD
     subgraph runtime["Deterministic runtime: disposes"]
         U["Upload: specification PDF and cut-sheet PDF"] --> S["Text-layer integrity screen"]
-        S -->|hidden span on either document| Q["QUARANTINE: integrity record, no model call, no finding, no RFI"]
+        S -->|any detector flag on either document| Q["QUARANTINE: integrity record, no model call, no finding, no RFI"]
         G{"Verification gate: is the quote on the cited page?"}
         G -->|rejected| R["One bounded retry, then the rejections collection"]
         G -->|verified| P["persist_finding: gate runs again at write time"]
@@ -94,35 +94,45 @@ The gate proves one narrow thing: the quoted characters appear on the page that 
 
 ## Text-layer integrity screen
 
-A document from a third party is untrusted input. The known limitation above, that the gate reads the text layer and not the visible page, describes a real gap between what a human reviewer reads and what an automated reviewer ingests. This screen discloses one way that gap opens. It narrows the gap. It does not close it.
+A document from a third party is untrusted input. The known limitation above, that the gate reads the text layer and not the visible page, describes a real gap between what a human reviewer reads and what an automated reviewer ingests. This screen discloses several ways that gap opens. It narrows the gap. It does not close it.
 
-`specguard/integrity.py` reads the file's bytes once, into one immutable snapshot, and derives the SHA-256, the page count, and the span evidence from that snapshot, so a replacement during a screen cannot make the hash describe one byte stream while the evidence describes another. It reads PyMuPDF span data only. It renders no image, runs no OCR, and compares no pixels. A PDF text-showing operator carries a render mode, and MuPDF records the outcome of that mode on every character. The screen reports a span whose characters are neither filled nor stroked: nothing is painted for the reader, and the text layer still carries the characters. That is render mode 3, the mode an OCR layer uses over a scanned image.
+`specguard/integrity.py` reads the file's bytes once, into one immutable snapshot, and derives the SHA-256, the page count, and the flag evidence from that snapshot, so a replacement during a screen cannot make the hash describe one byte stream while the evidence describes another. It reads PyMuPDF span data and PDF content streams only. It renders no image, runs no OCR, and compares no pixels. Five deterministic rules run over every page, in a fixed order. Every flag names the rule that raised it and states in one line what that rule read, and a flag from any rule quarantines the run on exactly the terms a render-mode-3 flag does. The screen identity stored beside every record is `text_layer_integrity_v2`; `v1` was the render-mode-3 rule alone.
 
-### What it detects
+### Detected (and how)
 
-- Text made invisible by render mode 3, which a text-layer reader still ingests. The report names each such span, its page, its font and size, and the raw character flags the rule read.
-- The visible text of every page beside it. On a page with no invisible span, that string is byte-identical to `page.get_text()`, so a clean page is reported exactly as the verification gate reads it.
+Each entry names the test that pins the detection and, where one exists, the test that pins the near-miss the rule must leave alone.
 
-### What it does not detect
+- **`render_mode_3` — text the render mode paints nowhere.** A PDF text-showing operator carries a render mode, and MuPDF records the outcome of that mode on every character. A span whose characters are neither filled nor stroked paints nothing for the reader while the text layer still carries the characters. That is render mode 3, the mode an OCR layer uses over a scanned image. Pinned by `tests/test_integrity.py::test_altered_fixture_is_flagged_on_the_expected_page`; the near-miss, outlined text drawn in stroke-only mode 1, is pinned by `test_a_stroked_only_span_is_not_flagged`.
+- **`zero_alpha` — text the graphics state makes fully transparent.** A span MuPDF reports as filled, not stroked, and not clipped, whose fill alpha is 0. PyMuPDF 1.28.2 exposes `alpha` on every span, and `test_pymupdf_exposes_span_alpha` fails if a later version stops. Pinned by `test_zero_fill_alpha_is_flagged`; the near-miss, faint text at alpha 0.2, is pinned by `test_a_faint_but_painted_span_is_not_flagged`.
+- **`sub_visible_glyph` — glyphs too small to read.** A span whose effective size is below 1.0 pt. MuPDF reports `size` after the text matrix is applied, so a 10 pt font scaled to a twentieth by `Tm` is read as 0.5 pt and flagged. Pinned by `test_a_sub_point_glyph_is_flagged` and `test_a_matrix_scaled_glyph_is_flagged`; the near-misses, a 1.0 pt glyph and an unscaled text matrix, are pinned by `test_a_one_point_glyph_is_not_flagged` and `test_a_text_matrix_that_does_not_shrink_is_not_flagged`.
+- **`content_stream_render_mode` — clip-only mode 7, and mode 3 in the raw stream.** The page's own content streams are tokenized and the `Tr` operator is tracked across `q`/`Q` and across `Do` into Form XObjects. Text shown under render mode 3 or 7 is flagged. This is the only rule that separates clip-only mode 7 from a filled-and-clipped mode 4, 5, or 6, because MuPDF reports the same character flags for both. Pinned by `test_clip_only_render_mode_seven_is_flagged`, `test_the_content_stream_scan_follows_a_form_xobject`, and `test_the_render_mode_is_restored_by_the_graphics_state_stack`; the near-misses, painted mode 4 and text clipped by an ordinary path, are pinned by `test_a_filled_and_clipped_render_mode_is_not_flagged` and `test_text_clipped_by_a_path_is_not_flagged`. Inline image bodies are stepped over rather than tokenized, so a crafted image cannot forge an operator; pinned by `test_an_inline_image_body_cannot_forge_a_render_mode`. A mode-3 flag is suppressed when the span rule already reported that page, because both rules then describe the same concealment.
+- **`out_of_crop_box` — text in the margin the crop box cuts away.** MuPDF clips extraction to the crop box, so the rule re-reads each cropped page from a second snapshot whose crop box has been widened to the media box, and flags any span whose rectangle does not intersect the original crop box. The pass is skipped when the two boxes are equal, which they are on every committed fixture. Pinned by `test_text_outside_the_crop_box_is_flagged`; the near-miss, a span the crop edge cuts through, is pinned by `test_a_span_partly_inside_the_crop_box_is_not_flagged`.
+- **The readable text of every page, beside the flags.** On a page with no flag that string is byte-identical to `page.get_text()`, so a clean page is reported exactly as the verification gate reads it. Pinned by `test_a_clean_page_reports_exactly_what_the_gate_reads`.
 
-Each item names the test that pins it, or says that no test pins it.
+All five committed fixtures are the false-positive check for all five rules: the four originals raise no flag at all and the altered fixture raises render-mode-3 flags and nothing else. Pinned by `test_no_committed_fixture_trips_a_new_detector`.
 
-- **Rasterized text.** Text drawn as an image carries no span and no render mode. A pure image scan carries nothing for this screen to read. Stated from the detection rule; no test of the screen pins it.
-- **Clip-only render mode 7.** MuPDF reports the same character flags for a clip-only span as for a filled-and-clipped span, so the screen cannot separate hidden text from painted text in that mode. Pinned by `tests/test_integrity.py::test_clip_only_render_mode_is_a_known_limitation`.
-- **Other concealment methods.** A fill colour matching the background (pinned by `test_white_text_on_a_white_background_is_not_detected`), a zero alpha set through the graphics state (pinned by `test_zero_fill_alpha_is_not_detected`), and a glyph placed outside the crop box (pinned by `test_text_outside_the_crop_box_is_not_detected`) all leave the span filled or stroked, and the screen does not report them. A rectangle drawn over painted text is the same class; stated, not pinned by a test.
-- **Intent.** A flagged page is a disclosure, not a verdict. The screen states that the text layer disagrees with the visible page and shows the disagreeing spans. It does not decide why they are there.
+### Not detected (and why)
+
+Each entry names the test that pins the gap.
+
+- **White, or near-background, text.** Deciding that a fill colour hides text needs the colour of whatever is painted behind it, which needs a raster comparison this screen does not make. Real cut sheets set white text on dark header boxes, so a colour heuristic here would quarantine honest documents. Pinned by `tests/test_integrity.py::test_white_text_on_a_white_background_is_not_detected`.
+- **Text under a covering shape.** A rectangle drawn over painted text conceals it, and a redaction bar in a real submittal does exactly that on purpose. Separating the two needs the same raster comparison, so the screen reports neither. Pinned by `test_text_under_a_covering_rectangle_is_not_detected`.
+- **Rasterized text.** Text drawn as an image carries no span and no render mode. The screen performs no OCR, by design. Pinned by `test_rasterized_text_is_not_detected`.
+- **Text outside the media box.** MuPDF drops those glyphs from every extraction path the screen can reach, the widened-crop-box pass included. Pinned by `test_text_outside_the_media_box_is_not_detected`.
+- **What a content-stream string says.** The `content_stream_render_mode` rule reads the render mode from the operator, which is exact. Where it cannot pair its finding with a MuPDF span it renders the raw string operand as Latin-1, which is exact for a simple encoding and approximate for a subset-encoded font. The mode is the claim; those bytes are not.
+- **Intent.** A flagged page is a disclosure, not a verdict. The screen states that the text layer disagrees with the visible page and shows the disagreeing evidence. It does not decide why it is there.
 
 ### What the runtime does with a flagged document
 
-The screen runs first, on both bound documents, before any extracted text is assembled into a model message. `AuditRuntime.run` takes no argument that can skip it, so no caller of `run()` can opt out.
+The screen runs first, on both bound documents, before any extracted text is assembled into a model message. The run page and the JSON export name the detector and the evidence behind every flag; the model-facing summary tool still returns counts and page numbers only. `AuditRuntime.run` takes no argument that can skip it, so no caller of `run()` can opt out.
 
-When either bound document carries at least one invisible span, the run is quarantined:
+When either bound document carries at least one flag from any detector, the run is quarantined:
 
 - No model call is made. The model receives no text from either document, because the model message carries both.
-- The runtime attempts to write one deterministic integrity record per flagged document, into its own `integrity_findings` collection, holding the span text, the page numbers, the document SHA-256, and the screen identity. The persistence tool takes one role name and reads the file again itself, so no caller and no model can author or edit that record. It is not a claim finding and it never passes through the verification gate.
+- The runtime attempts to write one deterministic integrity record per flagged document, into its own `integrity_findings` collection, holding the flagged text, the detector and evidence behind each flag, the page numbers, the document SHA-256, and the screen identity. The persistence tool takes one role name and reads the file again itself, so no caller and no model can author or edit that record. It is not a claim finding and it never passes through the verification gate.
 - If that write is refused, or if the written record's hash does not match the hash the screen read, the summary reports the refusal reason instead of a record identifier. The quarantine still stands; only the record is missing.
 - No claim finding is persisted and no RFI is drafted.
-- The run summary reports the quarantine: the reason, each flagged document, its flagged pages, its hidden-span count, and its SHA-256.
+- The run summary reports the quarantine: the reason, each flagged document, its flagged pages, the detectors that flagged it, its flag count, and its SHA-256.
 
 The runtime and its tools must be bound to the same two documents; a split binding is refused when the runtime is constructed. After extraction, the runtime re-reads both hashes and refuses to send text if either document changed since the screen read it. A writer that replaces a document and restores it inside that window is outside the guarantee, exactly as recorded above for the gate.
 
@@ -246,7 +256,10 @@ Rejection-and-retry loop, driven without any network call:
 Text-layer integrity screen:
 
 - The altered demo fixture is flagged, on page 1, with both hidden span texts reported exactly.
-- The four original demo fixtures produce zero flags. That is the false-positive check.
+- The four original demo fixtures produce zero flags, and the altered fixture raises render-mode-3 flags and nothing else. That is the false-positive check, run over all five fixtures and all five detectors.
+- Each of the four detectors added after render mode 3 has a generated page it must flag and a near-miss page it must leave alone. The near-misses are a span the crop edge cuts through, a span at alpha 0.2, painted mode-4 text and text clipped by an ordinary path, and a glyph at exactly 1.0 pt.
+- The content-stream scan follows `Do` into a Form XObject and carries the invoker's render mode with it, honours `q` and `Q`, and steps over an inline image body rather than tokenizing it.
+- A quarantine from a detector other than render mode 3 makes no model call, builds no message, and writes one integrity record naming that detector.
 - On a clean page, the reported visible text equals the page text the gate reads.
 - The altered fixture renders pixel-for-pixel identically to the unaltered one, so the difference is in the text layer alone.
 - A quarantined document produces no model call and no model-visible message carrying the hidden text.
@@ -257,7 +270,7 @@ Text-layer integrity screen:
 - A document replaced after the screen and before extraction never reaches the model.
 - A runtime whose tools are bound to a different document pair is refused at construction.
 - No registered agent tool except `extract_pdf_text` returns hidden span text.
-- Clip-only render mode 7 is not detected, pinned by its own test. White-on-white text, zero fill alpha, and text outside the crop box are likewise not detected, each pinned by its own test.
+- White-on-white text, text under a covering rectangle, rasterized text, and text outside the media box are not detected, each pinned by its own test.
 
 Ledger invariant, adversarial suite in `tests/adversarial/`: the persistence tool runs the gate at write time even for a caller-set `VERIFIED` finding; a fabricated quote writes nothing; a stale verification carries no authority after the document changes; a finding with one, three, or two same-document quotes is refused with its exact reason; the stored finding carries hashes and no local path; `.collection(` appears in no runtime module except `specguard/tools.py` and `specguard/web/repository.py`.
 
@@ -301,7 +314,7 @@ result.rejection_reason  # None, or a machine-readable reason
 uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/veylan_arcworks_208v_switchboard.pdf --project <your-project-id>
 ```
 
-When the integrity screen flags either document, the command prints the quarantine instead: the reason, each flagged document, its flagged pages, its hidden-span count, its SHA-256, and the identifier of the integrity record or the reason it was not written. No model call is made for that run.
+When the integrity screen flags either document, the command prints the quarantine instead: the reason, each flagged document, its flagged pages, the detectors that flagged it, its flag count, its SHA-256, and the identifier of the integrity record or the reason it was not written. No model call is made for that run.
 
 4. Run the web service locally. Set `SPECGUARD_PROJECT`, `SPECGUARD_RUNS_BUCKET`, and `SPECGUARD_DEMO_PASSPHRASE` in the environment first; the passphrase is not stored in this repository. `SPECGUARD_GEMMA_ENDPOINT` is optional and names a Vertex endpoint for the severity annotation.
 
@@ -356,10 +369,15 @@ This board mirrors the Phase 6d board in `HANDOFF.md`. `FIXED` rows name the cha
 | P3 | Whitespace collapse can join separate layout regions. | ACCEPTED — layout recovery needs a different gate; disclosed in [What the contract does not claim](#what-the-contract-does-not-claim). |
 | P3 | Text-layer matching differs from the visible page and cannot read image-only PDFs. | ACCEPTED — the gate remains text-based; disclosed in [What the contract does not claim](#what-the-contract-does-not-claim). |
 | P3 | The schema cannot prove the gate ran. | ACCEPTED — write-time re-verification is the enforcement point; disclosed in [What the contract does not claim](#what-the-contract-does-not-claim). |
-| P3.5 | Raster text is not visible to the text-layer integrity screen. | ACCEPTED — the screen performs no OCR or raster comparison; disclosed in [What it does not detect](#what-it-does-not-detect). |
-| P3.5 | Clip-only render mode 7 cannot be separated from painted text. | ACCEPTED — MuPDF exposes the same flags; disclosed in [What it does not detect](#what-it-does-not-detect). |
-| P3.5 | White-on-white text, zero alpha, text outside the crop box, and covering rectangles can conceal text. | ACCEPTED — these methods retain filled or stroked flags; disclosed in [What it does not detect](#what-it-does-not-detect). |
-| P3.5 | The screen cannot determine concealment intent. | ACCEPTED — it reports evidence, not a motive; disclosed in [What it does not detect](#what-it-does-not-detect). |
+| P3.5 | Raster text is not visible to the text-layer integrity screen. | ACCEPTED — the screen performs no OCR or raster comparison; disclosed in [Not detected (and why)](#not-detected-and-why) and pinned by `test_rasterized_text_is_not_detected`. |
+| P3.5 | Clip-only render mode 7 cannot be separated from painted text. | FIXED — `d421262` reads the mode from the content stream, which the character flags cannot reach; disclosed in [Detected (and how)](#detected-and-how). |
+| P3.5 | Zero fill alpha can conceal text. | FIXED — `d421262` reads the span's own alpha, which PyMuPDF exposes; disclosed in [Detected (and how)](#detected-and-how). |
+| P3.5 | Text outside the crop box can conceal text. | FIXED — `d421262` re-reads each cropped page with the crop box widened to the media box; disclosed in [Detected (and how)](#detected-and-how). |
+| P3.5 | White-on-white text and covering rectangles can conceal text. | ACCEPTED — both need the colour of what is painted behind the text, so a heuristic would quarantine honest cut sheets and redacted submittals; disclosed in [Not detected (and why)](#not-detected-and-why). |
+| P3.5 | The screen cannot determine concealment intent. | ACCEPTED — it reports evidence, not a motive; disclosed in [Not detected (and why)](#not-detected-and-why). |
+| P7b | Sub-point glyphs can carry text no reader can read. | FIXED — `d421262` flags any span whose effective size is below 1.0 pt, matrix scaling included; disclosed in [Detected (and how)](#detected-and-how). |
+| P7b | Text placed outside the media box is invisible to the screen. | ACCEPTED — MuPDF drops those glyphs from every extraction path, the widened-crop-box pass included; disclosed in [Not detected (and why)](#not-detected-and-why) and pinned by `test_text_outside_the_media_box_is_not_detected`. |
+| P7b | A content-stream string operand is rendered as Latin-1, which a subset-encoded font does not honour. | ACCEPTED — the rule's claim is the render mode, read from the operator; where a MuPDF span pairs with the finding the exact text is used instead; disclosed in [Not detected (and why)](#not-detected-and-why). |
 | P4 | The passphrase is checked after multipart parsing. | ACCEPTED — multipart form fields require parsing first; Cloud Run bounds request size; disclosed in `HANDOFF.md` Phase 5 review. |
 | P4 | Browser-side file checks are advisory. | ACCEPTED — server validation remains authoritative; disclosed in `HANDOFF.md` Phase 5 UI pass. |
 | P4 | Cloud Run concurrency is a steady-state target, not an instant-wide maximum. | ACCEPTED — Cloud Run may overlap instances during deploys or traffic splits; disclosed in [Service limits](#service-limits). |
