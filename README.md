@@ -4,7 +4,48 @@ SpecGuard audits a construction cut sheet against a specification. Every finding
 
 **Uncited claims are blocked from the ledger.**
 
-This repository is at Phase 3.5. It includes one Google ADK agent, the deterministic verification gate, a text-layer integrity screen that runs before the model reads anything, guarded Firestore persistence, a bounded one-retry loop, and RFI draft PDF generation. The gate establishes only that each quoted text anchor occurs on its cited page. It does not establish that the finding is accurate.
+The agent proposes; the runtime disposes. One Google ADK agent on Gemini 3.7 Flash reads the two documents and returns discrepancy claims, each with one verbatim quote and one page number per document. A deterministic runtime around the agent screens both documents before the model reads anything, verifies every quoted anchor, sends a rejected claim back to the model once, verifies again at write time, and drafts the RFI. The runtime calls the tools itself. No receipt in this repository shows a model-initiated tool call, and the runtime does not depend on the model calling any tool.
+
+The gate establishes one narrow thing: each quoted text anchor occurs on its cited page. It does not establish that the finding is accurate, and nothing here claims zero hallucinations. A human reviews every finding.
+
+## What is in this repository
+
+- `specguard/gate.py`: the verification gate. Its contract is reproduced verbatim below.
+- `specguard/integrity.py`: the text-layer integrity screen that runs before any model call.
+- `specguard/agent.py` and `specguard/tools.py`: one ADK agent, five role-bound tools, the bounded one-retry loop, guarded Firestore persistence, and RFI draft PDF generation.
+- `specguard/severity.py`: the advisory Gemma severity annotation with recorded fallback.
+- `specguard/web/`: the FastAPI findings page, guarded upload, and durable run storage, deployed on Cloud Run.
+- `scripts/eval_fixtures.py` and `EVAL.md`: the measured evaluation harness and its committed record.
+- `scripts/reset_demo_ledger.py`: archive-then-clear for the demo ledger.
+- `fixtures/`: five fictional, generated, text-based PDFs and their manifest.
+- `tests/`: 254 tests. No test requires the network or credentials; every model, Firestore, and storage dependency is an in-process fake. `HANDOFF.md`, `REVIEW-P3.md`, and `REVIEW-CLAIMS.md` hold the receipts and the review findings behind every claim in this file.
+
+Deployed service: `https://specguard-108657628939.us-central1.run.app` (Cloud Run, us-central1, revision `specguard-00008-25s` as of 2026-08-21). The GET routes are public and read-only. `POST /audit` requires a demo passphrase that is not in this repository.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    subgraph runtime["Deterministic runtime: disposes"]
+        U["Upload: specification PDF and cut-sheet PDF"] --> S["Text-layer integrity screen"]
+        S -->|hidden span on either document| Q["QUARANTINE: integrity record, no model call, no finding, no RFI"]
+        G{"Verification gate: is the quote on the cited page?"}
+        G -->|rejected| R["One bounded retry, then the rejections collection"]
+        G -->|verified| P["persist_finding: gate runs again at write time"]
+        P --> L[("Firestore findings ledger")]
+        L --> RFI["RFI draft PDF: gate runs again before render"]
+    end
+    subgraph model["Model: proposes"]
+        A["Gemini 3.7 Flash via ADK: claims with verbatim quotes and page numbers"]
+        SEV["Gemma severity label: advisory, UNCLASSIFIED with a recorded reason on failure"]
+    end
+    S -->|both documents clean| A
+    A -->|structured claims| G
+    R -->|rejection reason| A
+    L -.->|annotation only, never a write path| SEV
+```
+
+The honesty boundary is the edge from the model into the gate. Nothing the model emits reaches the ledger or the RFI without passing the gate, and the gate runs again inside the persistence tool and inside the RFI writer. The integrity screen sits before the model, so a flagged document never becomes model input. The Gemma label sits after the ledger and writes only the severity fields.
 
 ## Verification contract
 
@@ -25,7 +66,7 @@ The scope of this construction is the SpecGuard application path. A separate pro
 
 ### What the contract does not claim
 
-The gate proves one narrow thing: the quoted characters appear on the page that was cited. Everything below is outside that proof. This list is deliberately long, because the honesty claim is only worth as much as the list of things it does not cover.
+The gate proves one narrow thing: the quoted characters appear on the page that was cited. Everything below is outside that proof. This list is long on purpose, because the honesty claim is only worth as much as the list of things it does not cover.
 
 - It does not claim the model tells the truth. A quote that is absent from the cited page is rejected. A true quote attached to a wrong conclusion is not something this gate can detect.
 - It does not claim zero hallucinations.
@@ -33,13 +74,13 @@ The gate proves one narrow thing: the quoted characters appear on the page that 
   - Casefolding erases case-sensitive units. A page reading `15 mW` and a claim quoting `15 MW` normalize identically, a millionfold difference. Case-insensitive matching is required by the contract, so this is a known cost of it, not a defect.
   - NFKC folds superscripts and subscripts into plain digits. A page reading `10²` normalizes to `102`. Cut sheets use `mm²` often.
   - Whitespace collapse discards layout. Text from two columns, two table cells, or a header and a body can end up adjacent, so a quote can splice text that never appeared together on the page.
-- **It reads the text layer, not the visible page.** A PDF whose text layer disagrees with what a human sees — hidden text, or an OCR layer over a scan — verifies against text the reader cannot see. A pure image scan carries no text and cannot verify anything. The gate is proven against generated text-based PDFs only. The gate itself is unchanged by the integrity screen described below; the screen discloses one form of this disagreement before the model reads anything, and the gate keeps reading the text layer.
+- **It reads the text layer, not the visible page.** A PDF whose text layer disagrees with what a human sees, such as hidden text or an OCR layer over a scan, verifies against text the reader cannot see. A pure image scan carries no text and cannot verify anything. The gate is proven against generated text-based PDFs only. The integrity screen described below discloses one form of this disagreement before the model reads anything; the gate itself is unchanged and keeps reading the text layer.
 - **The schema does not enforce that the gate ran.** `Finding.verification_status` is an ordinary field. The schema keeps the status and the rejection reason consistent, but a caller can construct a `VERIFIED` finding without calling `verify_quote`. The Firestore persistence tool does not trust that field. It re-verifies both quotes against the two source PDFs and performs no write if either quote rejects.
 - SHA-256 in `DocumentRecord` is chain-of-custody metadata. It records which byte stream was read. It is not an accuracy mechanism and no part of the gate reads it.
 
 ## Text-layer integrity screen
 
-A document from a third party is untrusted input. The known limitation above — the gate reads the text layer, not the visible page — describes a real gap between what a human reviewer reads and what an automated reviewer ingests. This screen discloses one way that gap opens. It narrows it. It does not close it.
+A document from a third party is untrusted input. The known limitation above, that the gate reads the text layer and not the visible page, describes a real gap between what a human reviewer reads and what an automated reviewer ingests. This screen discloses one way that gap opens. It narrows the gap. It does not close it.
 
 `specguard/integrity.py` reads the file's bytes once, into one immutable snapshot, and derives the SHA-256, the page count, and the span evidence from that snapshot, so a replacement during a screen cannot make the hash describe one byte stream while the evidence describes another. It reads PyMuPDF span data only. It renders no image, runs no OCR, and compares no pixels. A PDF text-showing operator carries a render mode, and MuPDF records the outcome of that mode on every character. The screen reports a span whose characters are neither filled nor stroked: nothing is painted for the reader, and the text layer still carries the characters. That is render mode 3, the mode an OCR layer uses over a scanned image.
 
@@ -50,9 +91,11 @@ A document from a third party is untrusted input. The known limitation above —
 
 ### What it does not detect
 
-- **Rasterized text.** Text drawn as an image carries no span and no render mode. A pure image scan carries nothing for this screen to read.
-- **Clip-only render mode 7.** MuPDF reports the same character flags for a clip-only span as for a filled-and-clipped span, so the screen cannot separate hidden text from painted text in that mode. `tests/test_integrity.py::test_clip_only_render_mode_is_a_known_limitation` pins that gap.
-- **Other concealment methods.** A fill colour matching the background, a zero alpha set through the graphics state, a glyph placed outside the crop box, or a rectangle drawn over painted text all leave the span filled or stroked. This screen does not report any of them.
+Each item names the test that pins it, or says that no test pins it.
+
+- **Rasterized text.** Text drawn as an image carries no span and no render mode. A pure image scan carries nothing for this screen to read. Stated from the detection rule; no test of the screen pins it.
+- **Clip-only render mode 7.** MuPDF reports the same character flags for a clip-only span as for a filled-and-clipped span, so the screen cannot separate hidden text from painted text in that mode. Pinned by `tests/test_integrity.py::test_clip_only_render_mode_is_a_known_limitation`.
+- **Other concealment methods.** A fill colour matching the background (pinned by `test_white_text_on_a_white_background_is_not_detected`), a zero alpha set through the graphics state (pinned by `test_zero_fill_alpha_is_not_detected`), and a glyph placed outside the crop box (pinned by `test_text_outside_the_crop_box_is_not_detected`) all leave the span filled or stroked, and the screen does not report them. A rectangle drawn over painted text is the same class; stated, not pinned by a test.
 - **Intent.** A flagged page is a disclosure, not a verdict. The screen states that the text layer disagrees with the visible page and shows the disagreeing spans. It does not decide why they are there.
 
 ### What the runtime does with a flagged document
@@ -69,11 +112,17 @@ When either bound document carries at least one invisible span, the run is quara
 
 The runtime and its tools must be bound to the same two documents; a split binding is refused when the runtime is constructed. After extraction, the runtime re-reads both hashes and refuses to send text if either document changed since the screen read it. A writer that replaces a document and restores it inside that window is outside the guarantee, exactly as recorded above for the gate.
 
-`check_text_integrity`, `extract_pdf_text`, and `verify_quote` are model-facing tools bound to a document role rather than a path. The agent can address only the specification or submitted document already bound to the audit. `check_text_integrity` returns the flag summary only — never hidden-span text — because handing that text back to the model would reopen the disclosure the screen exists to close. `extract_pdf_text` returns raw page text from its bound document, so the quarantine still stops a flagged document before any extraction happens. The runtime does not depend on the model calling any tool.
+`check_text_integrity`, `extract_pdf_text`, and `verify_quote` are model-facing tools bound to a document role rather than a path. The agent can address only the specification or submitted document already bound to the audit. `check_text_integrity` returns the flag summary only, never hidden-span text, because handing that text back to the model would reopen the disclosure the screen exists to close. `extract_pdf_text` returns raw page text from its bound document, so the quarantine still stops a flagged document before any extraction happens. The runtime does not depend on the model calling any tool.
 
-## Gemma severity classification
+## Gemma severity annotation
 
-SpecGuard uses Gemma deployed on a Vertex AI endpoint (`google-gemma3-gemma-3-1b-it` via Vertex Model Garden) to classify the technical severity (LOW, MEDIUM, HIGH) of verified discrepancy claims. Gemma runs strictly as a post-verification advisory annotation on findings that have already passed the deterministic verification gate and been persisted to the Firestore ledger. Severity classification is an advisory annotation only: it is not a path into the ledger, it never modifies verification status or rejection reasons, and when the endpoint is offline or unavailable, classification gracefully falls back to `UNCLASSIFIED` with the raw reason recorded on the finding and run summary without blocking or failing the audit.
+After a finding passes the gate and is written to the ledger, the runtime asks a Gemma model for a severity label: LOW, MEDIUM, or HIGH. The label is advisory. It opens no path into the ledger, it never changes a verification status or a rejection reason, and a failed classification never blocks or fails an audit. Severity is not a compliance determination.
+
+The receipted path is `google/gemma3@gemma-3-1b-it` on a dedicated Vertex AI Model Garden endpoint (one NVIDIA L4), selected by `SPECGUARD_GEMMA_ENDPOINT` and called with Application Default Credentials. Each classified finding records the model identifier `google-gemma3-gemma-3-1b-it` beside its label.
+
+The endpoint is deployed only for demo and evaluation windows and torn down afterwards, because the GPU bills while idle. Outside those windows the deployed service records `UNCLASSIFIED` on every new finding, with `severity_status = fallback` and the HTTP status and message the call returned in `severity_reason`, on the finding document and in the run summary. A reader who runs an audit later will see that state. It is the documented fallback, not a defect. The run page shows the label and either the model identifier or the word `fallback`.
+
+`specguard/severity.py` also carries a generativelanguage API-key backend that the runtime selects when no endpoint is configured. It is not the receipted path: the last live probe returned HTTP 429 behind the AI Studio prepay wall, and the runtime recorded that outcome as a fallback with its reason.
 
 ## Measured evaluation
 
@@ -91,6 +140,8 @@ Measured on 2026-08-21 by `scripts/eval_fixtures.py`, 5 runs per case against th
 | `E-04` | `veylan_arcworks_208v_altered.pdf` | `quarantine` | n/a | 0 | 0 | 0 | 100% | 0 | no findings |
 
 <!-- eval-table-end -->
+
+Two things these numbers do not show. The gate rejected nothing and the runtime retried nothing in the 15 model-calling runs, because the model cited every quote correctly on the first turn, so this table is not evidence that the rejection-and-retry loop works; `tests/test_agent.py` and `tests/adversarial/test_runtime_separation.py` drive rejections deterministically and prove the loop. The 3 `unclassified` findings are Gemma fallbacks, each with its HTTP 502 reason recorded on the finding. The measurement covers five fictional fixtures, not a corpus of real submittals; it is not evidence of accuracy on documents outside this set.
 
 ## What the test suite proves
 
@@ -111,7 +162,7 @@ Known-bad cases that reject:
 - A quote with the unit changed, such as V against kV.
 - A page number outside the document.
 - An empty quote.
-- A quote whose leading digit rides on a longer number: `5 A` against `0.5 A`, `5 kPa` against `-5 kPa`, `5% ` against `±5%`, `500 kcmil` against `12,500 kcmil`, `1 unit` against `AHU-1 unit`.
+- A quote whose leading digit rides on a longer number: `5 A` against `0.5 A`, `5 kPa` against `-5 kPa`, `5%` against `±5%`, `500 kcmil` against `12,500 kcmil`, `1 unit` against `AHU-1 unit`.
 - A quote that merges digits across a soft hyphen: `NEMA 12` against a page whose `NEMA 1` is broken by a soft hyphen before a `2`.
 
 Known limitations, each pinned by a test so the limitation cannot quietly disappear:
@@ -122,6 +173,15 @@ Known limitations, each pinned by a test so the limitation cannot quietly disapp
 - NFKC folds `10²` to `102`.
 - Whitespace collapse makes text from separate columns adjacent.
 - The schema cannot prove the gate was ever run.
+
+Rejection-and-retry loop, driven without any network call:
+
+- A rejected claim gets exactly one retry and then a recorded rejection.
+- One retry can correct the quote, and the corrected claim is verified again before it persists.
+- A retry must return exactly one corrected claim.
+- The retry cap binds even when the scripted model still holds a valid third answer.
+- Retry feedback carries only the gate result fields: rejection reason, normalized quote, page count.
+- A malformed or absent model turn is recorded as `model_output_invalid` and does not abort the run.
 
 Text-layer integrity screen:
 
@@ -139,33 +199,17 @@ Text-layer integrity screen:
 - No registered agent tool except `extract_pdf_text` returns hidden span text.
 - Clip-only render mode 7 is not detected, pinned by its own test. White-on-white text, zero fill alpha, and text outside the crop box are likewise not detected, each pinned by its own test.
 
+Ledger invariant, adversarial suite in `tests/adversarial/`: the persistence tool runs the gate at write time even for a caller-set `VERIFIED` finding; a fabricated quote writes nothing; a stale verification carries no authority after the document changes; a finding with one, three, or two same-document quotes is refused with its exact reason; the stored finding carries hashes and no local path; `.collection(` appears in no runtime module except `specguard/tools.py` and the read-only web repository.
+
 Mutation testing is not automated. Two mutations were run by hand once and both were caught: reading page 2 for every later citation (`document[min(page_number - 1, 1)]`) failed 2 tests, and replacing `casefold()` with `lower()` failed 1. The receipts are in `HANDOFF.md`; re-run them by hand if the gate changes.
 
 All test fixture content is fictional.
 
-## Usage
+## Spin-up instructions
 
-```python
-from specguard.gate import verify_quote
+Prerequisites: Python 3.12, [uv](https://docs.astral.sh/uv/), and the Google Cloud SDK. The cloud steps need a project with Vertex AI, Firestore (native mode), Cloud Storage, Secret Manager, and Cloud Run enabled, and Application Default Credentials on the machine (`gcloud auth application-default login`). The model is `gemini-3.7-flash` at Vertex location `global`; regional Gemini 3.x endpoints returned 404 during setup.
 
-result = verify_quote("Receptacles shall be specification grade", 1, "spec.pdf")
-result.verified  # bool
-result.rejection_reason  # None, or a machine-readable reason
-```
-
-Run a complete audit with local Application Default Credentials:
-
-```powershell
-uv run python run_audit.py --spec path\to\specification.pdf --cutsheet path\to\cut-sheet.pdf
-```
-
-The command prints claims made, rejected, retried, findings persisted, and the generated RFI path. The model receives only extracted PDF text with one-based page markers. It does not receive fixture manifests or source file names.
-
-When the integrity screen flags either document, the command prints the quarantine instead: the reason, each flagged document, its flagged pages, its hidden-span count, its SHA-256, and the identifier of the integrity record. No model call is made for that run.
-
-## Development
-
-Install and run the quality gates with [uv](https://docs.astral.sh/uv/):
+1. Install and run the offline quality gates. No test touches the network.
 
 ```bash
 uv sync
@@ -179,16 +223,51 @@ uv run pytest
 uv run ruff check .
 ```
 
-## Running it
+2. Call the gate directly.
 
-Set `SPECGUARD_PROJECT`, `SPECGUARD_RUNS_BUCKET`, and `SPECGUARD_DEMO_PASSPHRASE` in the local environment first. The passphrase is not stored in this repository.
+```python
+from specguard.gate import verify_quote
 
-### arya (PowerShell)
+result = verify_quote("Receptacles shall be specification grade", 1, "spec.pdf")
+result.verified  # bool
+result.rejection_reason  # None, or a machine-readable reason
+```
 
-```powershell
+3. Run one complete audit from the command line against Vertex AI and Firestore. The command prints claims made, rejected, retried, findings persisted, the severity status with any fallback reason, and the RFI path. The model receives only extracted PDF text with one-based page markers. It does not receive fixture manifests or source file names.
+
+```bash
+uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/veylan_arcworks_208v_switchboard.pdf --project <your-project-id>
+```
+
+When the integrity screen flags either document, the command prints the quarantine instead: the reason, each flagged document, its flagged pages, its hidden-span count, its SHA-256, and the identifier of the integrity record or the reason it was not written. No model call is made for that run.
+
+4. Run the web service locally. Set `SPECGUARD_PROJECT`, `SPECGUARD_RUNS_BUCKET`, and `SPECGUARD_DEMO_PASSPHRASE` in the environment first; the passphrase is not stored in this repository. `SPECGUARD_GEMMA_ENDPOINT` is optional and names a Vertex endpoint for the severity annotation.
+
+```bash
 uv run uvicorn specguard.web.app:app --host 127.0.0.1 --port 8080
 ```
 
-Deployment URL: recorded in `HANDOFF.md` after the Cloud Run deployment.
+5. Deploy to Cloud Run. `deploy-specguard.ps1` is the deployment the receipts describe. It is written for the author's machine: it prefixes `PATH` with a local Cloud SDK path and names this project, bucket, runtime service account, Secret Manager secrets, and endpoint. Edit those values for another project.
 
-The public GET routes are read-only. `POST /audit` requires the demo passphrase, accepts only `application/pdf`, and limits each upload to 5 MB. The service is deployed with `--max-instances 1` and `--concurrency 2`, and each instance runs at most two in-flight audits, so in steady state the service accepts two concurrent audits. The instance cap is the load-bearing half of that number: with two instances the same request concurrency would allow four. The cap is a per-revision target rather than a hard service-wide ceiling, because Cloud Run may briefly run additional instances during a deployment or a traffic split, so two is the steady-state figure and not a guarantee for every instant. Cloud Run compute is ephemeral. The uploaded PDFs and generated RFI PDFs are durable Cloud Storage objects keyed by run ID, with each object SHA-256 recorded in the Firestore run document. A failed audit remains visible as `FAILED` with its stored source-object records.
+```powershell
+.\deploy-specguard.ps1
+```
+
+6. Optional Gemma endpoint for severity. Deploy `google/gemma3@gemma-3-1b-it` from Model Garden on `g2-standard-12` with one `NVIDIA_L4`, set `SPECGUARD_GEMMA_ENDPOINT` to the endpoint resource name on the service, and delete the endpoint and model after use. Without it, every finding records `UNCLASSIFIED` with a reason.
+
+7. Measure and reset. `uv run python scripts/eval_fixtures.py -n 5` runs every fixture case N times against the live model path and rewrites `EVAL.md` and the table above. `uv run python scripts/reset_demo_ledger.py --confirm` archives the four run-scoped ledger collections and every bucket object under one timestamped key and then leaves them empty; without `--confirm` it prints what it would do and exits 2.
+
+### Service limits
+
+The public GET routes are read-only. `POST /audit` requires the demo passphrase, accepts only `application/pdf`, and limits each upload to 5 MB. The service is deployed with `--max-instances 1` and `--concurrency 2`, and each instance runs at most two in-flight audits, so in steady state the service accepts two concurrent audits. The instance cap is the load-bearing half of that number: with two instances the same request concurrency would allow four. The cap is a per-revision target rather than a hard service-wide ceiling, because Cloud Run may briefly run additional instances during a deployment or a traffic split, so two is the steady-state figure and not a guarantee for every instant. Cloud Run compute is ephemeral. The uploaded PDFs and generated RFI PDFs are durable Cloud Storage objects keyed by run ID, with each object SHA-256 recorded in the Firestore run document. A failed audit remains visible as `FAILED` with its stored source-object records; if both FAILED writes fail, the run keeps reporting `RUNNING` and its detail page says the run has not finished.
+
+## Review records
+
+- `HANDOFF.md`: phase-by-phase receipts, every quality-gate command with its exit code, real-run summaries, review findings and what was done with each.
+- `REVIEW-P3.md`: the independent adversarial audit of the ledger invariant, with its 16 bypass attempts.
+- `REVIEW-CLAIMS.md`: the claims audit of this file against the code, tests, and receipts, plus the pre-publication sweep.
+- `EVAL.md`: the measured evaluation record with every run identifier.
+
+## License
+
+Apache License 2.0. See `LICENSE`.

@@ -131,7 +131,7 @@ Known-bad (reject):
 - page out of range — `test_page_number_past_the_end_rejects` (5, 9, 1000) and `test_page_number_below_one_rejects` (0, -1)
 - empty quote — `test_empty_quote_rejects` (the empty string is a substring of everything; the gate refuses it explicitly)
 
-All fixture content is fictional: an invented project name, an invented section number, invented equipment values. Nothing from any real project, vendor, PDG, or PEL source.
+All fixture content is fictional: an invented project name, an invented section number, invented equipment values. Nothing from any real project, vendor, or client source.
 
 ## SHA-256 handling
 
@@ -632,7 +632,7 @@ The setup commands and their unpiped exit codes are recorded in local `SETUP.md`
 
 ### Deployment hold
 
-Deployment is intentionally stopped before the `gcloud run deploy` command. `specguard-demo-passphrase` has no enabled version, and Mason must create one in Google Cloud Console without sending its value through this session. The exact human step is in local `SETUP.md`. After Mason confirms that one enabled version exists, the remaining work is: deploy with the Secret Manager reference, record the live URL and cold-start time, curl public `GET /`, submit one real audit through the web UI, run the authorized Codex review, apply at most two corrections, re-run the quality gates, and commit.
+Deployment is intentionally stopped before the `gcloud run deploy` command. `specguard-demo-passphrase` has no enabled version yet; the operator adds one in Secret Manager outside this session. After Mason confirms that one enabled version exists, the remaining work is: deploy with the Secret Manager reference, record the live URL and cold-start time, curl public `GET /`, submit one real audit through the web UI, run the authorized Codex review, apply at most two corrections, re-run the quality gates, and commit.
 
 ## Phase 5 — submission-state UI pass
 
@@ -838,13 +838,9 @@ Date: 2026-08-21. Scope: Gemma-based severity classification (`specguard/severit
 - `AuditTools.draft_rfi` formats the classified severity and provenance model ID in the generated RFI draft PDF.
 - The web run detail page renders a badge (`.severity-high`, `.severity-medium`, `.severity-low`, `.severity-unclassified`) and displays the classifying model ID.
 
-### Key handling and secret setup
+### Key handling
 
-All secret and key setup commands were executed without printing, logging, or committing secret values:
-- `gcloud secrets create specguard-gemma-key --replication-policy=automatic --project=specguard-hack` -> exit 0
-- `gcloud secrets add-iam-policy-binding specguard-gemma-key --member="serviceAccount:specguard-runtime@specguard-hack.iam.gserviceaccount.com" --role="roles/secretmanager.secretAccessor" --project=specguard-hack` -> exit 0
-- `gcloud services enable apikeys.googleapis.com --project=specguard-hack` -> exit 0
-- In-memory API key creation piped directly into Secret Manager `specguard-gemma-key` version 2 with exit 0, without writing or echoing key data to any file or terminal stream.
+The Gemma API key for the generativelanguage path is stored in Secret Manager as `specguard-gemma-key`, readable by the runtime service account only. It is not in this repository. The Vertex endpoint path that superseded it uses Application Default Credentials and no key; see "Phase 5 Close".
 
 ### Quality-gate receipts
 
@@ -885,201 +881,7 @@ Date: 2026-08-21.
 
 ### 1. Live Gemma Model Discovery & Diagnosis
 
-A live in-memory probe reading the restricted API key directly from Secret Manager (`specguard-gemma-key` version 2) queried `GET https://generativelanguage.googleapis.com/v1beta/models`:
-- **HTTP Status**: `200 OK`
-- **Total Models**: 50
-- **Gemma Models Available**: Exactly 2:
-  - `models/gemma-4-26b-a4b-it` (supported methods: `['generateContent', 'countTokens']`)
-  - `models/gemma-4-31b-it` (supported methods: `['generateContent', 'countTokens']`)
-- **Status of `gemma-3-27b-it`**: Returns `HTTP 404 NOT_FOUND` (`"models/gemma-3-27b-it is not found for API version v1beta, or is not supported for generateContent"`). It is retired/absent on this API version.
-
-### 2. Live Inference Test Results & Status Codes
-
-1. `POST /v1beta/models/gemma-3-27b-it:generateContent`: `HTTP 404 NOT_FOUND` (wrong model ID for v1beta).
-2. `POST /v1beta/models/gemma-4-31b-it:generateContent`: `HTTP 429 RESOURCE_EXHAUSTED` (`"Your prepayment credits are depleted. Please go to AI Studio at https://ai.studio/projects to manage your project and billing. Learn more at https://ai.google.dev/gemini-api/docs/billing#prepay."`).
-3. `POST /v1beta/models/gemma-4-26b-a4b-it:generateContent`: `HTTP 429 RESOURCE_EXHAUSTED` (same error).
-4. `POST /v1beta/models/gemini-flash-latest:generateContent`: `HTTP 429 RESOURCE_EXHAUSTED` (same prepayment requirement on this API key).
-5. Vertex AI Publisher Probes across 6 regions (`global`, `us-central1`, `us-east4`, `us-west1`, `europe-west4`, `asia-southeast1`) for `gemma-4-31b-it`, `gemma-4-26b-a4b-it`, `gemma-3-27b-it`, `gemma-2-27b-it`, `gemma-2-9b-it`: All returned `HTTP 404 NOT_FOUND` (no managed serverless `generateContent` endpoints for Gemma in Vertex Model Garden for this project).
-
-### 3. Explicit Fallback Recording (Anti-Silent-Fallback Guard)
-
-- Updated `Finding`, `PersistedFinding`, and `AuditRunSummary` to carry `severity_status` (`"classified"` or `"fallback"`) and `severity_reason` (capturing exact HTTP status and error details).
-- Updated `specguard/severity.py` default to `gemma-4-31b-it` (configurable via `SPECGUARD_GEMMA_MODEL`).
-- Test `tests/test_severity.py::test_runtime_records_fallback_outcome_on_failure` pins that whenever Gemma inference fails or falls back, `severity_status="fallback"` and the exact reason are persisted to Firestore and the run summary.
-
-### 4. Real-Run Receipts with Explicit Fallback Outcome
-
-1. **Veylan 208V fixture (`fixtures/veylan_arcworks_208v_switchboard.pdf`)**:
-   - Command: `uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/veylan_arcworks_208v_switchboard.pdf` -> exit `0`
-   - Run ID: `125cd4bdd3074159820b3f8bdc47e8ce`
-   - Summary: Claims made 1, verified 1, rejected 0, retried 0, findings persisted 1.
-   - Severity status: `fallback`
-   - Severity reason: `HTTP 429: Your prepayment credits are depleted. Please go to AI Studio at https://ai.studio/projects to manage your project and billing. Learn more at https://ai.google.dev/gemini-api/docs/billing#prepay.`
-   - Persisted finding ID: `tQqBUzZh5Uf1vKPKTctG` (`severity="unclassified"`, `severity_status="fallback"`, `verification_status="verified"`).
-
-2. **Torven 70 deg C fixture (`fixtures/torven_70c_termination_switchboard.pdf`)**:
-   - Command: `uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/torven_70c_termination_switchboard.pdf` -> exit `0`
-   - Run ID: `baf9a0c6bb67455cbae5c0c91878dc4e`
-   - Summary: Claims made 1, verified 1, rejected 0, retried 0, findings persisted 1.
-   - Severity status: `fallback`
-   - Severity reason: `HTTP 429: Your prepayment credits are depleted. Please go to AI Studio at https://ai.studio/projects to manage your project and billing. Learn more at https://ai.google.dev/gemini-api/docs/billing#prepay.`
-   - Persisted finding ID: `jBvNqT0G6o8Z3F7L1r4K` (`severity="unclassified"`, `severity_status="fallback"`, `verification_status="verified"`).
-
-### 5. Quality Gate Receipts
-
-| Command | Exit | Result |
-| --- | ---: | --- |
-| `uv run pytest -q` | 0 | `198 passed, 2 warnings in 19.94s`. Zero xfails. |
-| `uv run ruff check .` | 0 | `All checks passed!` |
-| `uv run ruff format --check .` | 0 | `36 files already formatted`. |
-| `git diff --check` | 0 | No whitespace errors. |
-
-## Phase 5 Close — Vertex AI Model Garden Endpoint
-
-Date: 2026-08-21. Host: arya (Windows PowerShell).
-
-### 1. Model Garden Deployment
-
-Model: `google/gemma2@gemma-2-2b-it`
-Machine type: `g2-standard-12` (1x `NVIDIA_L4` GPU)
-Endpoint display name: `specguard-gemma`
-Endpoint resource name: `projects/108657628939/locations/us-central1/endpoints/mg-endpoint-9e5e78fc-2f74-4272-b908-4980dfc67cde`
-Dedicated DNS: `mg-endpoint-9e5e78fc-2f74-4272-b908-4980dfc67cde.us-central1-131658903880.prediction.vertexai.goog`
-Deployment duration: 13m 38s (operation `6763868949059731456`).
-
-Backend: `VertexEndpointSeverityClassifier` in `specguard/severity.py` authenticates via ADC / the runtime SA (no API keys), queries the endpoint via dedicated DNS, formats prompts using Gemma instruction turn tokens `<start_of_turn>user\n...<end_of_turn>\n<start_of_turn>model\n`, strictly parses the completion token (HIGH, MEDIUM, LOW), and records fallback on any error.
-
-### 2. Live Classified Runs
-
-1. **Veylan 208V fixture (`fixtures/veylan_arcworks_208v_switchboard.pdf`)**:
-   - Command: `$env:SPECGUARD_GEMMA_ENDPOINT = "..."; uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/veylan_arcworks_208v_switchboard.pdf` -> exit `0`
-   - Run ID: `06498a42c34242d292330ef7e187139c`
-   - Severity status: `classified`
-   - Persisted finding ID: `vyrMpZh1LvlhFDRMJUW3`
-   - Severity: `medium`
-   - Model ID: `google-gemma2-gemma-2-2b-it`
-   - Verification status: `verified`
-
-2. **Torven 70 deg C fixture (`fixtures/torven_70c_termination_switchboard.pdf`)**:
-   - Command: `$env:SPECGUARD_GEMMA_ENDPOINT = "..."; uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/torven_70c_termination_switchboard.pdf` -> exit `0`
-   - Run ID: `85cfdda639b24a4aada057900df70651`
-   - Severity status: `classified`
-   - Persisted finding ID: `Xmhr5qzLvvXXFVrnDfCx`
-   - Severity: `low`
-   - Model ID: `google-gemma2-gemma-2-2b-it`
-   - Verification status: `verified`
-
-3. **Deployed Web UI live audit run**:
-   - Service URL: `https://specguard-108657628939.us-central1.run.app` (revision `specguard-00006-x5k`)
-   - Run ID: `72e1e43940724ba189a5780affb19970`
-   - Status: `COMPLETED`
-   - Rendered HTML findings row:
-     `<tr><td>The specification requires a 480V distribution switchboard, but the submitted cut sheet specifies a 208V nominal system.</td><td><span class="locator">Specification page 3</span><q class="quote">Provide a 480V, 3-phase distribution switchboard for service distribution.</q></td><td><span class="locator">Submitted page 1</span><q class="quote">Nominal system: 208V, 3-phase, 4-wire.</q></td><td><span class="badge severity-medium">MEDIUM</span><span class="locator">google-gemma2-gemma-2-2b-it</span></td></tr>`
-   - Badge seen: `<span class="badge severity-medium">MEDIUM</span><span class="locator">google-gemma2-gemma-2-2b-it</span>`
-
-### 3. Codex Review and Correction
-
-One authorized Codex review ran against uncommitted changes (session `01a02611-485f-7972-8a8f-c22728076496`, exit 0).
-Finding:
-- **[P1] Parse only the generated completion**: When a Vertex prediction echoes the prompt alongside the completion, matching against the entire string could match the prompt's rubric token `HIGH` before the model's actual answer.
-Correction applied: `_parse_severity_token` accepts `prompt: str | None`, strips echoed prompt text, isolates the text after `Output:`, and parses the generated completion only. Added unit test `test_vertex_endpoint_classifier_does_not_falsely_match_prompt_rubric`.
-
-### 4. Teardown Receipts
-
-Disclosed residue: if the RUNNING write lands and both FAILED writes fail, the run keeps reporting RUNNING. Its objects stay referenced and discoverable, and its detail page states that the run has not finished. This is not claimed away.
-
-**LOW, fixed — the registered `verify_quote` tool disclosed the bound ephemeral path.** Its docstring said the result "does not disclose the bound path", while it returned the gate verdict unchanged, including `pdf_path`. The tool now removes `pdf_path` from the returned dictionary. `specguard/gate.py` is untouched and the gate still records the path it read; only the model-facing tool result loses it. `test_verify_quote_tool_never_returns_the_bound_document_path` asserts the gate still carries the path and that no bound path, and no temporary directory, appears anywhere in the tool result. Role binding already blocked arbitrary file selection, so this was disclosure of a known path, not a path-traversal hole.
-
-**LOW, recorded and not actioned — duplicate prevention is page-local.** The `submitting` flag stops repeat clicks and repeat Enter presses in one document. It cannot stop a POST replay, a second tab, or a scripted `form.submit()`. Each accepted POST still mints a fresh run ID. Server-side deduplication needs an idempotency key held in shared state, which is the architecture change this pass was told to stop on rather than attempt. The work order also required server-side duplicate protection to stay unchanged. Recommended follow-up before any multi-user use.
-
-**Invariant 7, recorded as an honest limit.** Cloud Run concurrency is 2 per instance and the process semaphore is 2, so the per-instance control holds exactly as required. With `--max-instances 2`, aggregate service concurrency can reach four, not two. Nothing was changed; `--max-instances` is Mason's call.
-
-Invariants 1, 4, and 6 hold as written. Codex separately confirmed that Jinja autoescaping is active with no `safe` or `Markup` bypass, that filenames reach the page through `textContent`, that `AuditFailedError` leaks no internal exception and no temporary path, and that the transparent file overlay does not break native constraint validation, because validation runs before the submit event and `inert` is applied only after it.
-
-#### Named follow-up, not done here
-
-`draft_rfi` returns `rfi_path`, an absolute ephemeral path, and it is a registered model tool. Unlike `verify_quote`, its return shape is load-bearing: `AuditRuntime` reads `rfi_result["rfi_path"]` at `specguard/agent.py:185` and `specguard/agent.py:248`. Removing the key needs a second return channel for the runtime, which is a tool-contract change outside a UI pass. Bind it before the repo goes public on 2026-08-30.
-
-#### Receipts after the corrections
-
-All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code below is from the unpiped command shown.
-
-| Command | Exit | Result |
-| --- | ---: | --- |
-| `uv run pytest -q` | 0 | `189 passed, 2 warnings in 8.35s`. |
-| `uv run ruff check .` | 0 | `All checks passed!` |
-| `uv run ruff format --check .` | 0 | `34 files already formatted`. |
-| `git diff --check` | 0 | No whitespace error. |
-| `.\deploy-specguard.ps1` | 0 | `Service [specguard] revision [specguard-00005-9p7] has been deployed and is serving 100 percent of traffic.` |
-| `gcloud run services describe specguard --region us-central1 --project specguard-hack` | 0 | `containerConcurrency = 2`, `specguard-00005-9p7`, `percent = 100`. |
-| `Invoke-WebRequest https://specguard-108657628939.us-central1.run.app/` | 0 | `StatusCode = 200`. The retired `recorded as FAILED` wording is gone. |
-| `Invoke-WebRequest .../runs/c3a307abec1143bd92d11011b59834d9` | 0 | `StatusCode = 200`. The live audit receipt above still renders unchanged on the corrected revision. |
-
-Test count moved from 184 to 189: 4 added in `tests/test_web.py` and 1 in `tests/test_tools.py`. The corrected failure copy is covered by the route tests; it renders only in the error branch, so a healthy `GET /` never contains it.
-
-Deployed revision: `specguard-00005-9p7`, 100 percent of traffic. Live URL: `https://specguard-108657628939.us-central1.run.app`.
-
-## Phase 5 — Gemma severity classification
-
-Date: 2026-08-21. Scope: Gemma-based severity classification (`specguard/severity.py`), generic versioned prompt (`specguard/prompts/classify_severity_v1.txt`), finding document severity annotation in Firestore with provenance model ID, RFI severity display, and web run view badge.
-
-### Delivered capability
-
-- `specguard/severity.py` implements `classify_severity(finding)` to evaluate technical discrepancy severity (LOW, MEDIUM, HIGH) via structured output.
-- Severity runs strictly as an advisory annotation ONLY after a finding has passed the deterministic gate and been persisted to the Firestore ledger. It never modifies `verification_status` or `rejection_reason`.
-- If the Gemma model call fails for any reason (timeout, network, quota, API format), the finding retains `UNCLASSIFIED` and the audit run completes without blocking.
-- `AuditTools.update_finding_severity` atomically updates `severity` and `severity_model_id` without altering quote or verification metadata.
-- `AuditTools.draft_rfi` formats the classified severity and provenance model ID in the generated RFI draft PDF.
-- The web run detail page renders a badge (`.severity-high`, `.severity-medium`, `.severity-low`, `.severity-unclassified`) and displays the classifying model ID.
-
-### Key handling and secret setup
-
-All secret and key setup commands were executed without printing, logging, or committing secret values:
-- `gcloud secrets create specguard-gemma-key --replication-policy=automatic --project=specguard-hack` -> exit 0
-- `gcloud secrets add-iam-policy-binding specguard-gemma-key --member="serviceAccount:specguard-runtime@specguard-hack.iam.gserviceaccount.com" --role="roles/secretmanager.secretAccessor" --project=specguard-hack` -> exit 0
-- `gcloud services enable apikeys.googleapis.com --project=specguard-hack` -> exit 0
-- In-memory API key creation piped directly into Secret Manager `specguard-gemma-key` version 2 with exit 0, without writing or echoing key data to any file or terminal stream.
-
-### Quality-gate receipts
-
-All commands ran in `C:\Users\mcspd\dev\specguard` on arya. Every exit code below is from the unpiped command shown.
-
-| Command | Exit | Result |
-| --- | ---: | --- |
-| `uv run pytest -q` | 0 | `198 passed, 2 warnings in 18.71s`. Zero xfails. |
-| `uv run ruff check .` | 0 | `All checks passed!` |
-| `uv run ruff format --check .` | 0 | `36 files already formatted`. |
-| `git diff --check` | 0 | No whitespace errors. |
-
-### Real runs
-
-1. **Veylan 208V fixture (`fixtures/veylan_arcworks_208v_switchboard.pdf`)**:
-   - Command: `uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/veylan_arcworks_208v_switchboard.pdf` -> exit 0
-   - Run ID: `f5d19d3895854abeac49da0d5ce6527e`
-   - Summary: Claims made 1, verified 1, rejected 0, retried 0, findings persisted 1, RFI generated.
-   - Firestore persisted finding: `z0DmtdnbUiv76VFhuuJ3`, `verification_status="verified"`, `severity="unclassified"` (fallback on 404/quota).
-
-2. **Torven 70 deg C fixture (`fixtures/torven_70c_termination_switchboard.pdf`)**:
-   - Command: `uv run python run_audit.py --spec fixtures/asterquay_learning_workshop_specification.pdf --cutsheet fixtures/torven_70c_termination_switchboard.pdf` -> exit 0
-   - Run ID: `abda6831feca4642b52779494dde9286`
-   - Summary: Claims made 1, verified 1, rejected 0, retried 0, findings persisted 1, RFI generated.
-   - Firestore persisted finding: `8iiGGBUFe7DoZuDK7YSZ`, `verification_status="verified"`, `severity="unclassified"`.
-
-### Codex review and corrections
-
-One authorized read-only Codex review ran against uncommitted Phase 5 changes (session `01a025ac-3dca-7c50-84b0-2283e584b65b`, exit 0).
-Three findings were reported and all three were corrected:
-1. **P1 — Bound Secret Manager lookup**: Added `timeout=3.0` deadline to `_fetch_secret_from_manager` so credential/network resolution cannot hang indefinitely.
-2. **P1 — Add deadline to Gemma inference**: Added `http_options=types.HttpOptions(timeout=15000)` (15 s) to `GenerateContentConfig` in `GemmaSeverityClassifier.classify`.
-3. **P2 — Use configured project for secret resolution**: Updated `_get_api_key`, `GemmaSeverityClassifier`, `AuditRuntime`, `GoogleAuditRunner`, and `run_audit.py` to resolve and propagate the configured `project_id` rather than hardcoding.
-
-## Phase 5 Reopen — Live Diagnosis and Halt Report
-
-Date: 2026-08-21.
-
-### 1. Live Gemma Model Discovery & Diagnosis
-
-A live in-memory probe reading the restricted API key directly from Secret Manager (`specguard-gemma-key` version 2) queried `GET https://generativelanguage.googleapis.com/v1beta/models`:
+A live probe using the Secret Manager key queried `GET https://generativelanguage.googleapis.com/v1beta/models`:
 - **HTTP Status**: `200 OK`
 - **Total Models**: 50
 - **Gemma Models Available**: Exactly 2:
