@@ -207,7 +207,10 @@ class PdfTextResult(BaseModel):
     page_number: int
     text: str | None = None
     error_code: str | None = None
-    error_message: str | None = None
+    #: The exception class name, never its message. A PyMuPDF or OS error
+    #: message names the file it failed on, and this result is returned to a
+    #: model that must never learn a path outside its two bound documents.
+    error_type: str | None = None
 
 
 class QuarantinedDocument(BaseModel):

@@ -470,7 +470,9 @@ class AuditRuntime:
         for page_number in range(1, page_count + 1):
             result = self._tools.extract_pdf_text(role.value, page_number)
             if not result["ok"]:
-                raise RuntimeError(result["error_message"])
+                raise RuntimeError(
+                    f"{label} page {page_number} could not be extracted: {result.get('error_code')}"
+                )
             pages.append(f"--- {label} PAGE {page_number} ---\n{result['text']}")
         return "\n".join(pages)
 

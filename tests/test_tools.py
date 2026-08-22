@@ -135,8 +135,67 @@ def test_extract_pdf_text_catches_bad_page_on_a_bound_document(tmp_path: Path) -
         "page_number": 2,
         "text": None,
         "error_code": "page_out_of_range",
-        "error_message": "page 2 is outside a 1-page document",
+        "error_type": "IndexError",
     }
+
+
+def test_extract_pdf_text_returns_an_unreadable_document_as_data(tmp_path: Path) -> None:
+    """A missing or unparseable source is a result, not an exception.
+
+    The message is left out on purpose. A PyMuPDF or OS error message names the
+    file it failed on, and this result is returned to the model, which must
+    never learn a path outside its two bound documents.
+    """
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    tools = _tools(tmp_path, client, spec, cut_sheet)
+    spec.unlink()
+
+    result = tools.extract_pdf_text("specification", 1)
+
+    assert result["ok"] is False
+    assert result["error_code"] == "document_unreadable"
+    assert result["error_type"] in {"FileNotFoundError", "RuntimeError", "OSError"}
+    assert str(spec) not in str(result)
+    assert str(tmp_path) not in str(result)
+
+
+def test_extract_pdf_text_returns_a_corrupt_document_as_data(tmp_path: Path) -> None:
+    """A file that is not a PDF is reported the same way, with no message."""
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    tools = _tools(tmp_path, client, spec, cut_sheet)
+    spec.write_bytes(b"this is not a pdf at all")
+
+    result = tools.extract_pdf_text("specification", 1)
+
+    assert result["ok"] is False
+    assert result["error_code"] == "document_unreadable"
+    assert result["error_type"] is not None
+    assert str(spec) not in str(result)
+    assert str(tmp_path) not in str(result)
+
+
+def test_check_text_integrity_reports_only_an_error_code_and_type(tmp_path: Path) -> None:
+    """An unreadable document names its exception class and nothing else.
+
+    The previous response carried ``str(error)``, which for an OS or PyMuPDF
+    failure is a message containing the absolute path of the file. That path is
+    exactly what the role-bound tools exist to keep away from the model.
+    """
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    tools = _tools(tmp_path, client, spec, cut_sheet)
+    spec.write_bytes(b"this is not a pdf at all")
+
+    result = tools.check_text_integrity("specification")
+
+    assert set(result) == {"ok", "error_code", "error_type"}
+    assert result["ok"] is False
+    assert result["error_code"] == "document_unreadable"
+    assert isinstance(result["error_type"], str)
+    assert str(spec) not in str(result)
+    assert str(tmp_path) not in str(result)
 
 
 def test_extract_pdf_text_refuses_a_path_or_unknown_role(tmp_path: Path) -> None:

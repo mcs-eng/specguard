@@ -117,10 +117,13 @@ class AuditTools:
         try:
             report = integrity.check_text_layer(path)
         except (FileNotFoundError, OSError, RuntimeError) as error:
+            # The exception class, never its message. An OS or PyMuPDF error
+            # message names the file it failed on, and this result goes to the
+            # model, which must never learn a path outside its bound documents.
             return {
                 "ok": False,
                 "error_code": "document_unreadable",
-                "error_message": str(error),
+                "error_type": type(error).__name__,
             }
         return {
             "ok": True,
@@ -150,7 +153,19 @@ class AuditTools:
                 document_role=role,
                 page_number=page_number,
                 error_code="page_out_of_range",
-                error_message=str(error),
+                error_type=type(error).__name__,
+            ).model_dump(mode="json")
+        except (FileNotFoundError, OSError, RuntimeError) as error:
+            # A missing file, an unreadable one, and a PyMuPDF parse failure
+            # are data here, not an exception, so one bad page cannot abort a
+            # run through this tool. PyMuPDF raises its own errors as
+            # RuntimeError subclasses, which is why RuntimeError is listed.
+            return PdfTextResult(
+                ok=False,
+                document_role=role,
+                page_number=page_number,
+                error_code="document_unreadable",
+                error_type=type(error).__name__,
             ).model_dump(mode="json")
         return PdfTextResult(
             ok=True,
