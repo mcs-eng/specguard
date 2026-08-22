@@ -19,6 +19,7 @@ from specguard.models import AuditRunSummary, DocumentRole, QuarantinedDocument,
 from specguard.web.app import (
     GATE_CHECKS_PER_IP_HOUR,
     MAX_UPLOAD_BYTES,
+    QUOTE_CONTEXT_CACHE_SIZE,
     SAMPLE_RUNS_PER_UTC_DAY,
     SECURITY_HEADERS,
     WebServices,
@@ -115,6 +116,7 @@ class FakeObjectStorage:
         self.objects: dict[str, bytes] = {}
         self.fail_upload_at = fail_upload_at
         self.upload_count = 0
+        self.download_count = 0
 
     def upload_bytes(self, object_name: str, data: bytes, content_type: str) -> StoredObject:
         self.upload_count += 1
@@ -128,6 +130,7 @@ class FakeObjectStorage:
         )
 
     def download_bytes(self, object_name: str) -> bytes:
+        self.download_count += 1
         return self.objects[object_name]
 
     def delete_object(self, object_name: str) -> None:
@@ -1646,3 +1649,82 @@ def test_the_run_page_links_to_its_json_export() -> None:
     body = client.get(f"/runs/{FIXTURE_RUN_ID}").text
 
     assert f'href="/runs/{FIXTURE_RUN_ID}/export.json"' in body
+
+
+# --- Phase 6e review: the run page reads each run's documents once --------
+
+
+def test_a_second_read_of_one_run_downloads_nothing_again() -> None:
+    """Run identifiers are public, so a reload must not repeat the PDF work."""
+    client, _, storage = _fixture_run_client()
+
+    first = client.get(f"/runs/{FIXTURE_RUN_ID}")
+    after_first = storage.download_count
+    second = client.get(f"/runs/{FIXTURE_RUN_ID}")
+
+    assert after_first == 2
+    assert storage.download_count == 2
+    assert first.text == second.text
+    assert "<mark>" in second.text
+
+
+def test_a_changed_anchor_set_is_read_again_rather_than_served_stale() -> None:
+    """A run still writing findings must never reuse a smaller window set."""
+    client, repository, storage = _fixture_run_client()
+    client.get(f"/runs/{FIXTURE_RUN_ID}")
+    after_first = storage.download_count
+    second_finding = dict(repository.findings[FIXTURE_RUN_ID][0])
+    second_finding["finding_id"] = "finding-6e-2"
+    second_finding["spec_quote"] = {
+        **second_finding["spec_quote"],
+        "text": "Use listed terminals that accept the conductor size installed at each location.",
+    }
+    repository.findings[FIXTURE_RUN_ID] = [
+        repository.findings[FIXTURE_RUN_ID][0],
+        second_finding,
+    ]
+
+    body = client.get(f"/runs/{FIXTURE_RUN_ID}").text
+
+    assert storage.download_count == after_first + 2
+    assert body.count("<mark>") == 4
+
+
+def test_an_unreadable_document_is_not_cached_as_a_failure() -> None:
+    """A transient read failure must not outlast its cause."""
+    client, _, storage = _fixture_run_client()
+    specification = storage.objects.pop(f"{FIXTURE_RUN_ID}/specification.pdf")
+
+    failed = client.get(f"/runs/{FIXTURE_RUN_ID}").text
+    storage.objects[f"{FIXTURE_RUN_ID}/specification.pdf"] = specification
+    recovered = client.get(f"/runs/{FIXTURE_RUN_ID}").text
+
+    assert "The stored source document could not be read" in failed
+    assert "The stored source document could not be read" not in recovered
+    assert "<mark>" in recovered
+
+
+def test_the_window_cache_is_bounded_and_evicts_the_oldest_run() -> None:
+    client, repository, storage = _fixture_run_client()
+    services: WebServices = client.app.state.services  # type: ignore[attr-defined]
+    template = repository.runs[FIXTURE_RUN_ID]
+    findings = repository.findings[FIXTURE_RUN_ID]
+    for index in range(QUOTE_CONTEXT_CACHE_SIZE + 1):
+        run_id = f"{FIXTURE_RUN_ID}-{index}"
+        repository.runs[run_id] = {**template, "run_id": run_id}
+        repository.findings[run_id] = findings
+        assert client.get(f"/runs/{run_id}").status_code == 200
+
+    assert len(services.quote_contexts) == QUOTE_CONTEXT_CACHE_SIZE
+    assert all(key[0] != f"{FIXTURE_RUN_ID}-0" for key in services.quote_contexts)
+
+
+def test_two_apps_never_share_a_cached_window_set() -> None:
+    """The cache lives on one app's services, not on the module."""
+    first, _, _ = _fixture_run_client()
+    second, _, second_storage = _fixture_run_client()
+
+    first.get(f"/runs/{FIXTURE_RUN_ID}")
+    second.get(f"/runs/{FIXTURE_RUN_ID}")
+
+    assert second_storage.download_count == 2

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import secrets
 import tempfile
 import uuid
-from dataclasses import dataclass
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
@@ -31,6 +33,7 @@ EXPECTED_UPLOAD_FIELDS = frozenset({"spec_pdf", "cut_sheet_pdf"})
 SAMPLE_RUNS_PER_IP_HOUR = 6
 SAMPLE_RUNS_PER_UTC_DAY = 60
 GATE_CHECKS_PER_IP_HOUR = 60
+QUOTE_CONTEXT_CACHE_SIZE = 32
 RUN_STALLED_AFTER = timedelta(minutes=10)
 FIXTURES_DIRECTORY = Path(__file__).parents[2] / "fixtures"
 TEMPLATES_DIRECTORY = Path(__file__).parent / "templates"
@@ -156,6 +159,12 @@ class WebServices:
     storage: ObjectStorage
     audit_runner: AuditRunner
     audit_slots: asyncio.Semaphore
+    #: Page windows already built, newest last, keyed by run and anchor set.
+    #: One entry per run, bounded, and local to this app so a test app never
+    #: reads another app's entries.
+    quote_contexts: OrderedDict[tuple[str, str], list[dict[str, Any]]] = field(
+        default_factory=OrderedDict
+    )
 
     @classmethod
     def production(cls) -> WebServices:
@@ -773,6 +782,7 @@ def _display_run(run: dict[str, Any], now: datetime | None = None) -> dict[str, 
     return displayed
 
 
+CONTEXT_UNAVAILABLE_KEY = "context_unavailable"
 CONTEXT_UNAVAILABLE = (
     "The stored source document could not be read, so no page context is shown here."
 )
@@ -853,11 +863,37 @@ def _findings_with_context(
     document, normalized by the gate's own normalizer, so a reader sees the
     text the gate compared rather than a second rendering of it. A source
     document this service cannot read yields no window and says so.
+
+    Building the windows downloads and reparses both stored PDFs, and run
+    identifiers are public, so a reload would repeat that work for as long as
+    anyone kept reloading. The result is cached per run. The cache key carries
+    a digest of the anchors it was built from, so a run whose findings are
+    still being written recomputes rather than serving a partial set, and no
+    status test is needed. A failed read is never cached, because it can be
+    transient and a stuck failure would outlast its cause.
     """
     views = [dict(finding) for finding in findings]
     if not views:
         return views
+    key = (str(run.get("run_id", "")), _anchor_digest(views))
+    contexts = services.quote_contexts.get(key)
+    if contexts is None:
+        contexts = _read_quote_contexts(services, run, views)
+        if all(CONTEXT_UNAVAILABLE_KEY not in window_set for window_set in contexts):
+            _remember_quote_contexts(services, key, contexts)
+    else:
+        services.quote_contexts.move_to_end(key)
+    for view, window_set in zip(views, contexts, strict=True):
+        view.update(window_set)
+    return views
+
+
+def _read_quote_contexts(
+    services: WebServices, run: dict[str, Any], views: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Download both stored documents once and build every window from them."""
     documents = run.get("documents") or {}
+    contexts: list[dict[str, Any]] = []
     try:
         with tempfile.TemporaryDirectory(prefix="specguard-context-") as directory:
             root = Path(directory)
@@ -871,21 +907,63 @@ def _findings_with_context(
                 local_paths[role] = local_path
             page_cache: dict[tuple[str, int], str | None] = {}
             for view in views:
-                view["spec_context"] = _quote_context(
-                    local_paths["specification"], view.get("spec_quote"), page_cache, "spec"
-                )
-                view["cut_sheet_context"] = _quote_context(
-                    local_paths["submitted_document"],
-                    view.get("cut_sheet_quote"),
-                    page_cache,
-                    "cut_sheet",
+                contexts.append(
+                    {
+                        "spec_context": _quote_context(
+                            local_paths["specification"],
+                            view.get("spec_quote"),
+                            page_cache,
+                            "spec",
+                        ),
+                        "cut_sheet_context": _quote_context(
+                            local_paths["submitted_document"],
+                            view.get("cut_sheet_quote"),
+                            page_cache,
+                            "cut_sheet",
+                        ),
+                    }
                 )
     except Exception:
-        for view in views:
-            view["spec_context"] = None
-            view["cut_sheet_context"] = None
-            view["context_unavailable"] = CONTEXT_UNAVAILABLE
-    return views
+        return [
+            {
+                "spec_context": None,
+                "cut_sheet_context": None,
+                CONTEXT_UNAVAILABLE_KEY: CONTEXT_UNAVAILABLE,
+            }
+            for _ in views
+        ]
+    return contexts
+
+
+def _remember_quote_contexts(
+    services: WebServices, key: tuple[str, str], contexts: list[dict[str, Any]]
+) -> None:
+    """Store one run's windows, evicting the least recently read run."""
+    services.quote_contexts[key] = contexts
+    services.quote_contexts.move_to_end(key)
+    while len(services.quote_contexts) > QUOTE_CONTEXT_CACHE_SIZE:
+        services.quote_contexts.popitem(last=False)
+
+
+def _anchor_digest(views: list[dict[str, Any]]) -> str:
+    """Digest exactly the anchors a window set is built from.
+
+    Two reads of the same completed run produce the same digest and share one
+    cache entry. A read taken while findings are still being written produces a
+    different digest, so it never reuses a window set built from fewer anchors.
+    """
+    parts: list[str] = []
+    for view in views:
+        for role in ("spec_quote", "cut_sheet_quote"):
+            quote = view.get(role)
+            if isinstance(quote, dict):
+                parts.append(
+                    f"{quote.get('page_number')}\x1f{quote.get('document_sha256')}"
+                    f"\x1f{quote.get('text')}"
+                )
+            else:
+                parts.append("\x1f")
+    return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
 
 
 def _quote_context(

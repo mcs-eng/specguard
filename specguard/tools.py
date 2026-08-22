@@ -28,6 +28,13 @@ FINDINGS_COLLECTION = "findings"
 REJECTIONS_COLLECTION = "rejections"
 INTEGRITY_FINDINGS_COLLECTION = "integrity_findings"
 
+#: First baseline an RFI page uses for content.
+CONTENT_TOP = 54.0
+
+#: Lowest baseline an RFI page may use for content. The footer rule and the
+#: page number sit below it.
+CONTENT_BOTTOM = 730.0
+
 
 def _canonical_path(path: str | Path) -> Path:
     return Path(path).resolve(strict=True)
@@ -633,13 +640,65 @@ class _RfiWriter:
                 )
                 for value, width in zip(row, widths, strict=True)
             ]
-            height = max(len(lines) for lines in cells) * (fontsize + 2.6) + 2 * padding
-            if self._y + height > 730:
-                self._new_page()
-                self._write_table_header(headers, widths, fontsize, padding)
-            self._write_table_row(cells, widths, fontsize, padding, height)
+            self._write_row(headers, cells, widths, fontsize, padding)
         # Leave the table's bottom border clear of the next baseline.
         self._y += fontsize + 4
+
+    def _write_row(
+        self,
+        headers: list[str],
+        cells: list[list[str]],
+        widths: list[float],
+        fontsize: float,
+        padding: float,
+    ) -> None:
+        """Write one row, continuing onto further pages when it exceeds one page.
+
+        A row that fits on a fresh page is moved there whole. A row taller than
+        a whole page cannot be moved to fit, so it is written in slices, each
+        under a repeated header. Claim and quote text is model-generated and
+        has no maximum length; without slicing, every line past the page bottom
+        would be drawn outside the page and a reader would receive an RFI whose
+        claim stops mid-sentence with nothing saying so.
+        """
+        line_height = fontsize + 2.6
+        remaining = [list(lines) for lines in cells]
+        tallest = max(len(lines) for lines in remaining)
+        full_height = tallest * line_height + 2 * padding
+        # Move the row whole only when a fresh page would actually hold it.
+        # Moving a row that is taller than any page just leaves a blank page
+        # behind and starts the slicing one page later.
+        fits_on_a_fresh_page = tallest <= self._fresh_page_line_capacity(
+            line_height, fontsize, padding
+        )
+        if self._y + full_height > CONTENT_BOTTOM and fits_on_a_fresh_page:
+            self._new_page()
+            self._write_table_header(headers, widths, fontsize, padding)
+        while any(remaining):
+            capacity = self._row_line_capacity(line_height, padding)
+            if capacity < 1:
+                self._new_page()
+                self._write_table_header(headers, widths, fontsize, padding)
+                capacity = max(1, self._row_line_capacity(line_height, padding))
+            take = min(capacity, max(len(lines) for lines in remaining))
+            self._write_table_row(
+                [lines[:take] for lines in remaining],
+                widths,
+                fontsize,
+                padding,
+                take * line_height + 2 * padding,
+            )
+            remaining = [lines[take:] for lines in remaining]
+
+    def _row_line_capacity(self, line_height: float, padding: float) -> int:
+        """How many text lines of a row still fit above the page bottom."""
+        return int((CONTENT_BOTTOM - self._y - 2 * padding) // line_height)
+
+    def _fresh_page_line_capacity(self, line_height: float, fontsize: float, padding: float) -> int:
+        """How many text lines a row could hold on an empty page under a header."""
+        header_height = fontsize + 2 * padding + 2
+        usable = CONTENT_BOTTOM - CONTENT_TOP - header_height - 2 * padding
+        return int(usable // line_height)
 
     def _write_table_header(
         self, headers: list[str], widths: list[float], fontsize: float, padding: float
@@ -707,10 +766,10 @@ class _RfiWriter:
 
     def _new_page(self) -> None:
         self._page = self._document.new_page(width=612, height=792)
-        self._y = 54
+        self._y = CONTENT_TOP
 
     def _ensure(self, height: float) -> None:
-        if self._y + height > 730:
+        if self._y + height > CONTENT_BOTTOM:
             self._new_page()
 
     def _write_wrapped(

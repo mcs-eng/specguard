@@ -29,6 +29,7 @@ from specguard.tools import (
     INTEGRITY_FINDINGS_COLLECTION,
     REJECTIONS_COLLECTION,
     AuditTools,
+    _RfiWriter,
 )
 from tests.fake_firestore import FakeFirestoreClient
 from tests.fixtures_pdf import write_pdf
@@ -629,3 +630,99 @@ def test_no_model_registered_tool_returns_the_rfi_filesystem_path(tmp_path: Path
     ]
     assert all(rfi_path not in result for result in results)
     assert all(str(tmp_path) not in result for result in results)
+
+
+# --- Phase 6e review: a row taller than a page is sliced, not clipped -----
+
+
+def _table_pdf(rows: list[list[str]], widths: list[float]) -> pymupdf.Document:
+    """Render one table into a fresh document with the real RFI writer."""
+    document = pymupdf.open()
+    writer = _RfiWriter(document, "SG-TABLE")
+    writer.table(["Claim", "Quote"], rows, widths)
+    writer.finish()
+    return document
+
+
+def test_a_row_taller_than_a_page_keeps_every_line() -> None:
+    """Model claims have no maximum length; a clipped claim stops mid-sentence."""
+    claim = " ".join(f"word{index}" for index in range(1500))
+
+    with _table_pdf([[claim, "short"]], [400.0, 104.0]) as document:
+        rendered = " ".join(" ".join(page.get_text().split()) for page in document)
+        page_count = document.page_count
+
+    assert page_count > 1
+    assert "word0 " in rendered
+    assert "word1499" in rendered
+    assert all(f"word{index}" in rendered for index in range(0, 1500, 97))
+
+
+def test_every_slice_of_an_oversized_row_stays_inside_its_page() -> None:
+    """A drawn cell border below the page bottom is a row that ran off the page."""
+    claim = " ".join(f"word{index}" for index in range(1500))
+
+    with _table_pdf([[claim, "short"]], [400.0, 104.0]) as document:
+        for page in document:
+            for drawing in page.get_drawings():
+                assert drawing["rect"].y1 <= page.rect.height
+
+
+def test_an_oversized_row_starts_where_the_table_starts() -> None:
+    """Moving a row no page can hold would only leave a blank page behind."""
+    claim = " ".join(f"word{index}" for index in range(1500))
+
+    with _table_pdf([[claim, "short"]], [400.0, 104.0]) as document:
+        first_page = " ".join(document[0].get_text().split())
+
+    assert "word0 " in first_page
+
+
+def test_each_slice_of_an_oversized_row_carries_the_header() -> None:
+    """A continued row is unreadable without the column it belongs to."""
+    claim = " ".join(f"word{index}" for index in range(1500))
+
+    with _table_pdf([[claim, "short"]], [400.0, 104.0]) as document:
+        headers_per_page = [page.get_text().count("Claim") for page in document]
+
+    assert len(headers_per_page) > 1
+    assert all(count >= 1 for count in headers_per_page)
+
+
+def test_a_row_that_fits_on_a_fresh_page_is_moved_whole_not_sliced() -> None:
+    """Slicing is for rows that cannot fit anywhere, not for rows near a break."""
+    filler = [["filler", "x"] for _ in range(60)]
+    claim = " ".join(f"word{index}" for index in range(40))
+
+    with _table_pdf([*filler, [claim, "tail"]], [400.0, 104.0]) as document:
+        pages = [" ".join(page.get_text().split()) for page in document]
+
+    carrying = [page for page in pages if "word0 " in page]
+    assert len(carrying) == 1
+    assert "word39" in carrying[0]
+
+
+def test_an_ordinary_rfi_still_renders_one_row_per_finding(tmp_path: Path) -> None:
+    """The slicing path must not change a normal draft."""
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    spec_hash = hashlib.sha256(spec.read_bytes()).hexdigest()
+    cut_hash = hashlib.sha256(cut_sheet.read_bytes()).hexdigest()
+    finding = PersistedFinding(
+        finding_id="finding-1",
+        run_id="run-1234abcd",
+        claim_text="The submitted characteristic conflicts with the requirement.",
+        spec_quote=PersistedQuote(
+            text="Requirement alpha.", page_number=1, document_sha256=spec_hash
+        ),
+        cut_sheet_quote=PersistedQuote(
+            text="Submitted characteristic beta.", page_number=1, document_sha256=cut_hash
+        ),
+    )
+
+    tools = _tools(tmp_path, client, spec, cut_sheet)
+    result = tools.draft_rfi([finding])
+    text = _rfi_text(tools.rfi_path_for(result["rfi_id"]))
+
+    assert text.count("Claim Specification quote Submitted quote Severity") == 1
+    assert 'Page 1: "Requirement alpha."' in text
