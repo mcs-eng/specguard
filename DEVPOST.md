@@ -27,7 +27,7 @@ Source: `https://allthingsagentichackathon.devpost.com/rules` and the hackathon 
 
 **Category:** Taskmaster
 
-**Hosted project URL:** `https://specguard-108657628939.us-central1.run.app` (Cloud Run, us-central1). Judges can run the four public sample audits without a passphrase: Caldra (compliant), Veylan 208V, Torven 70 deg C, and Veylan altered (integrity screen). `POST /audit` keeps arbitrary uploads behind the demo passphrase to protect the demo budget.
+**Hosted project URL:** `https://specguard-108657628939.us-central1.run.app` (Cloud Run, us-central1). Judges can run the four public sample audits without a passphrase: Caldra (compliant), Veylan 208V, Torven 70 deg C, and Veylan altered (integrity screen). `POST /audit` keeps arbitrary uploads behind the demo passphrase to protect the demo budget. The landing page lists sample runs only; an uploaded submittal is reachable by the run URL its uploader receives, and by nothing else.
 
 **Repository URL:** `https://github.com/mcs-eng/specguard` (private until 2026-08-30, public before submission).
 
@@ -45,11 +45,13 @@ An automated reviewer that can assert anything is worse than no reviewer, becaus
 
 ## What it does
 
-You upload one specification PDF and one cut-sheet PDF. SpecGuard screens both text layers, sends the extracted text to one Google ADK agent on Gemini 3.7 Flash, and gets back discrepancy claims, each with one verbatim quote and one page number from each document. A deterministic gate checks that each quote is a contiguous substring of its cited page after one fixed normalization: NFKC, soft-hyphen handling, casefold, whitespace collapse, token boundaries. No fuzzy matching, no edit distance, no cross-page search. A rejected claim goes back to the model once with the machine-readable reason; a second miss is recorded in a separate rejections collection. Verified findings are written to Firestore, where the persistence tool runs the gate again before the write, and the runtime drafts an RFI PDF that carries the quotes, page numbers, and document SHA-256 values as chain-of-custody metadata. A Gemma model then labels each verified finding LOW, MEDIUM, or HIGH as an advisory annotation that can never write into the ledger.
+You upload one specification PDF and one cut-sheet PDF. SpecGuard screens both text layers, sends the extracted text to one Google ADK agent on Gemini 3.7 Flash, and gets back discrepancy claims, each with one verbatim quote and one page number from each document. A deterministic gate checks that each quote is a contiguous substring of its cited page after one fixed normalization: NFKC, soft-hyphen handling, casefold, whitespace collapse, token boundaries. No fuzzy matching, no edit distance, no cross-page search. A rejected claim goes back to the model once with the machine-readable reason; a second miss is recorded in a separate rejections collection. Verified findings are written to Firestore, where the persistence tool runs the gate again before the write, and the runtime drafts an RFI PDF that carries the quotes, page numbers, and document SHA-256 values as chain-of-custody metadata. A Gemma model then labels each verified finding LOW, MEDIUM, or HIGH as an advisory annotation. That annotation writes the severity fields on a record already in the ledger and nothing else: it cannot change a verification status, a rejection reason, a quote, or a claim, and it cannot create a findings record, because the update reads the finding first and refuses anything that is not a verified record of the same run.
 
 If either document carries text hidden by PDF render mode 3, the run is quarantined before any model call: no finding, no RFI, one deterministic integrity record with the hidden spans for a human reviewer.
 
-The findings page on Cloud Run shows each run's status (COMPLETED, QUARANTINED, FAILED, RUNNING), the verified quotes with their page locators, the rejection reasons, the severity label with its model identifier, the hidden-span evidence, and the durable objects keyed by run ID with their SHA-256.
+The findings page on Cloud Run shows each run's status (COMPLETED, QUARANTINED, FAILED, RUNNING), the verified quotes with their page locators inside a window of the cited page, the rejection reasons, the severity label with the model identifier the endpoint reported or the configured endpoint label, and the durable objects keyed by run ID with their SHA-256. For a quarantined run it shows one row per hidden span: the page number, the span text, the font, and the size. No model read that text.
+
+The passing label reads **QUOTES VERIFIED**, and the page states in one line what that does and does not mean: both quotes were found at their cited pages, and that is not a judgment that the discrepancy is real.
 
 ## How it was built
 
@@ -60,7 +62,7 @@ The findings page on Cloud Run shows each run's status (COMPLETED, QUARANTINED, 
 - Cloud Storage: uploads and RFI PDFs stored under `<run_id>/` with each object's SHA-256 recorded on the run document.
 - Secret Manager: the demo passphrase, read by the Cloud Run revision; nothing secret is in the repository.
 - Gemma: `google/gemma3@gemma-3-1b-it` deployed from Vertex Model Garden to a dedicated endpoint on `g2-standard-12` with one NVIDIA L4, called with Application Default Credentials, deployed only for demo and evaluation windows.
-- PyMuPDF 1.28.2 (pinned) for extraction and span data, Pydantic models, Python 3.12, uv, 254 pytest tests that need no network or credentials, ruff.
+- PyMuPDF 1.28.2 (pinned) for extraction and span data, Pydantic models, Python 3.12, uv, ruff, and an offline pytest suite that needs no network or credentials. Its size is not typed here: `scripts/record_test_count.py` runs the suite and writes the count and the revision it describes into README, so the published number always comes from a real run.
 
 ## The honesty contract
 
@@ -72,17 +74,17 @@ SpecGuard defends one narrow, testable claim: uncited claims are blocked from th
 
 **Serving Gemma.** The Gemini API key path returned HTTP 429 behind the AI Studio prepay wall, and the Gemma 3 27B identifier did not exist there. Vertex publisher endpoints returned 404 for every Gemma identifier in six regions. Model Garden worked, inside a quota of one L4 GPU: Gemma 3 12B needs two L4s, Gemma 3 4B rejects the one-L4 machine type outright, and Gemma 3n hit a stock failure. Gemma 3 1B deployed in 1 minute 48 seconds and classified the two planted discrepancies HIGH. Every failed path is recorded as a fallback with its HTTP reason on the finding, never silently.
 
-**Not over-reading a clean table.** The measured evaluation produced zero gate rejections and zero retries across 15 model-calling runs, because the model cited every quote correctly on the first turn. A clean table invites the reader to assume the retry loop was exercised. EVAL.md says it was not, and the loop is proven by tests that drive rejections deterministically.
+**Not over-reading a clean table.** The measured evaluation ran four cases five times, which is 20 runs. The altered fixture is quarantined before any model call, so its five runs make no model call and the other 15 do. Across those 15 model-calling runs the gate rejected nothing and the runtime retried nothing, because the model cited every quote correctly on the first turn. A clean table invites the reader to assume the retry loop was exercised. EVAL.md says it was not, and the loop is proven by tests that drive rejections deterministically.
 
 ## Accomplishments
 
-All numbers from `EVAL.md` (20 real runs, 2026-08-21, every run identifier listed) and `HANDOFF.md`.
+All numbers from `EVAL.md` (20 real runs on 2026-08-22 against code revision `a424ccf`, every run identifier listed) and `HANDOFF.md`.
 
 - Catch rate 100% on both planted discrepancies: 10 of 10 runs persisted exactly the expected quote pair and page numbers. A right quote on the wrong page would have counted as a false positive, not a catch.
 - 0 false positives on the compliant cut sheet across 5 runs.
 - 100% quarantine on the altered fixture across 5 runs, with 0 model calls.
-- 7 of 10 findings labelled HIGH by Gemma; 3 recorded as UNCLASSIFIED with an HTTP 502 reason from the endpoint.
-- 254 tests, ruff clean (`HANDOFF.md`, Phase 6a receipts).
+- All 10 findings labelled HIGH by Gemma. The 2026-08-21 run had recorded 3 of 10 as UNCLASSIFIED with an HTTP 502 reason from the endpoint; on 2026-08-22 the endpoint answered every call. Nothing in the classifier changed between the two runs, and both records are published.
+- ruff clean and an offline suite whose size README records from its own run (`HANDOFF.md` receipts).
 - 16 adversarial bypass attempts against the ledger invariant, all refused (`REVIEW-P3.md`, `tests/adversarial/`).
 - 2 hand-run mutations of the gate, both caught by the suite (`HANDOFF.md`, Phase 1).
 - Live web runs on the deployed service: model step to persisted finding in 10.7 s and 12.2 s on a warm revision with the Gemma endpoint up, and 48.1 s on the first run of the day (Firestore `created_at` deltas on runs `72e1e439…`, `1c94812c…`, `c3a307ab…`).
@@ -91,9 +93,10 @@ All numbers from `EVAL.md` (20 real runs, 2026-08-21, every run identifier liste
 
 - Match inside one extracted block or table cell instead of the whole page, so whitespace collapse cannot splice columns.
 - A structured comparison step that records the unit conversion (158 deg F is 70 deg C) as its own field beside the quote anchors.
-- Rename the passing outcome from VERIFIED to something closer to what the gate proves, such as `text_anchor_found`.
-- Server-side duplicate prevention for the upload route.
+- An account boundary on an upload run. Today the run URL is the capability: it is a 128-bit identifier, it is never listed or enumerated, and anyone holding it can read the run.
 - Real vendor PDFs checked against the gate with `rawdict` extraction before the gate drives anything outside the fixture set.
+
+Two entries that stood here are done. The passing outcome is renamed: it reads **QUOTES VERIFIED**, with one line of meaning beside it, on the page, in the RFI, and in the JSON export. Duplicate prevention on the upload route is server-side: the page mints a submission token, Firestore records it with a one-hour expiry, and an unminted or expired token is refused while a replay of a used one returns the original run.
 
 ## Built with
 
@@ -104,7 +107,7 @@ Python 3.12, Google ADK 2.7.1, Gemini 3.7 Flash, Vertex AI, Gemma 3 1B, Cloud Ru
 - Contest facts: the rules page and home page fetched 2026-08-21 (quoted above).
 - Stack and pins: `pyproject.toml`, `specguard/agent.py`, `deploy-specguard.ps1`.
 - Evaluation numbers: `EVAL.md`.
-- Test count: `uv run pytest -q` on 2026-08-21, `254 passed, 2 warnings in 43.03s`, exit 0 (REVIEW-CLAIMS.md receipts).
+- Test count: generated into README by `scripts/record_test_count.py` from a real `uv run pytest -q` run, together with the code revision it describes. `HANDOFF.md` carries the exit code for each phase.
 - Adversarial count and mutation count: `REVIEW-P3.md`, `HANDOFF.md`.
 - Gemma path history and deployment duration: `HANDOFF.md` Phase 5 Close and Phase 5 Model Upgrade.
 - Web-run latency: read-only Firestore query on 2026-08-21 (REVIEW-CLAIMS.md, receipt R-12).
