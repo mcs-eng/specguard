@@ -1531,6 +1531,34 @@ The sliced row is proven by the test suite and by a rendered PDF, not by a live 
 
 **The published evaluation still names `a424ccf`, and that is correct.** `a424ccf` is the revision that ran. `git diff --stat a424ccf..HEAD -- specguard/` names exactly two files, `specguard/tools.py` and `specguard/web/app.py`, and the changed definitions inside them are `_RfiWriter`, `WebServices`, and `_findings_with_context`. Every counter in the table is fixed before `draft_rfi` renders a page, and no column is read from the web service. `specguard/gate.py`, `specguard/agent.py`, `specguard/integrity.py`, `specguard/severity.py`, `specguard/models.py`, and every `AuditTools` method that produces a counter are byte-identical to the measured revision. Re-running the harness would republish the same table under a later name. The README states this above its table.
 
+
+### Phase 6e second pass — interface polish
+
+Mason asked for the small improvements noted while building, with a reason behind each. Six changes, each in its own commit, each with a test that fails if it regresses.
+
+| Change | Why | Commit |
+| --- | --- | --- |
+| The four sample buttons scale to 0.97 on press and darken on hover. | They are the first control a judge clicks and were the only pressable element on the page with no active state; the upload button, the RFI link, and the gate submit all had one. A control that does not answer a press reads as unresponsive. | `65fe044` |
+| The gate playground leads with its verdict, above the form. | A verdict below the form put the answer off screen on a laptop after a submit. A GET form cannot carry a fragment, and the page runs no script by design, so ordering is the fix. | `e3dc98b` |
+| The verdict card carries its outcome on its left edge, green or red. | The result should read before the words do. | `e3dc98b` |
+| The two near-miss links read as pressable. | They are the whole point of the page and looked like body text. | `e3dc98b` |
+| The RFI and the JSON export are peer buttons in one row. | Both are artifacts a reader opens. One looked like a button and the other like a footnote, so the export read as an aside rather than as the thing a judge can fetch and diff. A run with no RFI now still offers its export. | `297324b` |
+| Every page carries a gate-playground link in its masthead. | The playground was reachable only from the landing page's explainer strip, so a reader who opened a run first had no path to it. | `e872556` |
+| Both rate-limit responses render through the page shell. | A refusal that renders unstyled reads as a broken service rather than as a budget limit. The sample limit page points at the gate playground, which makes no model call and demonstrates the same claim. | `e872556` |
+| `.action`, `.submit-row`, and `.submit-note` moved into `base.html`. | The commit that introduced `.action` claimed it would stop the two artifact links drifting apart, and then a second copy went into the new rate-limit page. The submit row was already duplicated between two templates. A test now asserts each rule appears once per served page. | `2bef0ec` |
+
+Every motion rule added here stays under 300 ms, uses the page's existing `--ease-out` curve, sits behind `@media (hover: hover) and (pointer: fine)` where it is a hover, and drops its transform under `prefers-reduced-motion`. No animation was added to a repeated or keyboard-initiated action.
+
+| Receipt | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `374 passed`. Nine new tests across the six commits. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `46 files already formatted`. |
+| `.\deploy-specguard.ps1` | 0 | Revisions `specguard-00020-ft7`, `specguard-00021-9zl`, and `specguard-00022-qtf`. |
+| Live check | 0 | On the deployed service the verdict card precedes the form, `card verdict verdict-ok` and `card verdict verdict-bad` render for the two outcomes, the near-miss press rule is present, the run page carries both artifact buttons, and the masthead gate link is on `/`, `/gate`, and a run page. |
+
+A rendered browser check was not performed in this session; the Chrome extension was not connected. Every claim above is from the served markup.
+
 ### Local commits
 
 | Commit | Subject |
@@ -1545,5 +1573,11 @@ The sliced row is proven by the test suite and by a rendered PDF, not by a live 
 | `72b08af` | Name the receipts commit in the Phase 6e commit table |
 | `4f870c7` | Slice an oversized RFI row and read each run's documents once |
 | `1fa8e36` | Name the fix commit in the two closed board rows |
+| `ee7d00a` | Record what the published evaluation revision does and does not cover |
+| `65fe044` | Answer the press on the sample audit buttons |
+| `e3dc98b` | Lead the gate playground with its verdict |
+| `297324b` | Offer the RFI and the JSON export as peer actions |
+| `e872556` | Give every page a path to the gate, and render a refusal as a page |
+| `2bef0ec` | Define the shared control styling once, in the shell |
 
 Nothing was pushed, merged, or opened as a pull request.
