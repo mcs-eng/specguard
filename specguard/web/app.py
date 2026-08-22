@@ -222,9 +222,14 @@ def create_app(services: WebServices | None = None) -> FastAPI:
         """
         return Response("ok", media_type="text/plain; charset=utf-8")
 
-    @app.get("/")
+    @app.api_route("/", methods=["GET", "HEAD"])
     def findings_page(request: Request) -> Response:
-        """Show the upload form and the newest audit runs."""
+        """Show the upload form and the newest audit runs.
+
+        HEAD is answered as well as GET. ``curl -I`` is the ordinary way to
+        probe a service, and a read-only page that refuses it reports 405 to
+        anyone checking whether the service is up.
+        """
         return _render_index(request, app.state.services)
 
     @app.get("/gate")

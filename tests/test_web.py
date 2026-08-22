@@ -1224,6 +1224,17 @@ def test_the_static_script_is_served_and_holds_the_landing_page_behaviour() -> N
     assert '<script src="/static/index.js" defer></script>' in client.get("/").text
 
 
+def test_the_root_page_answers_a_head_probe_with_the_security_headers() -> None:
+    client, _, _, _ = _client()
+
+    response = client.head("/")
+
+    assert response.status_code == 200
+    assert response.content == b""
+    for name, value in SECURITY_HEADERS.items():
+        assert response.headers[name] == value
+
+
 def test_the_security_headers_name_the_four_required_controls() -> None:
     assert SECURITY_HEADERS["X-Content-Type-Options"] == "nosniff"
     assert SECURITY_HEADERS["X-Frame-Options"] == "DENY"
