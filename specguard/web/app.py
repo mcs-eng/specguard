@@ -74,6 +74,10 @@ SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
     "X-Frame-Options": "DENY",
+    # One year, subdomains included. Cloud Run serves this service over HTTPS
+    # only and redirects plain HTTP, so a browser that has seen one response
+    # never sends the next request in the clear.
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
 }
 
 
@@ -175,6 +179,11 @@ class WebSettings:
     project_id: str
     bucket_name: str
     demo_passphrase: str
+    #: Whether ``X-Forwarded-For`` may name the client for the rate limits.
+    #: True only behind a proxy that appends the real peer address, which
+    #: Cloud Run does. False everywhere else, because there the header is
+    #: whatever the caller typed.
+    trust_forwarded_for: bool = False
 
     @classmethod
     def from_environment(cls) -> WebSettings:
@@ -183,6 +192,7 @@ class WebSettings:
             project_id=os.environ.get("SPECGUARD_PROJECT", "specguard-hack"),
             bucket_name=os.environ.get("SPECGUARD_RUNS_BUCKET", ""),
             demo_passphrase=os.environ.get("SPECGUARD_DEMO_PASSPHRASE", ""),
+            trust_forwarded_for=os.environ.get("SPECGUARD_TRUST_FORWARDED_FOR") == "1",
         )
 
 
@@ -343,7 +353,7 @@ def create_app(services: WebServices | None = None) -> FastAPI:
         now = datetime.now(UTC)
         if not app_services.repository.reserve_gate_check(
             hour=now.strftime("%Y-%m-%dT%H:00Z"),
-            client_ip=_client_ip(request),
+            client_ip=_client_ip(request, app_services.settings.trust_forwarded_for),
             hourly_limit=GATE_CHECKS_PER_IP_HOUR,
         ):
             return _gate_limit_response(request)
@@ -483,7 +493,7 @@ def create_app(services: WebServices | None = None) -> FastAPI:
             if not app_services.repository.reserve_sample_run(
                 day=now.date().isoformat(),
                 hour=now.strftime("%Y-%m-%dT%H:00Z"),
-                client_ip=_client_ip(request),
+                client_ip=_client_ip(request, app_services.settings.trust_forwarded_for),
                 hourly_limit=SAMPLE_RUNS_PER_IP_HOUR,
                 daily_limit=SAMPLE_RUNS_PER_UTC_DAY,
             ):
@@ -622,19 +632,24 @@ def _sample_audit_bytes(case: SampleAuditCase) -> tuple[bytes, bytes]:
     )
 
 
-def _client_ip(request: Request) -> str:
-    """Return the client address used for the per-client sample limit.
+def _client_ip(request: Request, trust_forwarded_for: bool) -> str:
+    """Return the client address used for the per-client rate limits.
 
-    Cloud Run appends the real peer address as the last entry of
-    ``X-Forwarded-For``, after any value the caller supplied. Reading the last
-    entry, rather than the first, means a caller cannot claim a fresh limit
-    bucket by sending its own header. The ASGI peer address is only the local
-    fallback, because behind Cloud Run it is the front-end proxy.
+    ``X-Forwarded-For`` is read only when the deployment says a proxy appends
+    the real peer address to it. Cloud Run does, so ``deploy-specguard.ps1``
+    sets ``SPECGUARD_TRUST_FORWARDED_FOR=1``. Reading the last entry rather
+    than the first means a caller behind that proxy cannot claim a fresh limit
+    bucket by sending its own header.
+
+    With no such proxy the header is only what the caller typed, so honouring
+    it would let anyone reset every limit by varying one header. A local or
+    directly reachable deployment therefore ignores the header entirely and
+    uses the ASGI peer address, which is the real client there.
     """
-    forwarded = request.headers.get("x-forwarded-for", "")
-    appended = forwarded.rsplit(",", 1)[-1].strip()
-    if appended:
-        return appended
+    if trust_forwarded_for:
+        appended = request.headers.get("x-forwarded-for", "").rsplit(",", 1)[-1].strip()
+        if appended:
+            return appended
     return request.client.host if request.client is not None else "unknown"
 
 

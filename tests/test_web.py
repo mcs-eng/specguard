@@ -199,6 +199,7 @@ def _client(
     failure: Exception | None = None,
     fail_upload_at: int | None = None,
     failing_create_calls: frozenset[int] = frozenset(),
+    trust_forwarded_for: bool = True,
 ) -> tuple[TestClient, FakeRunRepository, FakeObjectStorage, FakeAuditRunner]:
     repository = FakeRunRepository(failing_create_calls=failing_create_calls)
     storage = FakeObjectStorage(fail_upload_at=fail_upload_at)
@@ -209,6 +210,7 @@ def _client(
                 project_id="test-project",
                 bucket_name="test-runs",
                 demo_passphrase="test-passphrase",
+                trust_forwarded_for=trust_forwarded_for,
             ),
             repository=repository,
             storage=storage,
@@ -303,6 +305,59 @@ def test_sample_audit_per_ip_limit_reads_the_address_cloud_run_appended() -> Non
     assert blocked.status_code == 429
     assert other_client.status_code == 303
     assert len(runner.calls) == 7
+
+
+def test_an_untrusted_deployment_ignores_the_forwarded_header_entirely() -> None:
+    """With no proxy appending the peer address, the header is caller-supplied.
+
+    Honouring it there would let one caller reset every per-address limit by
+    varying one header, so the limit is keyed on the real peer address and the
+    header is not read at all.
+    """
+    client, repository, _, runner = _client(trust_forwarded_for=False)
+
+    for index in range(6):
+        response = client.post(
+            "/sample/caldra",
+            headers={"x-forwarded-for": f"203.0.113.{index}"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+    blocked = client.post(
+        "/sample/caldra",
+        headers={"x-forwarded-for": "203.0.113.200"},
+        follow_redirects=False,
+    )
+
+    assert blocked.status_code == 429
+    assert len(runner.calls) == 6
+    assert list(repository.sample_runs_by_hour_ip)[0][1] == "testclient"
+
+
+def test_a_trusted_deployment_reads_the_appended_address(monkeypatch: Any) -> None:
+    """Cloud Run appends the peer address, and the deploy script turns this on."""
+    monkeypatch.setenv("SPECGUARD_TRUST_FORWARDED_FOR", "1")
+    assert WebSettings.from_environment().trust_forwarded_for is True
+    monkeypatch.delenv("SPECGUARD_TRUST_FORWARDED_FOR")
+    assert WebSettings.from_environment().trust_forwarded_for is False
+
+    client, repository, _, _ = _client(trust_forwarded_for=True)
+
+    client.post(
+        "/sample/caldra",
+        headers={"x-forwarded-for": "10.0.0.1, 198.51.100.4"},
+        follow_redirects=False,
+    )
+
+    assert list(repository.sample_runs_by_hour_ip)[0][1] == "198.51.100.4"
+
+
+def test_the_deploy_script_turns_on_the_forwarded_header() -> None:
+    """The one deployment behind an appending proxy is the one that trusts it."""
+    script = (Path(__file__).parents[1] / "deploy-specguard.ps1").read_text(encoding="utf-8")
+
+    assert "SPECGUARD_TRUST_FORWARDED_FOR=1" in script
 
 
 def test_sample_audit_per_ip_limit_ignores_a_caller_supplied_prefix() -> None:
@@ -1110,6 +1165,7 @@ def test_sample_limit_survives_a_cold_start() -> None:
                     project_id="test-project",
                     bucket_name="test-runs",
                     demo_passphrase="test-passphrase",
+                    trust_forwarded_for=True,
                 ),
                 repository=repository,
                 storage=FakeObjectStorage(),
@@ -1510,11 +1566,22 @@ def test_a_generated_500_still_carries_the_security_headers() -> None:
         assert response.headers[name] == value
 
 
-def test_the_security_headers_name_the_four_required_controls() -> None:
+def test_the_security_headers_name_the_five_required_controls() -> None:
     assert SECURITY_HEADERS["X-Content-Type-Options"] == "nosniff"
     assert SECURITY_HEADERS["X-Frame-Options"] == "DENY"
     assert SECURITY_HEADERS["Referrer-Policy"] == "no-referrer"
     assert "Content-Security-Policy" in SECURITY_HEADERS
+    assert SECURITY_HEADERS["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"
+    assert len(SECURITY_HEADERS) == 5
+
+
+def test_every_response_pins_the_browser_to_https_for_a_year() -> None:
+    """Without this, a browser sends the first request of a session in the clear."""
+    client, _, _, _ = _client()
+
+    for path in ("/", "/gate", "/health"):
+        header = client.get(path).headers["Strict-Transport-Security"]
+        assert header == "max-age=31536000; includeSubDomains"
 
 
 # --- 1. Gate playground --------------------------------------------------
