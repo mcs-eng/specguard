@@ -289,6 +289,7 @@ This board mirrors the Phase 6d board in `HANDOFF.md`. `FIXED` rows name the cha
 | P4 | Browser-side file checks are advisory. | ACCEPTED — server validation remains authoritative; disclosed in `HANDOFF.md` Phase 5 UI pass. |
 | P4 | Cloud Run concurrency is a steady-state target, not an instant-wide maximum. | ACCEPTED — Cloud Run may overlap instances during deploys or traffic splits; disclosed in [Service limits](#service-limits). |
 | P4 | A run can remain `RUNNING` if both FAILED-record writes fail. | FIXED — `f058e65` displays `STALLED` after ten minutes without rewriting Firestore; disclosed in [Service limits](#service-limits). |
+| P4 | A replayed POST, a second tab, or form.submit() could mint a duplicate run. | FIXED — `f058e65` one-time submission token; a replay returns the original run; receipted in `HANDOFF.md` Phase 6d. |
 | P4 | A reset can race with a live writer. | ACCEPTED — the reset is for one operator on an idle service; disclosed in `HANDOFF.md` Phase 6a. |
 | P6c | A cold start reset the six-per-address hourly sample limit. | FIXED — `f058e65` stores the hourly and daily reservations in one Firestore transaction. |
 | P6c | The run page omitted the recorded severity reason. | FIXED — `f058e65` renders the reason on the run page and in the RFI. |

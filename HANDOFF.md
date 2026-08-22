@@ -1349,6 +1349,7 @@ Every row below is either `FIXED` with its commit or `ACCEPTED` with its reason 
 | P4 | Browser-side file checks are advisory. | ACCEPTED — server validation remains authoritative; disclosed in Phase 5 UI pass. |
 | P4 | Cloud Run concurrency is a steady-state target, not an instant-wide maximum. | ACCEPTED — deploys or traffic splits can overlap instances; disclosed in README.md, Service limits. |
 | P4 | A run can remain `RUNNING` if both FAILED-record writes fail. | FIXED — `f058e65` displays `STALLED` after ten minutes without rewriting Firestore; disclosed in README.md, Service limits. |
+| P4 | A replayed POST, a second tab, or form.submit() could mint a duplicate run. | FIXED — `f058e65` one-time submission token; a replay returns the original run; receipted in Phase 6d. |
 | P4 | A reset can race with a live writer. | ACCEPTED — the reset is for one operator on an idle service; disclosed in Phase 6a. |
 | P6c | A cold start reset the six-per-address hourly sample limit. | FIXED — `f058e65` stores both rate-limit reservations in one Firestore transaction. |
 | P6c | The run page omitted the recorded severity reason. | FIXED — `f058e65` renders the reason on the run page and in the RFI. |
