@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -15,6 +16,7 @@ from pydantic import ValidationError
 
 from specguard import gate, integrity
 from specguard.models import (
+    AgentMode,
     AuditClaim,
     AuditClaimBatch,
     AuditModelUsage,
@@ -22,6 +24,7 @@ from specguard.models import (
     CitedQuote,
     DocumentRole,
     Finding,
+    ModelToolCall,
     PersistedFinding,
     QuarantinedDocument,
     RunQuarantine,
@@ -33,7 +36,24 @@ MODEL_ID = "gemini-3.7-flash"
 MODEL_LOCATION = "global"
 APP_NAME = "specguard"
 MODEL_OUTPUT_INVALID_REASON = "model_output_invalid"
-PROMPT_PATH = Path(__file__).parent / "prompts" / "audit_claims_v1.txt"
+
+#: The environment variable that selects the agent mode for a deployment.
+AGENT_MODE_ENVIRONMENT_VARIABLE = "SPECGUARD_AGENT_MODE"
+
+_PROMPT_DIRECTORY = Path(__file__).parent / "prompts"
+
+#: One versioned instruction file per agent mode.
+PROMPT_PATHS: dict[AgentMode, Path] = {
+    AgentMode.FULL_TEXT: _PROMPT_DIRECTORY / "audit_claims_v1.txt",
+    AgentMode.NAVIGATE: _PROMPT_DIRECTORY / "audit_claims_navigate_v1.txt",
+}
+
+#: The default-mode instruction file, under the name it has always had.
+PROMPT_PATH = PROMPT_PATHS[AgentMode.FULL_TEXT]
+
+#: How much of each specification page the navigate-mode index carries. The
+#: index exists to tell the model which page to open, not to answer for it.
+PAGE_INDEX_CHARACTERS = 160
 
 
 class ClaimGenerator(Protocol):
@@ -43,9 +63,50 @@ class ClaimGenerator(Protocol):
         """Return structured discrepancy claims for one model turn."""
 
 
-def load_audit_prompt() -> str:
-    """Load the versioned, fixture-neutral audit instruction."""
-    return PROMPT_PATH.read_text(encoding="utf-8")
+def resolve_agent_mode(value: str | None = None) -> AgentMode:
+    """Resolve the configured agent mode, defaulting to ``full_text``.
+
+    An unset or empty setting is ``full_text``. An unrecognized setting raises
+    instead of falling back, because a mode that quietly reverted would make
+    every number measured under it describe the other mode.
+    """
+    configured = value if value is not None else os.environ.get(AGENT_MODE_ENVIRONMENT_VARIABLE)
+    if not configured:
+        return AgentMode.FULL_TEXT
+    try:
+        return AgentMode(configured)
+    except ValueError:
+        raise ValueError(
+            f"{AGENT_MODE_ENVIRONMENT_VARIABLE} must be one of "
+            f"{', '.join(mode.value for mode in AgentMode)}, not {configured!r}"
+        ) from None
+
+
+def load_audit_prompt(agent_mode: AgentMode = AgentMode.FULL_TEXT) -> str:
+    """Load the versioned, fixture-neutral audit instruction for one mode."""
+    return PROMPT_PATHS[agent_mode].read_text(encoding="utf-8")
+
+
+def registered_tools(tools: AuditTools, agent_mode: AgentMode) -> list[Any]:
+    """Return the tool list one mode registers to the model.
+
+    ``full_text`` registers all five tools, unchanged. ``navigate`` registers
+    only the read-only pair on
+    :class:`specguard.tools.ModelFacingAuditTools`. A tool-using model that can
+    reach ``persist_finding`` or ``draft_rfi`` can write before the runtime has
+    verified anything, and no runtime path wants a model-initiated write or
+    RFI. The agent reads; the runtime writes.
+    """
+    if agent_mode is AgentMode.NAVIGATE:
+        model_facing = tools.model_facing_tools()
+        return [model_facing.extract_pdf_text, model_facing.verify_quote]
+    return [
+        tools.check_text_integrity,
+        tools.extract_pdf_text,
+        tools.verify_quote,
+        tools.persist_finding,
+        tools.draft_rfi,
+    ]
 
 
 def create_adk_agent(
@@ -54,8 +115,9 @@ def create_adk_agent(
     project_id: str,
     model_id: str = MODEL_ID,
     location: str = MODEL_LOCATION,
+    agent_mode: AgentMode = AgentMode.FULL_TEXT,
 ) -> LlmAgent:
-    """Build the single ADK agent with exactly the five required tools."""
+    """Build the single ADK agent with the tools and prompt its mode selects."""
     model = Gemini(
         model=model_id,
         client_kwargs={
@@ -68,21 +130,33 @@ def create_adk_agent(
         name="specguard_auditor",
         description="Audits one submitted technical document against one specification.",
         model=model,
-        instruction=load_audit_prompt(),
-        tools=[
-            tools.check_text_integrity,
-            tools.extract_pdf_text,
-            tools.verify_quote,
-            tools.persist_finding,
-            tools.draft_rfi,
-        ],
+        instruction=load_audit_prompt(agent_mode),
+        tools=registered_tools(tools, agent_mode),
         output_schema=AuditClaimBatch,
         generate_content_config=types.GenerateContentConfig(temperature=0),
     )
 
 
 class AdkClaimGenerator:
-    """Run structured-output turns through ADK and the Google GenAI SDK."""
+    """Run structured-output turns through ADK and the Google GenAI SDK.
+
+    Besides the turn itself, this class keeps the receipt for the agentic
+    claim: every function call ADK reports the model initiating, in the order
+    it made them, with a bounded reading of the answer each one got. The
+    recording state below is declared at class level and rebound rather than
+    mutated, so it is immutable, unshared between instances, and readable on an
+    instance that was built without ``__init__``.
+    """
+
+    #: Model-initiated calls recorded so far, oldest first.
+    _model_tool_calls: tuple[ModelToolCall, ...] = ()
+
+    #: The ADK function-call identifier for each entry above, by position.
+    #: A model that supplies no identifier leaves ``None`` here.
+    _recorded_call_ids: tuple[str | None, ...] = ()
+
+    #: Zero-based index of the runtime turn currently running.
+    _turn_index: int = 0
 
     def __init__(self, agent: LlmAgent, *, run_id: str) -> None:
         self._session_service = InMemorySessionService()
@@ -110,21 +184,115 @@ class AdkClaimGenerator:
 
         content = types.Content(role="user", parts=[types.Part.from_text(text=message)])
         final_text: str | None = None
-        async for event in self._runner.run_async(
-            user_id=self._user_id,
-            session_id=self._run_id,
-            new_message=content,
-        ):
-            self._record_usage(getattr(event, "usage_metadata", None))
-            if not event.is_final_response() or not event.content:
-                continue
-            text_parts = [part.text for part in event.content.parts or [] if part.text]
-            if text_parts:
-                final_text = "".join(text_parts)
+        try:
+            async for event in self._runner.run_async(
+                user_id=self._user_id,
+                session_id=self._run_id,
+                new_message=content,
+            ):
+                self._record_usage(getattr(event, "usage_metadata", None))
+                self._record_tool_calls(event)
+                self._record_tool_responses(event)
+                if not event.is_final_response() or not event.content:
+                    continue
+                text_parts = [part.text for part in event.content.parts or [] if part.text]
+                if text_parts:
+                    final_text = "".join(text_parts)
+        finally:
+            # The turn advances even when it failed, so a call recorded on a
+            # later turn is never filed under an earlier one.
+            self._turn_index = self._turn_index + 1
 
         if final_text is None:
             raise RuntimeError("the ADK agent returned no final structured response")
         return AuditClaimBatch.model_validate_json(final_text)
+
+    def model_tool_calls(self) -> list[ModelToolCall]:
+        """Return every model-initiated call recorded so far, in call order."""
+        return list(self._model_tool_calls)
+
+    def _record_tool_calls(self, event: Any) -> None:
+        """Record each function call this event reports the model initiating.
+
+        Only the tool name and the two bounded locating arguments are kept. The
+        quote a model sent to the checking tool is not recorded, because the
+        receipt exists to show which pages were opened, not to hold a second
+        copy of the text.
+        """
+        get_function_calls = getattr(event, "get_function_calls", None)
+        if not callable(get_function_calls):
+            return
+        for function_call in get_function_calls():
+            arguments = getattr(function_call, "args", None) or {}
+            recorded = ModelToolCall(
+                turn_index=self._turn_index,
+                tool_name=getattr(function_call, "name", None) or "unnamed_tool",
+                document_role=_recorded_document_role(arguments.get("document_role")),
+                page_number=_recorded_page_number(arguments.get("page_number")),
+            )
+            self._model_tool_calls = (*self._model_tool_calls, recorded)
+            self._recorded_call_ids = (
+                *self._recorded_call_ids,
+                getattr(function_call, "id", None),
+            )
+
+    def _record_tool_responses(self, event: Any) -> None:
+        """Attach each tool answer in this event to the call it answers."""
+        get_function_responses = getattr(event, "get_function_responses", None)
+        if not callable(get_function_responses):
+            return
+        for function_response in get_function_responses():
+            self._attach_tool_response(function_response)
+
+    def _attach_tool_response(self, function_response: Any) -> None:
+        """Record the bounded outcome fields of one tool answer."""
+        slot = self._slot_for_response(function_response)
+        if slot is None:
+            return
+        response = getattr(function_response, "response", None)
+        if not isinstance(response, dict):
+            return
+        verified = response.get("verified")
+        error_code = response.get("error_code")
+        if verified is None and error_code is None:
+            return
+        calls = list(self._model_tool_calls)
+        calls[slot] = calls[slot].model_copy(
+            update={
+                "response_verified": verified if isinstance(verified, bool) else None,
+                "response_error_code": None if error_code is None else str(error_code),
+            }
+        )
+        self._model_tool_calls = tuple(calls)
+
+    def _slot_for_response(self, function_response: Any) -> int | None:
+        """Find the recorded call one answer belongs to.
+
+        ADK pairs an answer to its call by identifier. A model that supplies no
+        identifier falls back to the most recent recorded call of the same name
+        that carries no answer yet.
+        """
+        call_id = getattr(function_response, "id", None)
+        name = getattr(function_response, "name", None)
+        if call_id is not None:
+            return next(
+                (
+                    slot
+                    for slot, recorded_id in enumerate(self._recorded_call_ids)
+                    if recorded_id == call_id
+                ),
+                None,
+            )
+        return next(
+            (
+                slot
+                for slot in reversed(range(len(self._model_tool_calls)))
+                if self._model_tool_calls[slot].tool_name == name
+                and self._model_tool_calls[slot].response_verified is None
+                and self._model_tool_calls[slot].response_error_code is None
+            ),
+            None,
+        )
 
     def audit_model_usage(self) -> AuditModelUsage:
         """Return exact ADK usage counts, or record that this path exposed none."""
@@ -164,6 +332,24 @@ def _add_usage_count(current: int | None, reported: Any) -> int | None:
     return current + int(reported)
 
 
+def _recorded_document_role(value: Any) -> DocumentRole | None:
+    """Read a bound role out of a model argument, or record none."""
+    try:
+        return DocumentRole(value)
+    except ValueError:
+        return None
+
+
+def _recorded_page_number(value: Any) -> int | None:
+    """Record the page a model asked for, exactly as it supplied it."""
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 class AuditRuntime:
     """Screen both documents, then apply one verification retry per claim.
 
@@ -181,6 +367,11 @@ class AuditRuntime:
        screen read it.
     2. The verification gate runs on every quoted anchor, and again at write
        time inside the persistence tool.
+
+    ``agent_mode`` changes only what the model is shown and which tools it may
+    call. Both controls above run identically in either mode, and in
+    ``navigate`` mode the runtime still owns every write: the model is
+    registered no tool that can write.
     """
 
     def __init__(
@@ -193,6 +384,7 @@ class AuditRuntime:
         run_id: str,
         severity_classifier: Any = None,
         project_id: str | None = None,
+        agent_mode: AgentMode = AgentMode.FULL_TEXT,
     ) -> None:
         self._claim_generator = claim_generator
         self._tools = tools
@@ -201,6 +393,7 @@ class AuditRuntime:
         self._run_id = run_id
         self._severity_classifier = severity_classifier
         self._project_id = project_id
+        self._agent_mode = agent_mode
         if self._spec_path != tools.spec_path or self._cut_sheet_path != tools.cut_sheet_path:
             raise ValueError("the runtime and its tools must be bound to the same two documents")
         self._screened_hashes: dict[Path, str] = {}
@@ -222,9 +415,10 @@ class AuditRuntime:
                         "quarantined this run."
                     )
                 ),
+                agent_mode=self._agent_mode,
             )
 
-        initial_message = self._build_document_message()
+        initial_message = self._build_model_message()
         try:
             initial_batch = await self._claim_generator.generate_claims(initial_message)
         except (ValidationError, RuntimeError):
@@ -237,6 +431,8 @@ class AuditRuntime:
                 findings_persisted=0,
                 rfi_path=None,
                 audit_model_usage=self._audit_model_usage(),
+                agent_mode=self._agent_mode,
+                model_tool_calls=self._recorded_model_tool_calls(),
             )
 
         persisted_findings: list[PersistedFinding] = []
@@ -316,6 +512,8 @@ class AuditRuntime:
             severity_status=severity_status,
             severity_reason=severity_reason,
             audit_model_usage=self._audit_model_usage(),
+            agent_mode=self._agent_mode,
+            model_tool_calls=self._recorded_model_tool_calls(),
         )
 
     def _audit_model_usage(self) -> AuditModelUsage:
@@ -328,6 +526,21 @@ class AuditRuntime:
         return AuditModelUsage(
             unavailable_reason="The audit claim generator did not expose token usage metadata."
         )
+
+    def _recorded_model_tool_calls(self) -> list[ModelToolCall]:
+        """Return the generator's recorded model-initiated calls.
+
+        A generator that records none reports an empty list, which is the true
+        answer for ``full_text`` mode: the model is sent every page and calls
+        nothing.
+        """
+        recorded = getattr(self._claim_generator, "model_tool_calls", None)
+        if not callable(recorded):
+            return []
+        calls = recorded()
+        if not isinstance(calls, list):
+            return []
+        return [call for call in calls if isinstance(call, ModelToolCall)]
 
     def _draft_rfi_and_resolve_path(self, findings: list[PersistedFinding]) -> str:
         """Draft the RFI, then resolve its path off the model-facing channel.
@@ -452,6 +665,57 @@ class AuditRuntime:
         for path, screened_hash in self._screened_hashes.items():
             if gate.build_document_record(path).sha256 != screened_hash:
                 raise RuntimeError("a source document changed after the integrity screen read it")
+
+    def _build_model_message(self) -> str:
+        """Build the initial model message this run's mode calls for."""
+        if self._agent_mode is AgentMode.NAVIGATE:
+            return self._build_navigate_message()
+        return self._build_document_message()
+
+    def _build_navigate_message(self) -> str:
+        """Send the submitted document in full and the specification as an index.
+
+        The submitted document is the thing under review, so the model is given
+        all of it. The specification is the thing to be navigated, so the model
+        is given only enough of each page to decide which pages to open, and it
+        opens them through the read-only extraction tool.
+        """
+        index = self._build_specification_page_index()
+        submitted = self._extract_document(
+            self._cut_sheet_path, "SUBMITTED DOCUMENT", DocumentRole.SUBMITTED_DOCUMENT
+        )
+        self._assert_documents_still_match_the_screen()
+        return (
+            "Audit the submitted document below against the governing specification. "
+            "The specification text is not in this message: read its pages with the "
+            "page-reading tool. The labels and page markers are context, not source "
+            f"text.\n\n{index}\n\n{submitted}"
+        )
+
+    def _build_specification_page_index(self) -> str:
+        """Build the deterministic one-line-per-page index of the specification.
+
+        Each line is the start of one page after the gate's own normalizer has
+        run on it, so the index cannot disagree with the gate about what the
+        page says. These reads belong to the runtime and are not charged to the
+        model's page budget: choosing to build an index is not a model
+        decision.
+        """
+        page_count = gate.build_document_record(self._spec_path).page_count
+        lines = [
+            f"SPECIFICATION PAGE INDEX ({page_count} pages). Each line is the start of "
+            "one page, normalized. It is a navigation aid and never a source of quotes."
+        ]
+        for page_number in range(1, page_count + 1):
+            result = self._tools.extract_pdf_text(DocumentRole.SPECIFICATION.value, page_number)
+            if not result["ok"]:
+                raise RuntimeError(
+                    f"SPECIFICATION page {page_number} could not be extracted: "
+                    f"{result.get('error_code')}"
+                )
+            opening = gate.normalize(result["text"] or "")[:PAGE_INDEX_CHARACTERS]
+            lines.append(f"page {page_number}: {opening}")
+        return "\n".join(lines)
 
     def _build_document_message(self) -> str:
         specification = self._extract_document(

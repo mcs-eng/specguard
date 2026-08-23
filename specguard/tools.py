@@ -1,4 +1,10 @@
-"""The five deterministic tools owned by the SpecGuard ADK agent."""
+"""The five deterministic tools owned by the SpecGuard ADK agent.
+
+All five belong to :class:`AuditTools`, which the runtime owns. Which of them
+a model may call depends on the agent mode: ``full_text`` registers all five,
+and ``navigate`` registers only the read-only pair in
+:class:`ModelFacingAuditTools`.
+"""
 
 from __future__ import annotations
 
@@ -37,6 +43,15 @@ QUOTES_VERIFIED_MEANING = (
     "the discrepancy is real."
 )
 
+#: Per-run cap on model-initiated page reads. The cap is a runtime bound, not
+#: a request made of the model in a prompt: the tool stops answering past it.
+#: Every model-initiated call counts, including one the tool refuses, so a
+#: model that loops on a page outside the document still exhausts the budget.
+DEFAULT_PAGE_BUDGET = 40
+
+#: What ``extract_pdf_text`` returns to the model once the budget is spent.
+PAGE_BUDGET_EXHAUSTED = "page_budget_exhausted"
+
 #: First baseline an RFI page uses for content.
 CONTENT_TOP = 54.0
 
@@ -67,6 +82,7 @@ class AuditTools:
         run_id: str,
         output_directory: str | Path,
         now: Callable[[], datetime] | None = None,
+        page_budget: int = DEFAULT_PAGE_BUDGET,
     ) -> None:
         self._firestore = firestore_client
         self._spec_path = _canonical_path(spec_path)
@@ -75,6 +91,8 @@ class AuditTools:
         self._output_directory = Path(output_directory)
         self._now = now or (lambda: datetime.now(UTC))
         self._drafted_rfis: dict[str, Path] = {}
+        self._page_budget = page_budget
+        self._model_page_reads = 0
 
     @property
     def spec_path(self) -> Path:
@@ -85,6 +103,33 @@ class AuditTools:
     def cut_sheet_path(self) -> Path:
         """The resolved submitted-document path this tool set is bound to."""
         return self._cut_sheet_path
+
+    @property
+    def page_budget(self) -> int:
+        """The per-run cap on model-initiated page reads."""
+        return self._page_budget
+
+    @property
+    def model_page_reads(self) -> int:
+        """How many model-initiated page reads this run has spent so far."""
+        return self._model_page_reads
+
+    def model_facing_tools(self) -> ModelFacingAuditTools:
+        """Return the read-only surface that navigate mode registers to the model."""
+        return ModelFacingAuditTools(self)
+
+    def extract_pdf_text_for_model(self, document_role: str, page_number: int) -> dict[str, Any]:
+        """Extract one page for a model turn, against the per-run page budget.
+
+        The budget is checked before the role is, because the cap bounds calls
+        rather than successful reads. Runtime-owned extraction goes through
+        :meth:`extract_pdf_text` and is never counted here: the runtime reads
+        what it needs to build a message, and that is not a model decision.
+        """
+        if self._model_page_reads >= self._page_budget:
+            return {"ok": False, "error_code": PAGE_BUDGET_EXHAUSTED}
+        self._model_page_reads += 1
+        return self.extract_pdf_text(document_role, page_number)
 
     def rfi_path_for(self, rfi_id: str) -> Path | None:
         """Resolve one drafted RFI's filesystem path for the deterministic runtime.
@@ -593,6 +638,57 @@ class AuditTools:
                 ]
             )
         return rows
+
+
+class ModelFacingAuditTools:
+    """The read-only tool surface navigate mode registers to the model.
+
+    Two of :class:`AuditTools` methods are here and three are not. The three
+    that are missing are the ones that write: ``persist_finding``,
+    ``draft_rfi``, and ``persist_integrity_finding``. A tool-using model that
+    can call a write tool can write mid-turn, before the runtime has verified
+    anything, and no runtime path wants a model-initiated write or RFI. The
+    agent reads; the runtime writes.
+
+    Every method here delegates to the same bound :class:`AuditTools`, so the
+    role binding, the error-as-data contract, and the page budget are the ones
+    that instance already enforces. Each docstring below is sent to the model
+    as that tool's description, so it says what the tool does and nothing
+    about any particular document.
+    """
+
+    def __init__(self, tools: AuditTools) -> None:
+        self._tools = tools
+
+    def extract_pdf_text(self, document_role: str, page_number: int) -> dict[str, Any]:
+        """Read the text of one page of one bound document.
+
+        Args:
+            document_role: Either ``specification`` or ``submitted_document``.
+            page_number: One-based page number to read.
+
+        Returns:
+            ``{"ok": true, "text": ...}`` for a page that was read, or
+            ``{"ok": false, "error_code": ...}`` for one that was not. A run
+            has a fixed budget of these reads; past it every call returns
+            ``page_budget_exhausted``.
+        """
+        return self._tools.extract_pdf_text_for_model(document_role, page_number)
+
+    def verify_quote(self, quote: str, page_number: int, document_role: str) -> dict[str, Any]:
+        """Check whether a quote occurs on the cited page of a bound document.
+
+        Args:
+            quote: The exact text to look for.
+            page_number: One-based page number the quote is cited from.
+            document_role: Either ``specification`` or ``submitted_document``.
+
+        Returns:
+            ``{"verified": true}`` when the quote was found on that page, or
+            ``{"verified": false, "rejection_reason": ...}`` when it was not.
+            A false answer means the quote as written is not on that page.
+        """
+        return self._tools.verify_quote(quote, page_number, document_role)
 
 
 class _RfiWriter:

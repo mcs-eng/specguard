@@ -9,7 +9,12 @@ from pathlib import Path
 
 from google.cloud import firestore
 
-from specguard.agent import AdkClaimGenerator, AuditRuntime, create_adk_agent
+from specguard.agent import (
+    AdkClaimGenerator,
+    AuditRuntime,
+    create_adk_agent,
+    resolve_agent_mode,
+)
 from specguard.models import AuditRunSummary
 from specguard.tools import AuditTools
 
@@ -43,6 +48,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 async def _run(args: argparse.Namespace) -> AuditRunSummary:
+    agent_mode = resolve_agent_mode()
     run_id = uuid.uuid4().hex
     firestore_client = firestore.Client(project=args.project)
     try:
@@ -53,7 +59,7 @@ async def _run(args: argparse.Namespace) -> AuditRunSummary:
             run_id=run_id,
             output_directory=args.output_dir,
         )
-        agent = create_adk_agent(tools, project_id=args.project)
+        agent = create_adk_agent(tools, project_id=args.project, agent_mode=agent_mode)
         claim_generator = AdkClaimGenerator(agent, run_id=run_id)
         runtime = AuditRuntime(
             claim_generator=claim_generator,
@@ -62,6 +68,7 @@ async def _run(args: argparse.Namespace) -> AuditRunSummary:
             cut_sheet_path=args.cutsheet,
             run_id=run_id,
             project_id=args.project,
+            agent_mode=agent_mode,
         )
         return await runtime.run()
     finally:
@@ -91,6 +98,7 @@ def _print_quarantine(summary: AuditRunSummary) -> None:
 def _print_summary(summary: AuditRunSummary) -> None:
     print("RUN SUMMARY")
     print(f"run id: {summary.run_id}")
+    print(f"agent mode: {summary.agent_mode.value}")
     _print_quarantine(summary)
     print(f"claims made: {summary.claims_made}")
     print(f"rejected: {summary.rejected}")
@@ -108,6 +116,10 @@ def _print_summary(summary: AuditRunSummary) -> None:
             print(f"audit model prompt tokens: {usage.prompt_tokens}")
             print(f"audit model output tokens: {usage.output_tokens}")
             print(f"audit model total tokens: {usage.total_tokens}")
+    print(f"model-initiated tool calls: {len(summary.model_tool_calls)}")
+    for call in summary.model_tool_calls:
+        role = call.document_role.value if call.document_role is not None else "none"
+        print(f"  turn {call.turn_index} {call.tool_name} role={role} page={call.page_number}")
     print(f"RFI path: {summary.rfi_path or 'not generated'}")
 
 

@@ -8,7 +8,7 @@ from typing import Protocol
 from google.cloud import firestore
 
 from specguard.agent import AdkClaimGenerator, AuditRuntime, create_adk_agent
-from specguard.models import AuditRunSummary
+from specguard.models import AgentMode, AuditRunSummary
 from specguard.tools import AuditTools
 
 
@@ -29,8 +29,9 @@ class AuditRunner(Protocol):
 class GoogleAuditRunner:
     """Construct the existing deterministic runtime for one web request."""
 
-    def __init__(self, *, project_id: str) -> None:
+    def __init__(self, *, project_id: str, agent_mode: AgentMode = AgentMode.FULL_TEXT) -> None:
         self._project_id = project_id
+        self._agent_mode = agent_mode
 
     async def run_audit(
         self,
@@ -50,7 +51,9 @@ class GoogleAuditRunner:
                 run_id=run_id,
                 output_directory=output_directory,
             )
-            agent = create_adk_agent(tools, project_id=self._project_id)
+            agent = create_adk_agent(
+                tools, project_id=self._project_id, agent_mode=self._agent_mode
+            )
             claim_generator = AdkClaimGenerator(agent, run_id=run_id)
             runtime = AuditRuntime(
                 claim_generator=claim_generator,
@@ -59,6 +62,7 @@ class GoogleAuditRunner:
                 cut_sheet_path=cut_sheet_path,
                 run_id=run_id,
                 project_id=self._project_id,
+                agent_mode=self._agent_mode,
             )
             return await runtime.run()
         finally:

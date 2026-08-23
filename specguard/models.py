@@ -45,6 +45,26 @@ class DocumentRole(StrEnum):
     SUBMITTED_DOCUMENT = "submitted_document"
 
 
+class AgentMode(StrEnum):
+    """How the runtime presents the two bound documents to the model.
+
+    ``FULL_TEXT``
+        The runtime extracts every page of both documents and sends all of that
+        text in one message. The model makes no tool call of its own.
+    ``NAVIGATE``
+        The runtime sends the submitted document in full and a deterministic
+        page index of the specification. The model reads the specification
+        pages it wants through the read-only extraction tool.
+
+    The mode changes what the model is shown and which tools it may call. It
+    changes nothing about the verification gate, which runs on every claim in
+    both modes.
+    """
+
+    FULL_TEXT = "full_text"
+    NAVIGATE = "navigate"
+
+
 class Severity(StrEnum):
     """Placeholder severity scale.
 
@@ -290,6 +310,40 @@ class AuditModelUsage(BaseModel):
         return self
 
 
+class ModelToolCall(BaseModel):
+    """One function call a model turn initiated, as ADK reported it.
+
+    This record is a receipt, not a transcript. It carries the tool name, the
+    two bounded arguments that say what the model asked for, and a bounded
+    reading of the tool's answer. It never carries the quote the model sent or
+    the page text the tool returned, so the receipt cannot grow into a second
+    copy of the documents.
+
+    ``page_number`` is recorded exactly as the model supplied it, with no
+    range constraint. A model that asks for page zero produces a receipt that
+    says so; the tool still refuses the read.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    turn_index: int = Field(
+        ge=0, description="Zero-based index of the runtime model turn this call belongs to."
+    )
+    tool_name: str = Field(min_length=1, description="Tool name as ADK reported the call.")
+    document_role: DocumentRole | None = Field(
+        default=None, description="Bound document role the model named, when it named one."
+    )
+    page_number: int | None = Field(
+        default=None, description="Page number the model asked for, exactly as supplied."
+    )
+    response_verified: bool | None = Field(
+        default=None, description="The ``verified`` field of the tool answer, when it had one."
+    )
+    response_error_code: str | None = Field(
+        default=None, description="The ``error_code`` field of the tool answer, when it had one."
+    )
+
+
 class AuditRunSummary(BaseModel):
     """Stable counters and output path for one complete audit run.
 
@@ -318,6 +372,14 @@ class AuditRunSummary(BaseModel):
     audit_model_usage: AuditModelUsage | None = Field(
         default=None,
         description="Exact Gemini usage metadata, or its recorded unavailability reason.",
+    )
+    agent_mode: AgentMode = Field(
+        default=AgentMode.FULL_TEXT,
+        description="How the runtime presented the documents to the model for this run.",
+    )
+    model_tool_calls: list[ModelToolCall] = Field(
+        default_factory=list,
+        description="Every model-initiated tool call this run recorded, in the order made.",
     )
 
     @property
