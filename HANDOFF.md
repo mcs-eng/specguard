@@ -1977,7 +1977,7 @@ Live receipts against that revision, taken by the verification session:
 
 The recorded self-check matches the prompt's contract: the model checked both quotes it returned, and the runtime gate verified them again regardless.
 
-Revision `specguard-00026-4vx` was built from `6434120`, before the Codex corrections in `19599a7` landed. Nothing in those corrections changes an audit verdict on the deployed paths; the visible differences are the run-page section title and the failed-run receipt fix. One redeploy from the branch tip aligns the live service with the repository; that is Mason's call before the shoot.
+Revision `specguard-00026-4vx` was built from `6434120`, before the Codex corrections in `19599a7` landed. Nothing in those corrections changes an audit verdict on the deployed paths; the visible differences are the run-page section title and the failed-run receipt fix. One redeploy from the branch tip aligns the live service with the repository; that is Mason's call before the shoot. Mason made that call the same day: revision `specguard-00027-bwb` was deployed from the branch tip and serves 100 percent of traffic. Verified against it: `GET /health` HTTP 200 in 0.13 s, and the existing run page `f28d276f…` now renders the retitled "Tool calls the model initiated" section, which only the corrected template produces.
 
 ### Board
 
