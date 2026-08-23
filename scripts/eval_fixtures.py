@@ -713,14 +713,26 @@ class _CountingClaimGenerator:
         return await self._inner.generate_claims(message)
 
 
-async def _run_one_case(case: EvalCase, *, project_id: str, output_directory: Path) -> RunOutcome:
+async def _run_one_case(
+    case: EvalCase,
+    *,
+    project_id: str,
+    output_directory: Path,
+    agent_mode: Any = None,
+) -> RunOutcome:
     """Execute one real audit and read its persisted records back from Firestore."""
     from google.cloud import firestore
 
-    from specguard.agent import AdkClaimGenerator, AuditRuntime, create_adk_agent
+    from specguard.agent import (
+        AdkClaimGenerator,
+        AuditRuntime,
+        create_adk_agent,
+        resolve_agent_mode,
+    )
     from specguard.tools import AuditTools
     from specguard.web.repository import FirestoreRunRepository
 
+    mode = resolve_agent_mode() if agent_mode is None else agent_mode
     run_id = uuid.uuid4().hex
     firestore_client = firestore.Client(project=project_id)
     try:
@@ -731,7 +743,7 @@ async def _run_one_case(case: EvalCase, *, project_id: str, output_directory: Pa
             run_id=run_id,
             output_directory=output_directory,
         )
-        agent = create_adk_agent(tools, project_id=project_id)
+        agent = create_adk_agent(tools, project_id=project_id, agent_mode=mode)
         counting = _CountingClaimGenerator(AdkClaimGenerator(agent, run_id=run_id))
         runtime = AuditRuntime(
             claim_generator=counting,
@@ -740,6 +752,7 @@ async def _run_one_case(case: EvalCase, *, project_id: str, output_directory: Pa
             cut_sheet_path=case.cut_sheet_path,
             run_id=run_id,
             project_id=project_id,
+            agent_mode=mode,
         )
         summary = await runtime.run()
     finally:
@@ -862,6 +875,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("iterations must be at least 1")
         return 2
 
+    from specguard.agent import resolve_agent_mode
+
+    agent_mode = resolve_agent_mode()
     cases = load_eval_cases()
     severity_model = args.severity_model or (
         f"`{os.environ['SPECGUARD_GEMMA_MODEL']}` on a Vertex AI endpoint"
@@ -873,7 +889,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     for iteration in range(1, args.iterations + 1):
         for case in cases:
             outcome = asyncio.run(
-                _run_one_case(case, project_id=args.project, output_directory=args.output_dir)
+                _run_one_case(
+                    case,
+                    project_id=args.project,
+                    output_directory=args.output_dir,
+                    agent_mode=agent_mode,
+                )
             )
             outcomes[case.id].append(outcome)
             print(
@@ -920,6 +941,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     catch_rate = overall_catch_rate(results)
     print(
         f"EVAL SUMMARY date={run_date} code_revision={code_revision} "
+        f"agent_mode={agent_mode.value} "
         f"iterations={args.iterations} "
         f"cases={len(results)} runs={sum(r.iterations for r in results)} "
         f"catch_rate={_percent(catch_rate)} "

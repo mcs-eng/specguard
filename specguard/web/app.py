@@ -22,7 +22,8 @@ from fastapi.templating import Jinja2Templates
 from starlette.datastructures import FormData
 
 from specguard import context, gate
-from specguard.models import AuditRunSummary
+from specguard.agent import resolve_agent_mode
+from specguard.models import AgentMode, AuditRunSummary
 from specguard.tools import QUOTES_VERIFIED_MEANING
 from specguard.web.repository import (
     FirestoreRunRepository,
@@ -194,6 +195,10 @@ class WebSettings:
     project_id: str
     bucket_name: str
     demo_passphrase: str
+    #: How the runtime presents the two documents to the model. ``full_text``
+    #: sends every page of both; ``navigate`` sends a specification page index
+    #: and lets the model read the pages it wants through a read-only tool.
+    agent_mode: AgentMode = AgentMode.FULL_TEXT
     #: Whether ``X-Forwarded-For`` may name the client for the rate limits.
     #: True only behind a proxy that appends the real peer address, which
     #: Cloud Run does. False everywhere else, because there the header is
@@ -208,6 +213,7 @@ class WebSettings:
             bucket_name=os.environ.get("SPECGUARD_RUNS_BUCKET", ""),
             demo_passphrase=os.environ.get("SPECGUARD_DEMO_PASSPHRASE", ""),
             trust_forwarded_for=os.environ.get("SPECGUARD_TRUST_FORWARDED_FOR") == "1",
+            agent_mode=resolve_agent_mode(),
         )
 
 
@@ -235,7 +241,9 @@ class WebServices:
             settings=settings,
             repository=FirestoreRunRepository(project_id=settings.project_id),
             storage=CloudStorage(bucket_name=settings.bucket_name, project_id=settings.project_id),
-            audit_runner=GoogleAuditRunner(project_id=settings.project_id),
+            audit_runner=GoogleAuditRunner(
+                project_id=settings.project_id, agent_mode=settings.agent_mode
+            ),
             audit_slots=asyncio.Semaphore(MAX_IN_FLIGHT_AUDITS),
         )
 
@@ -828,6 +836,8 @@ def _run_record(
                 if summary.audit_model_usage is not None
                 else None
             ),
+            "agent_mode": summary.agent_mode.value,
+            "model_tool_calls": [call.model_dump(mode="json") for call in summary.model_tool_calls],
         },
         "documents": {
             "specification": _stored_object_record(specification),
@@ -846,6 +856,8 @@ def _empty_summary() -> dict[str, Any]:
         "findings_persisted": 0,
         "quarantine": None,
         "audit_model_usage": None,
+        "agent_mode": None,
+        "model_tool_calls": [],
     }
 
 
@@ -1245,6 +1257,8 @@ def _export_payload(
             "findings_persisted": summary.get("findings_persisted"),
             "failure": summary.get("failure"),
             "audit_model_usage": _export_usage(summary.get("audit_model_usage")),
+            "agent_mode": summary.get("agent_mode"),
+            "model_tool_calls": _export_model_tool_calls(summary.get("model_tool_calls")),
             "quarantine": _export_quarantine(summary.get("quarantine")),
         },
         "documents": [
@@ -1296,6 +1310,29 @@ def _export_usage(usage: Any) -> dict[str, Any] | None:
         "total_tokens": usage.get("total_tokens"),
         "unavailable_reason": usage.get("unavailable_reason"),
     }
+
+
+def _export_model_tool_calls(calls: Any) -> list[dict[str, Any]]:
+    """Export the model-initiated tool calls one run recorded, by field allowlist.
+
+    An older run stored no such list and exports an empty one. That is the same
+    answer a completed ``full_text`` run gives, and it is the true one for
+    both: neither has a model-initiated call to show.
+    """
+    if not isinstance(calls, list):
+        return []
+    return [
+        {
+            "turn_index": call.get("turn_index"),
+            "tool_name": call.get("tool_name"),
+            "document_role": call.get("document_role"),
+            "page_number": call.get("page_number"),
+            "response_verified": call.get("response_verified"),
+            "response_error_code": call.get("response_error_code"),
+        }
+        for call in calls
+        if isinstance(call, dict)
+    ]
 
 
 def _export_quarantine(quarantine: Any) -> dict[str, Any] | None:
