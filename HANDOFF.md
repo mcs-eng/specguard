@@ -2024,7 +2024,7 @@ Each mechanism is built twice: once with the marker, once without (the visual co
 | 00 | Marker painted normally (render mode 0), the harness control | yes | no | none | `VISIBLE` |
 | 01 | Optional content group, default state OFF | no | yes | none | `NON_THREAT` |
 | 04 | Type3 font with glyphless CharProcs | no | no (renders .notdef boxes) | none | `NON_THREAT` |
-| 07 | ExtGState soft mask driving opacity to zero | **yes** | **yes** | **none** | **`MISS`** |
+| 07 | ExtGState soft mask driving opacity to zero | **yes** | **yes** | **`soft_mask_hidden`** | **`DETECTED`** (closed after this sweep) |
 | 09 | Horizontal scaling `Tz` near zero | yes | yes | `sub_visible_glyph` | `DETECTED` |
 | 12 | Form XObject with a zero-area `/BBox` | no | yes | none | `NON_THREAT` |
 | 13 | Form XObject under a degenerate `cm` | no | yes | none | `NON_THREAT` |
@@ -2037,7 +2037,7 @@ Three mechanisms already covered by existing detectors were not rebuilt here; th
 
 ### Findings
 
-1. **Two real misses.** A soft mask that zeroes a text span's opacity (row 07) and white text on a white page (row 18) both extract and both render invisible while the screen stays clean. White text was already an accepted, disclosed gap; the soft mask was not disclosed anywhere and is the phase's new finding. Both are pinned by `test_the_two_known_misses_are_still_missed`, which fails if a later detector closes either — at which point the disposition moves to `DETECTED` with the change commit named.
+1. **Two real misses at measurement; one closed since.** A soft mask that zeroes a text span's opacity (row 07) and white text on a white page (row 18) both extract and both render invisible while the screen stayed clean. White text was already an accepted, disclosed gap. The soft mask was not disclosed anywhere and was the phase's new finding; it is now closed by the `soft_mask_hidden` detector (see the fix subsection below), so row 07 reads `DETECTED`. White text remains the one accepted miss, pinned by `test_white_text_remains_the_one_disclosed_miss`.
 2. **The attack surface is narrower than the naive catalog.** Five structural hiding tricks — an optional-content group set off, a zero-area Form XObject box, a degenerate transform, a zero-area clip, text outside the media box — all cause PyMuPDF extraction to return nothing. A mechanism that hides text from the extractor as well as the reader cannot poison an extraction-based review, so it is a non-threat to this screen, not a blind spot. The README wording for the media-box case was sharpened accordingly.
 3. **The glyphless Type3 font is a non-threat twice over.** As built it renders `.notdef` boxes (a reader sees boxes) and extraction returns nothing (row 04). It conceals nothing and reveals boxes, so it is not a working concealment against either a reader or the screen.
 4. **`sub_visible_glyph` is broader than its name.** A horizontal-scale collapse (`Tz` near zero, row 09) is caught by the size-after-matrix rule, because MuPDF reports the effective size after the full text matrix.
@@ -2053,7 +2053,7 @@ A content-stream soft-mask detector: flag a text-showing operator that runs unde
   {"row": "00-visible-baseline", "mechanism": "render mode 0, harness control", "extracted": true, "invisible": false, "detectors": [], "class": "VISIBLE"},
   {"row": "01-optional-content-off", "mechanism": "optional content group default OFF", "extracted": false, "invisible": true, "detectors": [], "class": "NON_THREAT"},
   {"row": "04-type3-glyphless", "mechanism": "Type3 font, glyphless CharProcs", "extracted": false, "invisible": false, "detectors": [], "class": "NON_THREAT"},
-  {"row": "07-soft-mask-zero", "mechanism": "ExtGState SMask to zero opacity", "extracted": true, "invisible": true, "detectors": [], "class": "MISS"},
+  {"row": "07-soft-mask-zero", "mechanism": "ExtGState SMask to zero opacity", "extracted": true, "invisible": true, "detectors": ["soft_mask_hidden"], "class": "DETECTED"},
   {"row": "09-horizontal-scale-zero", "mechanism": "Tz near zero", "extracted": true, "invisible": true, "detectors": ["sub_visible_glyph"], "class": "DETECTED"},
   {"row": "12-zero-area-form-bbox", "mechanism": "Form XObject zero-area BBox", "extracted": false, "invisible": true, "detectors": [], "class": "NON_THREAT"},
   {"row": "13-degenerate-cm", "mechanism": "Form XObject degenerate cm", "extracted": false, "invisible": true, "detectors": [], "class": "NON_THREAT"},
@@ -2082,3 +2082,42 @@ No Codex review ran yet; this section is the hand-off point for it. No detector 
 ### Local commits
 
 Recorded in the commit that carries this section.
+
+### Fix — the `soft_mask_hidden` detector (closes the row-07 miss)
+
+The soft-mask miss is closed by a sixth detector rather than left as a disclosed gap. `specguard/integrity.py` now carries `soft_mask_hidden` in `DETECTORS`, between `content_stream_render_mode` and `out_of_crop_box`.
+
+**How it works.** The existing content-stream scan already tracks the `Tr` render mode across `q`/`Q` and into Form XObjects. The same scan now also tracks the `gs` operator: when an ExtGState names a soft mask, the scan resolves it and records whether that mask hides. The soft-mask state is saved and restored on `q`/`Q` alongside the render mode, and inherited into Form XObjects; the per-form scan cache key gained the soft-mask boolean, so it stays bounded. When a text-showing operator runs while a hiding mask is active, the operand is recorded and the page is flagged.
+
+**It evaluates the mask, not its presence.** A soft mask is common and legitimate on images, so flagging any masked text would false-positive. Instead, `_soft_mask_hides` reads the mask's transparency-group content stream through `_group_max_luminosity`, which tracks the maximum luminosity of the constant fills the group actually paints. A luminosity mask whose maximum backdrop luminosity is below `SOFT_MASK_LUMINOSITY_HIDES_BELOW` (0.1) drives what it masks to near-zero opacity and is flagged; anything lighter is left alone.
+
+**Disclosed limits, each pinned:**
+
+- Only luminosity masks are evaluated. An alpha-type mask is not, and `test_an_alpha_soft_mask_is_not_flagged` pins that.
+- A mask whose backdrop is a shading (`sh`) or an image, whose luminosity cannot be bounded from constant fills, is not flagged. This is the honest gradient-and-image construct, so the rule stays silent there rather than false-quarantine it; an all-dark shading mask is the residual gap.
+
+**Proof.**
+
+| Test | Asserts |
+| --- | --- |
+| `test_a_luminosity_soft_mask_to_zero_is_flagged` | The known-bad flags `soft_mask_hidden` with the operand and a luminosity evidence line. |
+| `test_a_soft_mask_that_leaves_text_visible_is_not_flagged` | A 0.5 and a 1.0 luminosity mask stay clean. |
+| `test_a_cleared_soft_mask_is_not_flagged` | `/SMask /None` stays clean. |
+| `test_an_alpha_soft_mask_is_not_flagged` | An alpha mask stays clean. |
+| `test_a_soft_mask_on_an_image_does_not_flag_clean_text` | A mask set and restored around an image leaves following text clean, proving `q`/`Q` restores the mask. |
+| `test_every_flag_names_a_known_detector_and_carries_evidence` | Now includes a soft-mask fixture, so the detector is exercised in the completeness set. |
+| `tests/test_integrity_redteam.py` row 07 | Reclassified `DETECTED` with `detectors == ["soft_mask_hidden"]`; `test_the_soft_mask_miss_was_closed_by_a_detector` pins it. |
+
+All committed fixtures stay clean on the new detector; the altered fixture still reports only `render_mode_3`. No other detector's behaviour changed: the render-mode logic is byte-for-byte the same, with the soft-mask state threaded in parallel.
+
+**Files:** `specguard/integrity.py` (the detector), `tests/fixtures_pdf.py` (four builders: known-bad and the four honest near-misses), `tests/test_integrity.py` (the dedicated tests and the completeness fixture), `tests/test_integrity_redteam.py` (row 07 reclassified), `README.md` (Detected list and board), this file.
+
+### Local quality-gate receipts (fix)
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest tests/test_integrity.py tests/test_integrity_redteam.py -q` | 0 | `78 passed` |
+| `uv run pytest -q` | 0 | `483 passed, 2 warnings`. The suite was 477 before the fix. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `51 files already formatted` |
+| `git diff --check` | 0 | No whitespace errors. |

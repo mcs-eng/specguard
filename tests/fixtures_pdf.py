@@ -509,3 +509,138 @@ def write_invalid_render_mode_pdf(path: Path, text: str) -> Path:
     document.save(str(path))
     document.close()
     return path
+
+
+# ---------------------------------------------------------------------------
+# Builders for the soft-mask detector
+#
+# A luminosity soft mask sets opacity from the graphics state, outside the
+# span, so MuPDF reports the masked span's own alpha as opaque. These builders
+# drive the mask from a solid fill whose luminosity decides whether the text is
+# hidden. All content is fictional.
+# ---------------------------------------------------------------------------
+
+
+def _wire_extgstate(document: pymupdf.Document, page: pymupdf.Page, value: str) -> None:
+    """Set the page's ``/ExtGState`` resource sub-dictionary."""
+    kind, raw = document.xref_get_key(page.xref, "Resources")
+    if kind == "xref":
+        resources_xref, key = int(raw.split()[0]), "ExtGState"
+    else:
+        resources_xref, key = page.xref, "Resources/ExtGState"
+    document.xref_set_key(resources_xref, key, value)
+
+
+def _luminosity_smask(document: pymupdf.Document, luminosity: float, subtype: str) -> int:
+    """Return an ExtGState xref whose soft mask paints one uniform luminosity."""
+    group = document.get_new_xref()
+    document.update_object(
+        group,
+        "<</Type/XObject/Subtype/Form"
+        f"/BBox[0 0 {PAGE_WIDTH} {PAGE_HEIGHT}]"
+        "/Group<</S/Transparency/CS/DeviceGray>>>>",
+    )
+    document.update_stream(group, f"{luminosity} g 0 0 {PAGE_WIDTH} {PAGE_HEIGHT} re f".encode())
+    graphics_state = document.get_new_xref()
+    document.update_object(
+        graphics_state, f"<</Type/ExtGState/SMask<</S/{subtype}/G {group} 0 R>>>>"
+    )
+    return graphics_state
+
+
+def write_soft_mask_pdf(path: Path, visible: str, concealed: str, luminosity: float = 0.0) -> Path:
+    """Write one page whose ``concealed`` line is drawn under a luminosity mask.
+
+    ``luminosity`` is the uniform backdrop the mask paints. At ``0.0`` the mask
+    drives the text to zero opacity and it is the known-bad case. A luminosity
+    at or above the detector threshold leaves the text visible and is the
+    near-miss.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_text((72.0, 100.0), visible, fontname=SIMPLE_FONT, fontsize=11)
+    reference = _font_reference(page).encode("latin-1")
+    graphics_state = _luminosity_smask(document, luminosity, "Luminosity")
+    _wire_extgstate(document, page, f"<</GSsm {graphics_state} 0 R>>")
+    payload = concealed.encode("latin-1").replace(b"\\", b"\\\\").replace(b"(", b"\\(")
+    _append_operators(
+        document,
+        page,
+        b"q /GSsm gs BT /" + reference + b" 11 Tf 1 0 0 1 72 130 Tm (" + payload + b") Tj ET Q",
+    )
+    document.save(str(path))
+    document.close()
+    return path
+
+
+def write_alpha_soft_mask_pdf(path: Path, visible: str, concealed: str) -> Path:
+    """Write one page whose ``concealed`` line sits under an alpha-type soft mask.
+
+    The mask paints zero, but the rule evaluates only luminosity masks, so this
+    is a near-miss the rule leaves alone. It is the disclosed alpha-mask limit.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_text((72.0, 100.0), visible, fontname=SIMPLE_FONT, fontsize=11)
+    reference = _font_reference(page).encode("latin-1")
+    graphics_state = _luminosity_smask(document, 0.0, "Alpha")
+    _wire_extgstate(document, page, f"<</GSsm {graphics_state} 0 R>>")
+    payload = concealed.encode("latin-1").replace(b"\\", b"\\\\").replace(b"(", b"\\(")
+    _append_operators(
+        document,
+        page,
+        b"q /GSsm gs BT /" + reference + b" 11 Tf 1 0 0 1 72 130 Tm (" + payload + b") Tj ET Q",
+    )
+    document.save(str(path))
+    document.close()
+    return path
+
+
+def write_soft_mask_none_pdf(path: Path, visible: str, concealed: str) -> Path:
+    """Write one page whose ``concealed`` line sits under an explicit ``/SMask /None``.
+
+    The graphics state names a soft mask and clears it to ``/None``, so the text
+    is painted normally. It is the near-miss for a cleared mask.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_text((72.0, 100.0), visible, fontname=SIMPLE_FONT, fontsize=11)
+    reference = _font_reference(page).encode("latin-1")
+    graphics_state = document.get_new_xref()
+    document.update_object(graphics_state, "<</Type/ExtGState/SMask/None>>")
+    _wire_extgstate(document, page, f"<</GSnone {graphics_state} 0 R>>")
+    payload = concealed.encode("latin-1").replace(b"\\", b"\\\\").replace(b"(", b"\\(")
+    _append_operators(
+        document,
+        page,
+        b"q /GSnone gs BT /" + reference + b" 11 Tf 1 0 0 1 72 130 Tm (" + payload + b") Tj ET Q",
+    )
+    document.save(str(path))
+    document.close()
+    return path
+
+
+def write_image_soft_mask_pdf(path: Path, text: str) -> Path:
+    """Write one page that applies a zero-luminosity mask to an image, not to text.
+
+    The mask is set and restored around an image draw, then ``text`` is shown
+    with no mask in effect. It is the near-miss that proves the rule flags text
+    under a mask, not every page that carries a soft mask.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_text((72.0, 100.0), text, fontname=SIMPLE_FONT, fontsize=11)
+    reference = _font_reference(page).encode("latin-1")
+    graphics_state = _luminosity_smask(document, 0.0, "Luminosity")
+    _wire_extgstate(document, page, f"<</GSsm {graphics_state} 0 R>>")
+    pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 10, 10))
+    pixmap.set_rect(pixmap.irect, (10, 10, 10))
+    page.insert_image(pymupdf.Rect(72.0, 600.0, 120.0, 648.0), pixmap=pixmap)
+    _append_operators(
+        document,
+        page,
+        b"q /GSsm gs Q BT /" + reference + b" 11 Tf 1 0 0 1 72 160 Tm (Ordinary line.) Tj ET",
+    )
+    document.save(str(path))
+    document.close()
+    return path

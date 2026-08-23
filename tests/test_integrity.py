@@ -22,12 +22,14 @@ from specguard import gate, integrity
 from specguard.integrity import check_text_layer
 from tests.fixtures_pdf import (
     write_alpha_pdf,
+    write_alpha_soft_mask_pdf,
     write_cropped_pdf,
     write_edge_cropped_pdf,
     write_fanned_out_xobject_pdf,
     write_forged_inline_image_pdf,
     write_glyph_size_pdf,
     write_image_only_pdf,
+    write_image_soft_mask_pdf,
     write_inline_image_pdf,
     write_invalid_render_mode_pdf,
     write_matrix_scaled_pdf,
@@ -35,6 +37,8 @@ from tests.fixtures_pdf import (
     write_pdf,
     write_render_mode_pdf,
     write_saved_render_mode_pdf,
+    write_soft_mask_none_pdf,
+    write_soft_mask_pdf,
     write_transparent_fill_stroked_pdf,
     write_transparent_stroke_pdf,
     write_xobject_render_mode_pdf,
@@ -550,6 +554,7 @@ def test_every_flag_names_a_known_detector_and_carries_evidence(tmp_path: Path) 
         write_alpha_pdf(tmp_path / "b.pdf", "Transparent line.", 0.0),
         write_render_mode_pdf(tmp_path / "c.pdf", "Visible line.", "Clip only line.", 7),
         write_glyph_size_pdf(tmp_path / "d.pdf", "Tiny line.", 0.5),
+        write_soft_mask_pdf(tmp_path / "e.pdf", "Visible line.", "Masked line.", 0.0),
         ALTERED_FIXTURE,
     ]
     seen: set[str] = set()
@@ -564,6 +569,58 @@ def test_every_flag_names_a_known_detector_and_carries_evidence(tmp_path: Path) 
             seen.add(span.detector)
 
     assert seen == set(integrity.DETECTORS)
+
+
+def test_a_luminosity_soft_mask_to_zero_is_flagged(tmp_path: Path) -> None:
+    """Text under a luminosity soft mask that paints near-black is flagged.
+
+    The mask sets opacity from the graphics state, so the span's own alpha
+    reads opaque and the zero-alpha rule cannot see it. The soft-mask rule
+    reads the mask's group and flags the near-zero luminosity.
+    """
+    path = write_soft_mask_pdf(tmp_path / "hidden.pdf", "Visible line.", "Masked line.", 0.0)
+
+    report = check_text_layer(path)
+
+    assert report.detectors == [integrity.DETECTOR_SOFT_MASK_HIDDEN]
+    span = next(s for s in report.hidden_spans if s.detector == integrity.DETECTOR_SOFT_MASK_HIDDEN)
+    assert "Masked line." in span.text
+    assert "luminosity" in span.evidence.lower()
+
+
+def test_a_soft_mask_that_leaves_text_visible_is_not_flagged(tmp_path: Path) -> None:
+    """A mask above the luminosity threshold does not hide, so it is not flagged."""
+    at_threshold = write_soft_mask_pdf(tmp_path / "mid.pdf", "Visible.", "Half.", 0.5)
+    light = write_soft_mask_pdf(tmp_path / "light.pdf", "Visible.", "Bright.", 1.0)
+
+    assert check_text_layer(at_threshold).clean is True
+    assert check_text_layer(light).clean is True
+
+
+def test_a_cleared_soft_mask_is_not_flagged(tmp_path: Path) -> None:
+    """An ExtGState that sets /SMask /None paints its text normally."""
+    path = write_soft_mask_none_pdf(tmp_path / "none.pdf", "Visible.", "Ordinary.")
+
+    assert check_text_layer(path).clean is True
+
+
+def test_an_alpha_soft_mask_is_not_flagged(tmp_path: Path) -> None:
+    """Only luminosity masks are evaluated; an alpha mask is a disclosed limit."""
+    path = write_alpha_soft_mask_pdf(tmp_path / "alpha.pdf", "Visible.", "Alpha masked.")
+
+    assert check_text_layer(path).clean is True
+
+
+def test_a_soft_mask_on_an_image_does_not_flag_clean_text(tmp_path: Path) -> None:
+    """The rule flags text under a mask, not every page that carries one.
+
+    A zero-luminosity mask is set and restored around an image, then text is
+    shown with no mask in effect. The page must stay clean, which proves the
+    graphics-state stack restores the mask on ``Q``.
+    """
+    path = write_image_soft_mask_pdf(tmp_path / "image.pdf", "Visible line.")
+
+    assert check_text_layer(path).clean is True
 
 
 def test_a_flag_from_any_detector_marks_the_document_flagged(tmp_path: Path) -> None:

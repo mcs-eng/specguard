@@ -15,7 +15,7 @@ read.
    describes another. The screen reads PyMuPDF span data and PDF content
    streams only. It renders no image, runs no OCR, and compares no pixels. It
    reads every page of the document.
-2. Detectors. Five rules run over every page, in a fixed order, and every flag
+2. Detectors. Six rules run over every page, in a fixed order, and every flag
    names the rule that produced it:
 
    ``render_mode_3``
@@ -64,6 +64,23 @@ read.
        flags any span whose rectangle does not intersect the original crop box.
        The pass is skipped when the two boxes are equal, which is the case for
        every committed fixture.
+   ``soft_mask_hidden``
+       Text shown while a luminosity soft mask (``ExtGState`` ``/SMask``) is
+       active whose masking backdrop paints a maximum luminosity below
+       ``SOFT_MASK_LUMINOSITY_HIDES_BELOW``. A soft mask sets opacity from the
+       graphics state, outside the span, so MuPDF reports the span's own alpha
+       as opaque and the ``zero_alpha`` rule cannot see it. The rule tracks the
+       ``gs`` operator across ``q``/``Q`` and into Form XObjects exactly as the
+       render-mode rule tracks ``Tr``, and it evaluates the mask rather than its
+       mere presence: the mask's group content stream is read, and the rule
+       flags only a mask whose painted luminosity is near zero, so a soft mask
+       that fades text partly, a lighter mask, and a soft mask applied to an
+       image rather than to text are all left alone. Two limits are disclosed
+       and deliberate: only luminosity masks are evaluated, not alpha masks;
+       and a mask whose backdrop is a shading or an image, whose luminosity this
+       rule cannot bound from constant fills, is not flagged, so an all-dark
+       shading mask is a known gap rather than a false quarantine of the honest
+       gradient and image masks that share that construct.
 
 3. Any flag quarantines. The runtime treats one flag from any detector exactly
    as it treats a render-mode-3 flag: the run stops before any model call.
@@ -133,6 +150,7 @@ DETECTOR_ZERO_ALPHA = "zero_alpha"
 DETECTOR_SUB_VISIBLE_GLYPH = "sub_visible_glyph"
 DETECTOR_CONTENT_STREAM_RENDER_MODE = "content_stream_render_mode"
 DETECTOR_OUT_OF_CROP_BOX = "out_of_crop_box"
+DETECTOR_SOFT_MASK_HIDDEN = "soft_mask_hidden"
 
 #: Every detector, in the order the screen runs them.
 DETECTORS = (
@@ -140,6 +158,7 @@ DETECTORS = (
     DETECTOR_ZERO_ALPHA,
     DETECTOR_SUB_VISIBLE_GLYPH,
     DETECTOR_CONTENT_STREAM_RENDER_MODE,
+    DETECTOR_SOFT_MASK_HIDDEN,
     DETECTOR_OUT_OF_CROP_BOX,
 )
 
@@ -168,6 +187,11 @@ HIDING_RENDER_MODES = (3, 7)
 
 #: How deep the content-stream scan follows ``Do`` into nested Form XObjects.
 MAXIMUM_XOBJECT_DEPTH = 8
+
+#: A luminosity soft mask whose backdrop paints a maximum luminosity below this
+#: value drives the opacity of what it masks to near zero. Text shown under such
+#: a mask is invisible. Luminosity is on a 0-to-1 scale.
+SOFT_MASK_LUMINOSITY_HIDES_BELOW = 0.1
 
 #: Coordinates are rounded so a persisted report is stable and readable.
 BBOX_DECIMALS = 2
@@ -544,34 +568,143 @@ def _readable(data: bytes) -> str:
     return "".join(char if char.isprintable() else " " for char in data.decode("latin-1")).strip()
 
 
+def _clamp01(value: float) -> float:
+    """Clamp a colour component to the 0-to-1 range PDF colours use."""
+    return 0.0 if value < 0.0 else 1.0 if value > 1.0 else value
+
+
+def _group_max_luminosity(document: pymupdf.Document, group_xref: int) -> float | None:
+    """Return the maximum luminosity a soft-mask group's constant fills paint.
+
+    The mask's opacity at a point is the luminosity of its transparency group's
+    backdrop there. This reads the group's content stream and tracks the
+    maximum luminosity of the constant fill colours it actually paints. A group
+    that paints nothing leaves the default black backdrop, luminosity 0.
+
+    Return ``None`` when the luminosity cannot be bounded from constant fills:
+    the group draws a shading or an image, or sets a colour in a colour space
+    this rule does not convert. The caller treats an unbounded group as not a
+    definite hide, so an honest gradient or image mask is never flagged, at the
+    cost of not catching an all-dark shading mask.
+    """
+    try:
+        stream = document.xref_stream(group_xref)
+    except (RuntimeError, ValueError):
+        return None
+    if stream is None:
+        return None
+    current = 0.0
+    max_luminosity: float | None = None
+    unknown_colour = False
+    operands: list[object] = []
+    for kind, value in _tokenize(stream):
+        if kind == "inline_image":
+            return None
+        if kind == "name":
+            operands.append(f"/{value}")
+            continue
+        if kind in ("array_open", "array_close", "string"):
+            continue
+        if _is_number(value):
+            operands.append(value)
+            continue
+        operator = value
+        if operator == "g" and operands and _is_number(operands[-1]):
+            current, unknown_colour = _clamp01(float(str(operands[-1]))), False
+        elif operator == "rg" and len(operands) >= 3 and all(_is_number(o) for o in operands[-3:]):
+            r, g, b = (_clamp01(float(str(o))) for o in operands[-3:])
+            current, unknown_colour = 0.299 * r + 0.587 * g + 0.114 * b, False
+        elif operator == "k" and len(operands) >= 4 and all(_is_number(o) for o in operands[-4:]):
+            c, m, y, key = (_clamp01(float(str(o))) for o in operands[-4:])
+            r, g, b = (1 - c) * (1 - key), (1 - m) * (1 - key), (1 - y) * (1 - key)
+            current, unknown_colour = 0.299 * r + 0.587 * g + 0.114 * b, False
+        elif operator in ("sc", "scn", "cs"):
+            unknown_colour = True
+        elif operator in ("sh", "Do"):
+            return None
+        elif operator in ("f", "F", "f*", "b", "b*", "B", "B*", "s", "S"):
+            if unknown_colour:
+                return None
+            max_luminosity = current if max_luminosity is None else max(max_luminosity, current)
+        operands = []
+    return max_luminosity if max_luminosity is not None else 0.0
+
+
+def _soft_mask_hides(document: pymupdf.Document, extgstate_xref: int) -> tuple[bool, str]:
+    """Return whether one ExtGState's soft mask hides what it masks, and why.
+
+    Only a luminosity mask is evaluated. Its group's maximum painted luminosity
+    is read; below the threshold the mask drives opacity to near zero, so text
+    drawn under it is invisible. Alpha masks, ``/None``, and unbounded groups
+    return ``(False, "")``.
+    """
+    kind_mask, _ = document.xref_get_key(extgstate_xref, "SMask")
+    if kind_mask != "dict":
+        return (False, "")
+    _, subtype = document.xref_get_key(extgstate_xref, "SMask/S")
+    if subtype != "/Luminosity":
+        return (False, "")
+    kind_group, group = document.xref_get_key(extgstate_xref, "SMask/G")
+    if kind_group != "xref":
+        return (False, "")
+    max_luminosity = _group_max_luminosity(document, int(group.split()[0]))
+    if max_luminosity is not None and max_luminosity < SOFT_MASK_LUMINOSITY_HIDES_BELOW:
+        return (
+            True,
+            "A luminosity soft mask (ExtGState /SMask) paints a maximum backdrop luminosity of "
+            f"{round(max_luminosity, 3)} of 1.0, below the {SOFT_MASK_LUMINOSITY_HIDES_BELOW} "
+            "threshold, so text drawn under it is masked to near-zero opacity while the text "
+            "layer still carries the characters.",
+        )
+    return (False, "")
+
+
 class _RenderModeScan:
-    """Track the ``Tr`` operator through a page's content streams."""
+    """Track the ``Tr`` and ``gs`` operators through a page's content streams."""
 
     def __init__(self, document: pymupdf.Document) -> None:
         self._document = document
-        self._scanned: set[tuple[int, int]] = set()
+        self._scanned: set[tuple[int, int, bool]] = set()
         self._uncertain: set[int] = set()
+        self._soft_mask_shown: list[tuple[str, str]] = []
 
     def shown_text_by_mode(self, page: pymupdf.Page) -> tuple[dict[int, list[str]], set[int]]:
         """Return the text shown under each hiding render mode, in mode order.
 
         The second value names the hiding modes that were in effect where the
         scan could not determine an inline image's extent. That is a gap the
-        caller discloses rather than a gap the caller ignores.
+        caller discloses rather than a gap the caller ignores. The same scan
+        also collects the text shown under a hiding soft mask, exposed through
+        :attr:`soft_mask_shown`.
         """
         found: dict[int, list[str]] = {}
         self._scanned = set()
         self._uncertain = set()
+        self._soft_mask_shown = []
         resources = {name: xref for xref, name, *_ in page.get_xobjects()}
-        self._scan(page.read_contents(), resources, 0, 0, set(), found)
+        extgstates = self._extgstate_resources(page.xref)
+        self._scan(page.read_contents(), resources, extgstates, 0, (False, ""), 0, set(), found)
         return (
             {mode: found[mode] for mode in HIDING_RENDER_MODES if found.get(mode)},
             set(self._uncertain),
         )
 
+    @property
+    def soft_mask_shown(self) -> list[tuple[str, str]]:
+        """The (text, evidence) pairs shown under a hiding soft mask, in order."""
+        return list(self._soft_mask_shown)
+
     def _xobject_resources(self, xref: int) -> dict[str, int]:
         """Map every Form XObject name a stream can invoke to its xref."""
-        kind, value = self._document.xref_get_key(xref, "Resources/XObject")
+        return self._named_references(xref, "Resources/XObject")
+
+    def _extgstate_resources(self, xref: int) -> dict[str, int]:
+        """Map every ExtGState name a stream can name in ``gs`` to its xref."""
+        return self._named_references(xref, "Resources/ExtGState")
+
+    def _named_references(self, xref: int, key: str) -> dict[str, int]:
+        """Map each name in one resource sub-dictionary to its indirect xref."""
+        kind, value = self._document.xref_get_key(xref, key)
         if kind == "xref":
             value = self._document.xref_object(int(value.split()[0]), compressed=True)
         elif kind != "dict":
@@ -590,13 +723,15 @@ class _RenderModeScan:
         self,
         data: bytes,
         resources: dict[str, int],
+        extgstates: dict[str, int],
         render_mode: int,
+        soft_mask: tuple[bool, str],
         depth: int,
         path: set[int],
         found: dict[int, list[str]],
     ) -> None:
-        """Interpret one content stream's render-mode and text-showing operators."""
-        saved: list[int] = []
+        """Interpret one content stream's render-mode, soft-mask, and text operators."""
+        saved: list[tuple[int, tuple[bool, str]]] = []
         operands: list[object] = []
         array: list[bytes] | None = None
         for kind, value in _tokenize(data):
@@ -631,9 +766,10 @@ class _RenderModeScan:
                 continue
             operator = value
             if operator == "q":
-                saved.append(render_mode)
+                saved.append((render_mode, soft_mask))
             elif operator == "Q":
-                render_mode = saved.pop() if saved else render_mode
+                if saved:
+                    render_mode, soft_mask = saved.pop()
             elif operator == "Tr" and operands and _is_number(operands[-1]):
                 requested = int(float(str(operands[-1])))
                 # PDF defines modes 0 to 7. Any other operand is invalid, and
@@ -641,14 +777,24 @@ class _RenderModeScan:
                 # the per-form scan cache below.
                 if 0 <= requested <= 7:
                     render_mode = requested
+            elif operator == "gs" and operands and isinstance(operands[-1], str):
+                name = operands[-1]
+                xref = extgstates.get(name[1:]) if name.startswith("/") else None
+                # An ExtGState that names a soft mask sets it; one that sets
+                # /None or a non-hiding mask clears the hiding state. A `gs`
+                # this scan cannot resolve leaves the state unchanged.
+                if xref is not None:
+                    soft_mask = _soft_mask_hides(self._document, xref)
             elif operator in ("Tj", "TJ", "'", '"'):
                 shown = operands[-1] if operands and isinstance(operands[-1], bytes) else None
-                if shown is not None and render_mode in HIDING_RENDER_MODES:
+                if shown is not None:
                     text = _readable(shown)
-                    if text:
+                    if text and render_mode in HIDING_RENDER_MODES:
                         found.setdefault(render_mode, []).append(text)
+                    if text and soft_mask[0]:
+                        self._soft_mask_shown.append((text, soft_mask[1]))
             elif operator == "Do" and depth < MAXIMUM_XOBJECT_DEPTH:
-                self._follow(operands, resources, render_mode, depth, path, found)
+                self._follow(operands, resources, render_mode, soft_mask, depth, path, found)
             operands = []
 
     def _follow(
@@ -656,28 +802,31 @@ class _RenderModeScan:
         operands: list[object],
         resources: dict[str, int],
         render_mode: int,
+        soft_mask: tuple[bool, str],
         depth: int,
         path: set[int],
         found: dict[int, list[str]],
     ) -> None:
-        """Descend into one invoked Form XObject with the caller's render mode.
+        """Descend into one invoked Form XObject with the caller's graphics state.
 
-        Each (form, inherited render mode) pair is scanned once per page. The
-        path set alone stops a cycle but not repeated sibling invocations, and a
-        document whose forms each invoke the next many times would otherwise
-        expand to an unbounded number of scans. Rescanning a pair can add no
-        evidence the first scan did not already add, so the cache costs the
-        report nothing.
+        Each (form, inherited render mode, inherited soft-mask-hides) triple is
+        scanned once per page. The path set alone stops a cycle but not repeated
+        sibling invocations, and a document whose forms each invoke the next
+        many times would otherwise expand to an unbounded number of scans.
+        Rescanning a triple can add no evidence the first scan did not already
+        add, so the cache costs the report nothing. The soft-mask state is
+        carried as its boolean hiding flag, which keeps the cache key bounded.
         """
         name = operands[-1] if operands and isinstance(operands[-1], str) else None
         if not name or not name.startswith("/"):
             return
         xref = resources.get(name[1:])
-        if xref is None or xref in path or (xref, render_mode) in self._scanned:
+        key = (xref, render_mode, soft_mask[0]) if xref is not None else None
+        if xref is None or xref in path or key in self._scanned:
             return
         if not self._is_form(xref):
             return
-        self._scanned.add((xref, render_mode))
+        self._scanned.add(key)
         try:
             stream = self._document.xref_stream(xref)
         except (RuntimeError, ValueError):
@@ -685,7 +834,16 @@ class _RenderModeScan:
         if stream is None:
             return
         path.add(xref)
-        self._scan(stream, self._xobject_resources(xref), render_mode, depth + 1, path, found)
+        self._scan(
+            stream,
+            self._xobject_resources(xref),
+            self._extgstate_resources(xref),
+            render_mode,
+            soft_mask,
+            depth + 1,
+            path,
+            found,
+        )
         path.discard(xref)
 
 
@@ -844,6 +1002,27 @@ def _content_stream_flags(
     return flags, concealed
 
 
+def _soft_mask_flags(scan: _RenderModeScan, page_number: int) -> list[HiddenSpan]:
+    """Flag text the content stream shows under a hiding luminosity soft mask.
+
+    The scan has already run for this page inside ``_content_stream_flags``, so
+    this reads the text it collected under a hiding soft mask. All such text on
+    the page becomes one flag, because the mask hides every operand it covers
+    and the evidence is the same for each.
+    """
+    shown = scan.soft_mask_shown
+    if not shown:
+        return []
+    return [
+        HiddenSpan(
+            page_number=page_number,
+            detector=DETECTOR_SOFT_MASK_HIDDEN,
+            evidence=shown[0][1],
+            text=" ".join(text for text, _ in shown),
+        )
+    ]
+
+
 def _screen_crop_boxes(data: bytes) -> dict[int, list[HiddenSpan]]:
     """Re-read every cropped page with its crop box widened to its media box.
 
@@ -914,6 +1093,7 @@ def _screen_page(
     mode_3_seen = any(flag.detector == DETECTOR_RENDER_MODE_3 for flag in ordered)
     content_flags, concealed = _content_stream_flags(scan, page, page_number, mode_3_seen)
     ordered.extend(content_flags)
+    ordered.extend(_soft_mask_flags(scan, page_number))
     ordered.extend(crop_flags)
 
     unreadable = hidden_by_span_rule | concealed

@@ -89,12 +89,14 @@ CASES = [
         detectors=[],
     ),
     Case(
+        # Closed by the soft_mask_hidden detector: the mask's group luminosity
+        # is read from the content stream and the near-zero backdrop is flagged.
         "07-soft-mask-zero",
         rf.build_soft_mask_zero,
-        threat_class="MISS",
+        threat_class="DETECTED",
         extracted=True,
         invisible=True,
-        detectors=[],
+        detectors=["soft_mask_hidden"],
     ),
     Case(
         "09-horizontal-scale-zero",
@@ -206,18 +208,30 @@ def test_threat_classes_are_internally_consistent() -> None:
             raise AssertionError(f"unknown threat class {case.threat_class!r}")
 
 
-def test_the_two_known_misses_are_still_missed() -> None:
-    """Pin the two real gaps so a future detector that closes one updates here.
+def test_the_soft_mask_miss_was_closed_by_a_detector() -> None:
+    """The soft-mask gap this phase found is now caught, not merely disclosed.
 
-    Soft-mask-to-zero and white text both extract, both render invisible, and
-    the screen reports nothing. These are the phase's headline findings. If a
-    later detector catches either, this test fails and the disposition moves to
-    DETECTED with the change commit named.
+    The soft_mask_hidden detector reads the mask's group luminosity and flags a
+    near-black mask over text. Row 07 is therefore DETECTED, not a MISS.
     """
-    for row in ("07-soft-mask-zero", "18-white-text"):
-        case = CASES_BY_ROW[row]
-        assert case.threat_class == "MISS"
-        assert case.extracted and case.invisible and not case.detectors
+    case = CASES_BY_ROW["07-soft-mask-zero"]
+    assert case.threat_class == "DETECTED"
+    assert case.extracted and case.invisible
+    assert case.detectors == ["soft_mask_hidden"]
+
+
+def test_white_text_remains_the_one_disclosed_miss() -> None:
+    """White text stays an accepted, disclosed gap: it needs a raster compare.
+
+    It extracts and renders invisible while the screen stays clean, which is
+    correct for a rule set that reads structure and paints no pixels. If a
+    later detector catches it, this test fails and the disposition moves.
+    """
+    case = CASES_BY_ROW["18-white-text"]
+    assert case.threat_class == "MISS"
+    assert case.extracted and case.invisible and not case.detectors
+    misses = [c.row for c in CASES if c.threat_class == "MISS"]
+    assert misses == ["18-white-text"]
 
 
 def test_no_committed_fixture_regressed_here() -> None:
