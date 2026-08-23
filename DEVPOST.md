@@ -56,7 +56,7 @@ The passing label reads **QUOTES VERIFIED**, and the page states in one line wha
 ## How it was built
 
 - Gemini 3.7 Flash via Vertex AI at location `global` (the regional us-central1 endpoint returned 404 for Gemini 3.x during setup), temperature 0, structured output against a Pydantic schema.
-- Google ADK 2.7.1: one `LlmAgent` with five function tools (`check_text_integrity`, `extract_pdf_text`, `verify_quote`, `persist_finding`, `draft_rfi`), each bound to a document role rather than a path, and `output_schema` for the claim batch. The runtime around the agent calls the tools itself; no receipt shows a model-initiated tool call, and the design does not depend on one.
+- Google ADK 2.7.1: one `LlmAgent` with `output_schema` for the claim batch. In `navigate` mode, the deployed default, the model registers three read-only tools (`check_text_integrity`, `extract_pdf_text`, `verify_quote`), each bound to a document role rather than a path, and every model-initiated call is recorded on the run; the two write tools (`persist_finding`, `draft_rfi`) stay with the runtime, and the gate verifies every claim regardless. `full_text` mode, selectable and published beside it in EVAL.md, sends both documents up front with all five tools registered.
 - Cloud Run: FastAPI service, `--max-instances 1`, `--concurrency 2`, a two-slot in-process semaphore, 5 MB `application/pdf` uploads behind a demo passphrase.
 - Firestore: `findings`, `rejections`, `integrity_findings`, `runs`, and a content-addressed `documents` collection keyed by SHA-256.
 - Cloud Storage: uploads and RFI PDFs stored under `<run_id>/` with each object's SHA-256 recorded on the run document.
@@ -74,16 +74,16 @@ SpecGuard defends one narrow, testable claim: uncited claims are blocked from th
 
 **Serving Gemma.** The Gemini API key path returned HTTP 429 behind the AI Studio prepay wall, and the Gemma 3 27B identifier did not exist there. Vertex publisher endpoints returned 404 for every Gemma identifier in six regions. Model Garden worked, inside a quota of one L4 GPU: Gemma 3 12B needs two L4s, Gemma 3 4B rejects the one-L4 machine type outright, and Gemma 3n hit a stock failure. Gemma 3 1B deployed in 1 minute 48 seconds and classified the two planted discrepancies HIGH. Every failed path is recorded as a fallback with its HTTP reason on the finding, never silently.
 
-**Not over-reading a clean table.** The measured evaluation ran four cases five times, which is 20 runs. The altered fixture is quarantined before any model call, so its five runs make no model call and the other 15 do. Across those 15 model-calling runs the gate rejected nothing and the runtime retried nothing, because the model cited every quote correctly on the first turn. A clean table invites the reader to assume the retry loop was exercised. EVAL.md says it was not, and the loop is proven by tests that drive rejections deterministically.
+**Not over-reading the table.** The measured evaluation ran 50 audits: five document pairs, five iterations, both agent modes. Ten runs are the altered fixture, quarantined before any model call; the other 40 reach the model once each. Across those 40 runs the gate rejected one claim and the runtime retried none. A mostly clean table invites the reader to assume the retry loop was exercised. EVAL.md says it barely was, and the loop is proven by tests that drive rejections deterministically.
 
 ## Accomplishments
 
-All numbers from `EVAL.md` (20 real runs on 2026-08-22 against code revision `a424ccf`, every run identifier listed) and `HANDOFF.md`.
+All numbers from `EVAL.md` (50 real audits on 2026-08-23 against code revision `1340748`, both agent modes, every run identifier listed) and `HANDOFF.md`.
 
-- Catch rate 100% on both planted discrepancies: 10 of 10 runs persisted exactly the expected quote pair and page numbers. A right quote on the wrong page would have counted as a false positive, not a catch.
-- 0 false positives on the compliant cut sheet across 5 runs.
-- 100% quarantine on the altered fixture across 5 runs, with 0 model calls.
-- All 10 findings labelled HIGH by Gemma. The 2026-08-21 run had recorded 3 of 10 as UNCLASSIFIED with an HTTP 502 reason from the endpoint; on 2026-08-22 the endpoint answered every call. Nothing in the classifier changed between the two runs, and both records are published.
+- Original lane, both modes: catch rate 100% on both planted discrepancies (exact quote pair and page numbers; a right quote on the wrong page counts as a false positive, not a catch), 0 false positives on the compliant cut sheet, and 100% quarantine on the altered fixture with 0 model turns.
+- Messy lane (a 32-page specification and a 10-page two-product package with seven planted discrepancies and two compliant decoys): navigate caught 77% against full text's 49%, with 0 decoy false positives in either mode. Two planted cases are published as misses (E-13 at 40%, E-15 at 0%).
+- Navigation became the default through an eight-condition ship gate fixed before any run; every model-initiated tool call is recorded on the run and shown on its page.
+- This measurement ran with the severity sentinel (`SPECGUARD_GEMMA_ENDPOINT=disabled`), so every finding carries UNCLASSIFIED with its recorded reason; the 2026-08-22 record, with a live Gemma endpoint labelling every finding HIGH, is published beside it. Nothing in the classifier changed between the two records.
 - ruff clean and an offline suite whose size README records from its own run (`HANDOFF.md` receipts).
 - 16 adversarial bypass attempts against the ledger invariant, all refused (`REVIEW-P3.md`, `tests/adversarial/`).
 - 2 hand-run mutations of the gate, both caught by the suite (`HANDOFF.md`, Phase 1).
