@@ -183,6 +183,7 @@ class RunOutcome:
     decoy_hit_case_ids: tuple[str, ...]
     unattributed_false_positives: int
     severities: tuple[str, ...]
+    case_severities: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     severity_status: str | None = None
     model_output_invalid: bool = False
     severity_model_ids: tuple[str, ...] = ()
@@ -252,9 +253,16 @@ class CaseResult:
 
     @property
     def severity_distribution(self) -> dict[str, int]:
+        """Severity labels of the findings attributed to this case only.
+
+        Every case of a shared pair holds the same runs, so counting each
+        run's whole severity tuple would repeat the pair's findings once per
+        declared case. Only findings that matched this case's planted or
+        decoy pair count here; pair-level totals stay on the run.
+        """
         counter: Counter[str] = Counter()
         for run in self.runs:
-            counter.update(run.severities)
+            counter.update(run.case_severities.get(self.case.id, ()))
         return dict(sorted(counter.items()))
 
     @property
@@ -522,6 +530,7 @@ def build_run_outcome(
     caught: set[str] = set()
     decoy_hits: list[str] = []
     unattributed = 0
+    case_severities: dict[str, list[str]] = {}
     for finding in findings:
         matched_case = next(
             (
@@ -533,6 +542,9 @@ def build_run_outcome(
         )
         if matched_case is not None:
             caught.add(matched_case.id)
+            case_severities.setdefault(matched_case.id, []).append(
+                str(finding.get("severity", "unclassified"))
+            )
             continue
         decoy_case = next(
             (
@@ -544,6 +556,9 @@ def build_run_outcome(
         )
         if decoy_case is not None:
             decoy_hits.append(decoy_case.id)
+            case_severities.setdefault(decoy_case.id, []).append(
+                str(finding.get("severity", "unclassified"))
+            )
             continue
         unattributed += 1
 
@@ -576,6 +591,7 @@ def build_run_outcome(
         decoy_hit_case_ids=tuple(decoy_hits),
         unattributed_false_positives=unattributed,
         severities=severities,
+        case_severities={case_id: tuple(values) for case_id, values in case_severities.items()},
         severity_status=summary.severity_status,
         model_output_invalid=model_output_invalid,
         severity_model_ids=severity_model_ids,
@@ -779,15 +795,14 @@ def _unexercised_notes(lane_result: LaneResult) -> list[str]:
             "again before any write."
         )
 
-    unclassified = sum(
-        result.severity_distribution.get("unclassified", 0) for result in lane_result.cases
-    )
-    classified = sum(
-        count
-        for result in lane_result.cases
-        for label, count in result.severity_distribution.items()
-        if label != "unclassified"
-    )
+    pair_severities = [
+        severity
+        for pair_result in lane_result.pairs
+        for run in pair_result.runs
+        for severity in run.severities
+    ]
+    unclassified = sum(1 for severity in pair_severities if severity == "unclassified")
+    classified = len(pair_severities) - unclassified
     if unclassified:
         notes.append(
             f"- {unclassified} of {unclassified + classified} persisted findings carry "
@@ -885,6 +900,26 @@ def evaluate_ship_gate(results: Mapping[tuple[str, str], LaneResult]) -> ShipGat
                 "the gate needs both lanes in both modes from one session; "
                 f"missing {', '.join(missing)}"
             ),
+        )
+
+    unusable_lanes: list[str] = []
+    for lane, mode in required:
+        result = results[(lane, mode)]
+        usable_runs = sum(
+            1
+            for pair_result in result.pairs
+            for run in pair_result.runs
+            if not run.model_output_invalid
+        )
+        if not result.cases or usable_runs == 0:
+            unusable_lanes.append(f"{lane}/{mode} measured no usable run")
+        elif lane == LANE_MESSY and result.catch_rate is None:
+            unusable_lanes.append(f"{lane}/{mode} has no measurable catch rate")
+    if unusable_lanes:
+        return ShipGateVerdict(
+            lines=(),
+            evaluable=False,
+            reason=("the gate compares measurements, never absences; " + "; ".join(unusable_lanes)),
         )
 
     original_navigate = results[(LANE_ORIGINAL, AgentMode.NAVIGATE.value)]
@@ -1236,6 +1271,11 @@ def render_readme_section(
         if (lane, mode.value) in lane_results
     ]
     cases = [result for lane_result in shipping for result in lane_result.cases]
+    if not cases:
+        raise ValueError(
+            f"this run measured no case in {mode.value} mode, so the README block "
+            "would publish a measurement that did not happen"
+        )
     pairs = [result for lane_result in shipping for result in lane_result.pairs]
     catch_rate = overall_catch_rate(cases)
     failures = [result for result in cases if not result.meets_expectation]
@@ -1640,20 +1680,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         encoding="utf-8",
     )
-    README_PATH.write_text(
-        write_readme_section(
-            readme_text,
-            render_readme_section(
-                lane_results,
-                iterations=args.iterations,
-                run_date=run_date,
-                verdict=verdict,
-                code_revision=code_revision,
-                previous=previous,
-            ),
-        ),
-        encoding="utf-8",
-    )
+    try:
+        readme_section = render_readme_section(
+            lane_results,
+            iterations=args.iterations,
+            run_date=run_date,
+            verdict=verdict,
+            code_revision=code_revision,
+            previous=previous,
+        )
+    except ValueError as error:
+        print(f"README not rewritten: {error}")
+    else:
+        README_PATH.write_text(write_readme_section(readme_text, readme_section), encoding="utf-8")
 
     for key in sorted(lane_results, key=_section_order):
         print(

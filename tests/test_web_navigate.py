@@ -117,7 +117,7 @@ def test_the_run_page_lists_the_pages_the_model_read() -> None:
     response = client.get(f"/runs/{RUN_ID}")
 
     assert response.status_code == 200
-    assert "Pages the model read" in response.text
+    assert "Tool calls the model initiated" in response.text
     assert "extract_pdf_text" in response.text
     assert "verify_quote" in response.text
     assert ">17<" in response.text

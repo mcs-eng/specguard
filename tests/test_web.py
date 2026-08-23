@@ -15,7 +15,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from specguard import gate
-from specguard.models import AuditRunSummary, DocumentRole, QuarantinedDocument, RunQuarantine
+from specguard.models import (
+    AgentMode,
+    AuditRunSummary,
+    DocumentRole,
+    ModelToolCall,
+    QuarantinedDocument,
+    RunQuarantine,
+)
 from specguard.tools import QUOTES_VERIFIED_MEANING
 from specguard.web import app as app_module
 from specguard.web.app import (
@@ -695,6 +702,43 @@ def test_audit_deletes_uploaded_objects_when_the_run_record_cannot_be_written() 
     assert runner.calls == []
     assert "The audit did not complete." in response.text
     assert "Open run" not in response.text
+
+
+def test_a_failed_run_keeps_the_receipts_the_audit_already_produced() -> None:
+    """A failure after the model ran must not zero the mode and tool-call receipts."""
+    summary = AuditRunSummary(
+        run_id="receipted-run",
+        claims_made=1,
+        rejected=0,
+        retried=0,
+        findings_persisted=1,
+        rfi_path=None,
+        agent_mode=AgentMode.NAVIGATE,
+        model_tool_calls=[
+            ModelToolCall(
+                turn_index=0,
+                tool_name="extract_pdf_text",
+                document_role=DocumentRole.SPECIFICATION,
+                page_number=2,
+            )
+        ],
+        self_check_rejections=1,
+    )
+    client, repository, _, _ = _client(summary=summary, failing_create_calls=frozenset({2}))
+
+    response = client.post(
+        "/audit",
+        data={"demo_passphrase": "test-passphrase", "submission_token": "test-token"},
+        files=_files(),
+    )
+
+    assert response.status_code == 500
+    _, run = next(iter(repository.runs.items()))
+    assert run["status"] == "FAILED"
+    assert run["summary"]["failure"] == "audit_failed"
+    assert run["summary"]["agent_mode"] == "navigate"
+    assert run["summary"]["self_check_rejections"] == 1
+    assert run["summary"]["model_tool_calls"][0]["tool_name"] == "extract_pdf_text"
 
 
 def test_audit_keeps_recorded_objects_when_the_failed_write_cannot_land() -> None:

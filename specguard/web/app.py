@@ -707,6 +707,7 @@ async def _run_audit(
     pending_run: dict[str, Any] | None = None
     run_recorded = False
     rfi_object_name: str | None = None
+    completed_summary: AuditRunSummary | None = None
     rfi: StoredObject | None = None
     try:
         uploaded_names.append(specification_name)
@@ -750,6 +751,7 @@ async def _run_audit(
                 run_id=run_id,
                 output_directory=root / "artifacts",
             )
+            completed_summary = summary
             if summary.rfi_path is not None:
                 rfi_object_name = f"{run_id}/rfi.pdf"
                 rfi = _store_rfi(services.storage, run_id, summary)
@@ -773,7 +775,7 @@ async def _run_audit(
         if not run_recorded or pending_run is None:
             _delete_unrecorded_objects(services.storage, uploaded_names)
             raise AuditFailedError(None) from None
-        _record_failed_run(services.repository, pending_run)
+        _record_failed_run(services.repository, pending_run, completed_summary)
         raise AuditFailedError(run_id) from None
 
 
@@ -874,7 +876,33 @@ def _delete_unrecorded_objects(storage: ObjectStorage, object_names: list[str]) 
             pass
 
 
-def _record_failed_run(repository: RunRepository, pending_run: dict[str, Any]) -> bool:
+def _failed_summary_receipts(summary: AuditRunSummary | None) -> dict[str, Any]:
+    """Keep the receipts an audit produced even when recording it failed later.
+
+    A failure after the model ran means the mode, the tool-call receipt, and
+    the self-check counters are real measurements; zeroing them would discard
+    evidence a reader is entitled to.
+    """
+    if summary is None:
+        return {}
+    return {
+        "agent_mode": summary.agent_mode.value,
+        "model_tool_calls": [call.model_dump(mode="json") for call in summary.model_tool_calls],
+        "self_check_rejections": summary.self_check_rejections,
+        "self_check_rejected_quote_returned": summary.self_check_rejected_quote_returned,
+        "audit_model_usage": (
+            summary.audit_model_usage.model_dump(mode="json")
+            if summary.audit_model_usage is not None
+            else None
+        ),
+    }
+
+
+def _record_failed_run(
+    repository: RunRepository,
+    pending_run: dict[str, Any],
+    summary: AuditRunSummary | None = None,
+) -> bool:
     """Mark an already recorded input pair as failed, without exposing internal errors.
 
     The caller reaches this only after the RUNNING record was written, so the
@@ -885,7 +913,11 @@ def _record_failed_run(repository: RunRepository, pending_run: dict[str, Any]) -
     """
     failed_run = dict(pending_run)
     failed_run["status"] = "FAILED"
-    failed_run["summary"] = {**_empty_summary(), "failure": "audit_failed"}
+    failed_run["summary"] = {
+        **_empty_summary(),
+        **_failed_summary_receipts(summary),
+        "failure": "audit_failed",
+    }
     for _ in range(2):
         try:
             repository.create_run(failed_run)

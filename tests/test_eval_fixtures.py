@@ -169,6 +169,11 @@ def _outcome(**overrides: object) -> RunOutcome:
         "severities": ("high",),
     }
     values.update(overrides)
+    if "case_severities" not in values:
+        values["case_severities"] = {
+            case_id: tuple(values["severities"])  # type: ignore[arg-type]
+            for case_id in values["caught_case_ids"]  # type: ignore[union-attr]
+        }
     return RunOutcome(**values)  # type: ignore[arg-type]
 
 
@@ -578,17 +583,38 @@ def test_aggregate_keeps_manifest_order_and_survives_a_pair_with_no_runs() -> No
     assert lane.cases[1].meets_expectation is False
 
 
-def test_severity_distribution_counts_labels_across_every_run() -> None:
+def test_severity_distribution_counts_only_findings_attributed_to_the_case() -> None:
+    """A shared pair's runs must not repeat their findings once per case."""
     lane = _lane(
         pairs=[
             (
                 _pair(FINDING_CASE),
-                [_outcome(severities=("high", "low")), _outcome(severities=("high",))],
+                [
+                    _outcome(
+                        caught_case_ids=frozenset({FINDING_CASE.id}),
+                        severities=("high", "low"),
+                        case_severities={FINDING_CASE.id: ("high",)},
+                        unattributed_false_positives=1,
+                    ),
+                    _outcome(
+                        caught_case_ids=frozenset({FINDING_CASE.id}),
+                        severities=("high",),
+                        case_severities={FINDING_CASE.id: ("high",)},
+                    ),
+                ],
             )
         ]
     )
 
-    assert lane.cases[0].severity_distribution == {"high": 2, "low": 1}
+    assert lane.cases[0].severity_distribution == {"high": 2}
+
+
+def test_a_caught_case_with_no_attribution_shows_no_findings() -> None:
+    lane = _lane(
+        pairs=[(_pair(FINDING_CASE), [_outcome(severities=("high",), case_severities={})])]
+    )
+
+    assert lane.cases[0].severity_distribution == {}
 
 
 # --- 6. The ship gate, against known-good and known-bad results -----------
@@ -1037,6 +1063,39 @@ def _readme_section(
         _two_section_results() if results is None else results,
         **values,  # type: ignore[arg-type]
     )
+
+
+def test_the_gate_is_unevaluable_when_a_messy_lane_has_no_usable_run() -> None:
+    """Two lanes of broken runs must never compare as equal measurements."""
+    results = _gate_results()
+    for mode in (AgentMode.FULL_TEXT, AgentMode.NAVIGATE):
+        key = (LANE_MESSY, mode.value)
+        pair = results[key].pairs[0].pair
+        dead_runs = [
+            _outcome(
+                model_output_invalid=True,
+                claims_made=0,
+                rejected=1,
+                findings_persisted=0,
+                severities=(),
+            )
+            for _ in range(5)
+        ]
+        results[key] = _lane(lane=LANE_MESSY, mode=mode, pairs=[(pair, dead_runs)])
+
+    verdict = evaluate_ship_gate(results)
+
+    assert verdict.evaluable is False
+    assert verdict.navigate_ships is False
+    assert "no usable run" in verdict.reason
+
+
+def test_the_readme_block_refuses_a_run_that_never_measured_the_shipping_mode() -> None:
+    """A navigate-only run must not rewrite README with a full-text claim."""
+    results = {(LANE_MESSY, AgentMode.NAVIGATE.value): _one_case_lane()}
+
+    with pytest.raises(ValueError, match="measured no case in full_text mode"):
+        _readme_section(results)
 
 
 def test_the_readme_publishes_the_mode_that_ships() -> None:

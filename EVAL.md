@@ -69,15 +69,15 @@ Run identifiers behind this section:
 
 | Case | Submitted document | Expected outcome | Catch rate | Decoy false positives | Quarantine rate | Severity distribution |
 | --- | --- | --- | ---: | ---: | ---: | --- |
-| `E-11` | `zarqelune_vantrel_package.pdf` | `finding` | 60% | 0 | 0% | unclassified 30 |
-| `E-12` | `zarqelune_vantrel_package.pdf` | `finding` | 60% | 0 | 0% | unclassified 30 |
-| `E-13` | `zarqelune_vantrel_package.pdf` | `finding` | 40% | 0 | 0% | unclassified 30 |
-| `E-14` | `zarqelune_vantrel_package.pdf` | `finding` | 60% | 0 | 0% | unclassified 30 |
-| `E-15` | `zarqelune_vantrel_package.pdf` | `finding` | 0% | 0 | 0% | unclassified 30 |
-| `E-16` | `zarqelune_vantrel_package.pdf` | `finding` | 60% | 0 | 0% | unclassified 30 |
-| `E-17` | `zarqelune_vantrel_package.pdf` | `finding` | 60% | 0 | 0% | unclassified 30 |
-| `E-18` | `zarqelune_vantrel_package.pdf` | `no_finding` | n/a | 0 | 0% | unclassified 30 |
-| `E-19` | `zarqelune_vantrel_package.pdf` | `no_finding` | n/a | 0 | 0% | unclassified 30 |
+| `E-11` | `zarqelune_vantrel_package.pdf` | `finding` | 60% | 0 | 0% | unclassified 3 |
+| `E-12` | `zarqelune_vantrel_package.pdf` | `finding` | 60% | 0 | 0% | unclassified 3 |
+| `E-13` | `zarqelune_vantrel_package.pdf` | `finding` | 40% | 0 | 0% | unclassified 2 |
+| `E-14` | `zarqelune_vantrel_package.pdf` | `finding` | 60% | 0 | 0% | unclassified 3 |
+| `E-15` | `zarqelune_vantrel_package.pdf` | `finding` | 0% | 0 | 0% | no findings |
+| `E-16` | `zarqelune_vantrel_package.pdf` | `finding` | 60% | 0 | 0% | unclassified 3 |
+| `E-17` | `zarqelune_vantrel_package.pdf` | `finding` | 60% | 0 | 0% | unclassified 3 |
+| `E-18` | `zarqelune_vantrel_package.pdf` | `no_finding` | n/a | 0 | 0% | no findings |
+| `E-19` | `zarqelune_vantrel_package.pdf` | `no_finding` | n/a | 0 | 0% | no findings |
 
 | Specification | Submitted document | Runs | Unattributed false positives | Rejections | Retries | Model turns | Mean prompt tokens | Model tool calls per run | Self-check rejections | Runs that returned a rejected quote |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -86,7 +86,7 @@ Run identifiers behind this section:
 - The verification gate rejected nothing and the runtime retried nothing in this lane. The model cited every quote correctly on the first turn, so the rejection-and-retry loop did not fire. These numbers are therefore not evidence that the loop works. The loop is covered by the test suite, which drives rejections deterministically.
 - This lane ran in `full_text` mode, which sends every page of both documents up front, so the model needs no tool call to read them. The mode still registers all five tools, and the tool-call column records the calls the model chose to make, including the structured-output call ADK adds for this model.
 - The model's own quote self-check rejected 4 quotes, and 3 runs still returned a quote their own check had rejected. The runtime never trusted that check: its gate ran on every claim, and again before any write.
-- 270 of 270 persisted findings carry `unclassified` severity. Severity classification fell back for those findings and the reason is recorded on each one. A fallback never blocks an audit and never changes verification status.
+- 30 of 30 persisted findings carry `unclassified` severity. Severity classification fell back for those findings and the reason is recorded on each one. A fallback never blocks an audit and never changes verification status.
 
 Run identifiers behind this section:
 
@@ -128,15 +128,15 @@ Run identifiers behind this section:
 
 | Case | Submitted document | Expected outcome | Catch rate | Decoy false positives | Quarantine rate | Severity distribution |
 | --- | --- | --- | ---: | ---: | ---: | --- |
-| `E-11` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 30 |
-| `E-12` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 30 |
-| `E-13` | `zarqelune_vantrel_package.pdf` | `finding` | 40% | 0 | 0% | unclassified 30 |
-| `E-14` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 30 |
-| `E-15` | `zarqelune_vantrel_package.pdf` | `finding` | 0% | 0 | 0% | unclassified 30 |
-| `E-16` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 30 |
-| `E-17` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 30 |
-| `E-18` | `zarqelune_vantrel_package.pdf` | `no_finding` | n/a | 0 | 0% | unclassified 30 |
-| `E-19` | `zarqelune_vantrel_package.pdf` | `no_finding` | n/a | 0 | 0% | unclassified 30 |
+| `E-11` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 5 |
+| `E-12` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 5 |
+| `E-13` | `zarqelune_vantrel_package.pdf` | `finding` | 40% | 0 | 0% | unclassified 2 |
+| `E-14` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 5 |
+| `E-15` | `zarqelune_vantrel_package.pdf` | `finding` | 0% | 0 | 0% | no findings |
+| `E-16` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 5 |
+| `E-17` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 5 |
+| `E-18` | `zarqelune_vantrel_package.pdf` | `no_finding` | n/a | 0 | 0% | no findings |
+| `E-19` | `zarqelune_vantrel_package.pdf` | `no_finding` | n/a | 0 | 0% | no findings |
 
 | Specification | Submitted document | Runs | Unattributed false positives | Rejections | Retries | Model turns | Mean prompt tokens | Model tool calls per run | Self-check rejections | Runs that returned a rejected quote |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -144,7 +144,7 @@ Run identifiers behind this section:
 
 - The verification gate rejected nothing and the runtime retried nothing in this lane. The model cited every quote correctly on the first turn, so the rejection-and-retry loop did not fire. These numbers are therefore not evidence that the loop works. The loop is covered by the test suite, which drives rejections deterministically.
 - The model's own quote self-check rejected nothing in this lane. The self-check therefore changed no answer here, and these numbers are not evidence that it would. The runtime gate ran on every claim regardless.
-- 270 of 270 persisted findings carry `unclassified` severity. Severity classification fell back for those findings and the reason is recorded on each one. A fallback never blocks an audit and never changes verification status.
+- 30 of 30 persisted findings carry `unclassified` severity. Severity classification fell back for those findings and the reason is recorded on each one. A fallback never blocks an audit and never changes verification status.
 
 Run identifiers behind this section:
 

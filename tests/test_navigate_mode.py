@@ -746,6 +746,64 @@ def test_a_self_check_the_model_ignored_is_recorded_as_such(tmp_path: Path) -> N
     assert summary.findings_persisted == 1
 
 
+def test_two_rejected_checks_of_the_same_quote_are_two_rejections(tmp_path: Path) -> None:
+    """The count is of rejected calls, not of distinct quotes."""
+    generator = FakeClaimGenerator(AuditClaimBatch(claims=[_claim()]))
+    quote = "A quote the model checked twice."
+    second_page_check = ModelToolCall(
+        turn_index=0,
+        tool_name="verify_quote",
+        document_role=DocumentRole.SPECIFICATION,
+        page_number=2,
+        response_verified=False,
+        quote_sha256=quote_digest(quote),
+    )
+    runtime = _self_check_runtime(tmp_path, generator, [_rejected_check(quote), second_page_check])
+
+    summary = asyncio.run(runtime.run())
+
+    assert summary.self_check_rejections == 2
+
+
+def test_a_rejection_on_another_page_is_not_a_kept_rejected_quote(tmp_path: Path) -> None:
+    """The model checked the quote on page 2, was told no, and returned it
+    from page 1, where the gate found it. That is not a kept rejection."""
+    generator = FakeClaimGenerator(AuditClaimBatch(claims=[_claim()]))
+    wrong_page_check = ModelToolCall(
+        turn_index=0,
+        tool_name="verify_quote",
+        document_role=DocumentRole.SPECIFICATION,
+        page_number=2,
+        response_verified=False,
+        quote_sha256=quote_digest(SPEC_PAGE_ONE),
+    )
+    runtime = _self_check_runtime(tmp_path, generator, [wrong_page_check])
+
+    summary = asyncio.run(runtime.run())
+
+    assert summary.self_check_rejections == 1
+    assert summary.self_check_rejected_quote_returned is False
+    assert summary.findings_persisted == 1
+
+
+def test_an_invalid_initial_output_still_reports_the_self_check_count(
+    tmp_path: Path,
+) -> None:
+    """A broken final turn must not zero the receipts the turn produced."""
+    generator = FakeClaimGenerator("not a claim batch")
+    runtime = _self_check_runtime(
+        tmp_path, generator, [_rejected_check("A quote the model checked.")]
+    )
+
+    summary = asyncio.run(runtime.run())
+
+    assert summary.rejected == 1
+    assert summary.claims_made == 0
+    assert len(summary.model_tool_calls) == 1
+    assert summary.self_check_rejections == 1
+    assert summary.self_check_rejected_quote_returned is False
+
+
 def test_a_run_with_no_self_check_reports_zero_rather_than_nothing(tmp_path: Path) -> None:
     generator = FakeClaimGenerator(AuditClaimBatch(claims=[_claim()]))
     runtime, _, _ = _runtime(tmp_path, generator)

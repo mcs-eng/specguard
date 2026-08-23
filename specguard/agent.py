@@ -348,26 +348,54 @@ def _add_usage_count(current: int | None, reported: Any) -> int | None:
     return current + int(reported)
 
 
-def _self_check_rejected_digests(calls: list[ModelToolCall]) -> set[str]:
-    """Return the quotes the model's own checks reported as not found."""
-    return {
-        call.quote_sha256
+def _self_check_rejected_calls(calls: list[ModelToolCall]) -> list[ModelToolCall]:
+    """Return every ``verify_quote`` call whose answer was that no match exists.
+
+    Calls are counted, not distinct quotes: two rejected checks of the same
+    quote on different pages are two rejections the model received.
+    """
+    return [
+        call
         for call in calls
-        if call.tool_name == "verify_quote"
-        and call.response_verified is False
-        and call.quote_sha256 is not None
+        if call.tool_name == "verify_quote" and call.response_verified is False
+    ]
+
+
+def _self_check_rejected_anchors(
+    calls: list[ModelToolCall],
+) -> set[tuple[str, str, int]]:
+    """Return the (digest, role, page) anchors the model's checks rejected.
+
+    All three coordinates matter: a quote rejected on one page may exist
+    verbatim on another, and only a returned quote at the same anchor is a
+    quote the model kept against its own rejection.
+    """
+    return {
+        (call.quote_sha256, str(call.document_role), call.page_number)
+        for call in _self_check_rejected_calls(calls)
+        if call.quote_sha256 is not None
+        and call.document_role is not None
+        and call.page_number is not None
     }
 
 
-def _claim_quote_digests(claims: list[AuditClaim]) -> set[str]:
-    """Return the digest of every quote the model returned in this run."""
-    digests: set[str] = set()
+def _claim_quote_anchors(claims: list[AuditClaim]) -> set[tuple[str, str, int]]:
+    """Return the (digest, role, page) anchor of every quote a claim returned."""
+    anchors: set[tuple[str, str, int]] = set()
     for claim in claims:
-        for quote in (claim.spec_quote, claim.cut_sheet_quote):
-            digest = quote_digest(quote)
-            if digest is not None:
-                digests.add(digest)
-    return digests
+        spec_digest = quote_digest(claim.spec_quote)
+        if spec_digest is not None:
+            anchors.add((spec_digest, str(DocumentRole.SPECIFICATION), claim.spec_page))
+        cut_sheet_digest = quote_digest(claim.cut_sheet_quote)
+        if cut_sheet_digest is not None:
+            anchors.add(
+                (
+                    cut_sheet_digest,
+                    str(DocumentRole.SUBMITTED_DOCUMENT),
+                    claim.cut_sheet_page,
+                )
+            )
+    return anchors
 
 
 def quote_digest(value: Any) -> str | None:
@@ -474,6 +502,7 @@ class AuditRuntime:
             initial_batch = await self._claim_generator.generate_claims(initial_message)
         except (ValidationError, RuntimeError):
             self._tools.record_rejection("Initial model output", MODEL_OUTPUT_INVALID_REASON)
+            recorded_calls = self._recorded_model_tool_calls()
             return AuditRunSummary(
                 run_id=self._run_id,
                 claims_made=0,
@@ -483,7 +512,8 @@ class AuditRuntime:
                 rfi_path=None,
                 audit_model_usage=self._audit_model_usage(),
                 agent_mode=self._agent_mode,
-                model_tool_calls=self._recorded_model_tool_calls(),
+                model_tool_calls=recorded_calls,
+                self_check_rejections=len(_self_check_rejected_calls(recorded_calls)),
             )
 
         persisted_findings: list[PersistedFinding] = []
@@ -544,7 +574,7 @@ class AuditRuntime:
             severity_results.append(sev_result)
 
         recorded_calls = self._recorded_model_tool_calls()
-        rejected_digests = _self_check_rejected_digests(recorded_calls)
+        rejected_checks = _self_check_rejected_calls(recorded_calls)
         severity_status: str | None = None
         severity_reason: str | None = None
         if persisted_findings:
@@ -569,9 +599,9 @@ class AuditRuntime:
             audit_model_usage=self._audit_model_usage(),
             agent_mode=self._agent_mode,
             model_tool_calls=recorded_calls,
-            self_check_rejections=len(rejected_digests),
+            self_check_rejections=len(rejected_checks),
             self_check_rejected_quote_returned=bool(
-                rejected_digests & _claim_quote_digests(returned_claims)
+                _self_check_rejected_anchors(recorded_calls) & _claim_quote_anchors(returned_claims)
             ),
         )
 
