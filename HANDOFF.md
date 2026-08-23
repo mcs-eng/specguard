@@ -2002,3 +2002,83 @@ Revision `specguard-00026-4vx` was built from `6434120`, before the Codex correc
 | `19599a7` | Apply the Codex review: gate preconditions, attributed severity, kept receipts |
 
 Plus the receipts commit that carries this section. Nothing was pushed, merged, or opened as a pull request; `origin/phase-2-demo-fixtures` still points at `df76de5`.
+## Phase 7b-redteam — concealment-mechanism coverage of the integrity screen
+
+Date: 2026-08-22. Scope: measure the text-layer integrity screen against the PDF imaging model. For each mechanism that can make extracted text differ from visible text, a fictional fixture carries a benign marker through the mechanism; the test records what extraction returns, whether the marked page renders identically to a marker-free control, and what `integrity.check_text_layer` reports. Built directly by the issuing session on arya, not on the Spark; no model wrote any part of this. The gate contract, `specguard/gate.py`, the audit prompts, the committed fixture PDFs, and `fixtures/build_fixtures.py` are unchanged. No detector code changed.
+
+Files added: `tests/redteam_fixtures.py` (the builders) and `tests/test_integrity_redteam.py` (the pinned measurements). The work order named `tests/fixtures_pdf.py` for the builders; a dedicated module was used instead, which is a tighter blast radius than editing the shared fixture file — the one-line SHOULD deviation the work order permits.
+
+### Method
+
+Each mechanism is built twice: once with the marker, once without (the visual control). A mechanism conceals only when the two pages render to identical pixels at 150 DPI — the marker adds nothing a reader can see. A mechanism threatens the screen only when extraction also returns the marker: if extraction returns nothing, an automated reviewer never ingests the hidden text, so the mechanism cannot poison the review. The two facts together place each row in one class.
+
+- `DETECTED`: extracted and invisible, and a detector fires.
+- `MISS`: extracted and invisible, and the screen is clean. A real gap.
+- `NON_THREAT`: extraction returns nothing, so the marker never reaches the reviewer. The screen is correctly clean.
+- `VISIBLE`: the marker leaves a pixel trace, so it is not concealed.
+
+### Results
+
+| Row | Mechanism | Extracted | Renders invisible | Detector | Class |
+| --- | --- | --- | --- | --- | --- |
+| 00 | Marker painted normally (render mode 0), the harness control | yes | no | none | `VISIBLE` |
+| 01 | Optional content group, default state OFF | no | yes | none | `NON_THREAT` |
+| 04 | Type3 font with glyphless CharProcs | no | no (renders .notdef boxes) | none | `NON_THREAT` |
+| 07 | ExtGState soft mask driving opacity to zero | **yes** | **yes** | **none** | **`MISS`** |
+| 09 | Horizontal scaling `Tz` near zero | yes | yes | `sub_visible_glyph` | `DETECTED` |
+| 12 | Form XObject with a zero-area `/BBox` | no | yes | none | `NON_THREAT` |
+| 13 | Form XObject under a degenerate `cm` | no | yes | none | `NON_THREAT` |
+| 16 | Marker painted inside a zero-area clip | no | yes | none | `NON_THREAT` |
+| 17 | Marker painted outside the media box | no | yes | none | `NON_THREAT` |
+| 18 | Marker painted white on the white page | **yes** | **yes** | **none** | **`MISS`** |
+| 19 | Marker painted at 0.995 gray | yes | no (faint pixel trace) | none | `VISIBLE` |
+
+Three mechanisms already covered by existing detectors were not rebuilt here; they stay pinned in `tests/test_integrity.py`: render mode 3 (`render_mode_3`), a zero-alpha span (`zero_alpha`), and clip-only mode 7 in the content stream (`content_stream_render_mode`).
+
+### Findings
+
+1. **Two real misses.** A soft mask that zeroes a text span's opacity (row 07) and white text on a white page (row 18) both extract and both render invisible while the screen stays clean. White text was already an accepted, disclosed gap; the soft mask was not disclosed anywhere and is the phase's new finding. Both are pinned by `test_the_two_known_misses_are_still_missed`, which fails if a later detector closes either — at which point the disposition moves to `DETECTED` with the change commit named.
+2. **The attack surface is narrower than the naive catalog.** Five structural hiding tricks — an optional-content group set off, a zero-area Form XObject box, a degenerate transform, a zero-area clip, text outside the media box — all cause PyMuPDF extraction to return nothing. A mechanism that hides text from the extractor as well as the reader cannot poison an extraction-based review, so it is a non-threat to this screen, not a blind spot. The README wording for the media-box case was sharpened accordingly.
+3. **The glyphless Type3 font is a non-threat twice over.** As built it renders `.notdef` boxes (a reader sees boxes) and extraction returns nothing (row 04). It conceals nothing and reveals boxes, so it is not a working concealment against either a reader or the screen.
+4. **`sub_visible_glyph` is broader than its name.** A horizontal-scale collapse (`Tz` near zero, row 09) is caught by the size-after-matrix rule, because MuPDF reports the effective size after the full text matrix.
+
+### Proposed follow-up detector (not built here)
+
+A content-stream soft-mask detector: flag a text-showing operator that runs under an active `ExtGState` whose `/SMask` reduces effective opacity to near zero. Evidence would carry the ExtGState name and the mask group. It is not built in this phase because it needs `/SMask` state tracking in the existing render-mode content-stream scan and a false-positive pass over honest documents that legitimately apply soft masks to images. Recorded as a follow-up in PLAN.md; carried on the board as `ACCEPTED for now`.
+
+### Machine-readable results
+
+```json
+[
+  {"row": "00-visible-baseline", "mechanism": "render mode 0, harness control", "extracted": true, "invisible": false, "detectors": [], "class": "VISIBLE"},
+  {"row": "01-optional-content-off", "mechanism": "optional content group default OFF", "extracted": false, "invisible": true, "detectors": [], "class": "NON_THREAT"},
+  {"row": "04-type3-glyphless", "mechanism": "Type3 font, glyphless CharProcs", "extracted": false, "invisible": false, "detectors": [], "class": "NON_THREAT"},
+  {"row": "07-soft-mask-zero", "mechanism": "ExtGState SMask to zero opacity", "extracted": true, "invisible": true, "detectors": [], "class": "MISS"},
+  {"row": "09-horizontal-scale-zero", "mechanism": "Tz near zero", "extracted": true, "invisible": true, "detectors": ["sub_visible_glyph"], "class": "DETECTED"},
+  {"row": "12-zero-area-form-bbox", "mechanism": "Form XObject zero-area BBox", "extracted": false, "invisible": true, "detectors": [], "class": "NON_THREAT"},
+  {"row": "13-degenerate-cm", "mechanism": "Form XObject degenerate cm", "extracted": false, "invisible": true, "detectors": [], "class": "NON_THREAT"},
+  {"row": "16-zero-area-clip", "mechanism": "zero-area clip, render mode 0", "extracted": false, "invisible": true, "detectors": [], "class": "NON_THREAT"},
+  {"row": "17-outside-media-box", "mechanism": "text outside the media box", "extracted": false, "invisible": true, "detectors": [], "class": "NON_THREAT"},
+  {"row": "18-white-text", "mechanism": "white text on white page", "extracted": true, "invisible": true, "detectors": [], "class": "MISS"},
+  {"row": "19-near-white-text", "mechanism": "0.995 gray text", "extracted": true, "invisible": false, "detectors": [], "class": "VISIBLE"}
+]
+```
+
+### Local quality-gate receipts
+
+All commands ran in `C:\Users\mcspd\dev\specguard-redteam` on arya. Every exit code is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest tests/test_integrity_redteam.py -q` | 0 | `14 passed` |
+| `uv run pytest -q` | 0 | `477 passed, 2 warnings`. The suite was 463 at `df76de5`. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `51 files already formatted` |
+| `git diff --check` | 0 | No whitespace errors. |
+| `uv run python scripts/record_test_count.py` | 0 | README count rewritten to 477. |
+
+No Codex review ran yet; this section is the hand-off point for it. No detector code changed, so no runtime behaviour moved.
+
+### Local commits
+
+Recorded in the commit that carries this section.
