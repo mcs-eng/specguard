@@ -51,9 +51,18 @@ PROMPT_PATHS: dict[AgentMode, Path] = {
 #: The default-mode instruction file, under the name it has always had.
 PROMPT_PATH = PROMPT_PATHS[AgentMode.FULL_TEXT]
 
-#: How much of each specification page the navigate-mode index carries. The
-#: index exists to tell the model which page to open, not to answer for it.
-PAGE_INDEX_CHARACTERS = 160
+#: How much of each specification page the navigate-mode index carries.
+#:
+#: The index exists to tell the model which page to open, not to answer for
+#: it. Those two goals pull against each other, and the value below is where
+#: they were measured to balance on the 32-page fixture. At 160 characters the
+#: running page furniture filled every line and only 14 of 32 lines were
+#: distinct, with the two pages that govern most planted pairs identical. At
+#: 240 characters 31 of 32 are distinct while the requirement text of a page
+#: still sits past the cutoff. At 320 all 32 are distinct, but the values
+#: themselves enter the index, and a quote taken from the index would weaken
+#: the receipt that says the model opened the page.
+PAGE_INDEX_CHARACTERS = 240
 
 
 class ClaimGenerator(Protocol):
@@ -91,15 +100,20 @@ def registered_tools(tools: AuditTools, agent_mode: AgentMode) -> list[Any]:
     """Return the tool list one mode registers to the model.
 
     ``full_text`` registers all five tools, unchanged. ``navigate`` registers
-    only the read-only pair on
-    :class:`specguard.tools.ModelFacingAuditTools`. A tool-using model that can
-    reach ``persist_finding`` or ``draft_rfi`` can write before the runtime has
-    verified anything, and no runtime path wants a model-initiated write or
-    RFI. The agent reads; the runtime writes.
+    the three read-only tools on
+    :class:`specguard.tools.ModelFacingAuditTools` and neither of the two that
+    write. A tool-using model that can reach ``persist_finding`` or
+    ``draft_rfi`` can write before the runtime has verified anything, and no
+    runtime path wants a model-initiated write or RFI. The agent reads; the
+    runtime writes.
     """
     if agent_mode is AgentMode.NAVIGATE:
         model_facing = tools.model_facing_tools()
-        return [model_facing.extract_pdf_text, model_facing.verify_quote]
+        return [
+            model_facing.check_text_integrity,
+            model_facing.extract_pdf_text,
+            model_facing.verify_quote,
+        ]
     return [
         tools.check_text_integrity,
         tools.extract_pdf_text,

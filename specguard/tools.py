@@ -52,6 +52,16 @@ DEFAULT_PAGE_BUDGET = 40
 #: What ``extract_pdf_text`` returns to the model once the budget is spent.
 PAGE_BUDGET_EXHAUSTED = "page_budget_exhausted"
 
+#: Per-run cap on model-initiated integrity screens. A run binds two
+#: documents, so two screens answer every question the tool can answer; the
+#: slack covers a retry turn. The cap exists for the same reason the page
+#: budget does: a model-callable tool that reads a whole document needs a
+#: bound, or a looping turn reads it without end.
+DEFAULT_INTEGRITY_CHECK_BUDGET = 4
+
+#: What ``check_text_integrity`` returns to the model once its budget is spent.
+INTEGRITY_CHECK_BUDGET_EXHAUSTED = "integrity_check_budget_exhausted"
+
 #: First baseline an RFI page uses for content.
 CONTENT_TOP = 54.0
 
@@ -83,6 +93,7 @@ class AuditTools:
         output_directory: str | Path,
         now: Callable[[], datetime] | None = None,
         page_budget: int = DEFAULT_PAGE_BUDGET,
+        integrity_check_budget: int = DEFAULT_INTEGRITY_CHECK_BUDGET,
     ) -> None:
         self._firestore = firestore_client
         self._spec_path = _canonical_path(spec_path)
@@ -93,6 +104,8 @@ class AuditTools:
         self._drafted_rfis: dict[str, Path] = {}
         self._page_budget = page_budget
         self._model_page_reads = 0
+        self._integrity_check_budget = integrity_check_budget
+        self._model_integrity_checks = 0
 
     @property
     def spec_path(self) -> Path:
@@ -114,6 +127,16 @@ class AuditTools:
         """How many model-initiated page reads this run has spent so far."""
         return self._model_page_reads
 
+    @property
+    def integrity_check_budget(self) -> int:
+        """The per-run cap on model-initiated integrity screens."""
+        return self._integrity_check_budget
+
+    @property
+    def model_integrity_checks(self) -> int:
+        """How many model-initiated screens this run has spent so far."""
+        return self._model_integrity_checks
+
     def model_facing_tools(self) -> ModelFacingAuditTools:
         """Return the read-only surface that navigate mode registers to the model."""
         return ModelFacingAuditTools(self)
@@ -130,6 +153,18 @@ class AuditTools:
             return {"ok": False, "error_code": PAGE_BUDGET_EXHAUSTED}
         self._model_page_reads += 1
         return self.extract_pdf_text(document_role, page_number)
+
+    def check_text_integrity_for_model(self, document_role: str) -> dict[str, Any]:
+        """Screen one bound document for a model turn, against its own budget.
+
+        The budget is checked before the role is, because the cap bounds calls
+        rather than successful screens. The runtime screens both documents
+        itself before any model call, and that screen is not counted here.
+        """
+        if self._model_integrity_checks >= self._integrity_check_budget:
+            return {"ok": False, "error_code": INTEGRITY_CHECK_BUDGET_EXHAUSTED}
+        self._model_integrity_checks += 1
+        return self.check_text_integrity(document_role)
 
     def rfi_path_for(self, rfi_id: str) -> Path | None:
         """Resolve one drafted RFI's filesystem path for the deterministic runtime.
@@ -643,7 +678,7 @@ class AuditTools:
 class ModelFacingAuditTools:
     """The read-only tool surface navigate mode registers to the model.
 
-    Two of :class:`AuditTools` methods are here and three are not. The three
+    Three of :class:`AuditTools` methods are here and three are not. The three
     that are missing are the ones that write: ``persist_finding``,
     ``draft_rfi``, and ``persist_integrity_finding``. A tool-using model that
     can call a write tool can write mid-turn, before the runtime has verified
@@ -659,6 +694,24 @@ class ModelFacingAuditTools:
 
     def __init__(self, tools: AuditTools) -> None:
         self._tools = tools
+
+    def check_text_integrity(self, document_role: str) -> dict[str, Any]:
+        """Report whether one bound document's text layer was flagged.
+
+        The runtime screens both bound documents before this turn began, and a
+        flagged document stops the run before any model call, so this tool is
+        available rather than required. It returns the flag summary only, never
+        any flagged text.
+
+        Args:
+            document_role: Either ``specification`` or ``submitted_document``.
+
+        Returns:
+            ``{"ok": true, "clean": ..., "flagged_pages": [...]}`` for a
+            document that was screened, or ``{"ok": false, "error_code": ...}``
+            for one that was not. A run has a fixed budget of these screens.
+        """
+        return self._tools.check_text_integrity_for_model(document_role)
 
     def extract_pdf_text(self, document_role: str, page_number: int) -> dict[str, Any]:
         """Read the text of one page of one bound document.
