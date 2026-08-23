@@ -260,7 +260,32 @@ The two documents below form a separate evaluation lane. The specification names
 ]
 -->
 
-The `fixture-evidence-messy` block is the machine-readable copy of the seven planted quote pairs. Every quoted value is present once as the governing evidence for its cited page in this fixture set; the `N-*` near-matches are described for navigation and false-positive evaluation but are intentionally absent from the evidence block.
+The `fixture-evidence-messy` block is the machine-readable copy of the seven planted quote pairs. Every quoted value is present once as the governing evidence for its cited page in this fixture set.
+
+The `decoy-evidence-messy` block below is the machine-readable copy of the two compliant near-match pairs. It is a separate block because a decoy pair is not evidence of a discrepancy: it is the pair a correct run must **not** report. The evaluation harness reads it so that a persisted finding matching a decoy is counted in its own column, rather than being pooled with a finding that matches nothing planted at all. The two failures are different, and a reader who cannot tell them apart cannot tell a near-match error from an invention.
+
+<!-- decoy-evidence-messy
+[
+  {
+    "id": "N-01",
+    "spec_pdf": "nimbrin_thermal_annex_specification.pdf",
+    "spec_page": 17,
+    "spec_quote": "The cabinet finish shall be graphite gray.",
+    "cut_sheet_pdf": "zarqelune_vantrel_package.pdf",
+    "cut_sheet_page": 9,
+    "cut_sheet_quote": "graphite-grey baked coating"
+  },
+  {
+    "id": "N-02",
+    "spec_pdf": "nimbrin_thermal_annex_specification.pdf",
+    "spec_page": 13,
+    "spec_quote": "Provide a 24 VDC control circuit for accessory indications.",
+    "cut_sheet_pdf": "zarqelune_vantrel_package.pdf",
+    "cut_sheet_page": 7,
+    "cut_sheet_quote": "24-volt direct-current"
+  }
+]
+-->
 
 ## Phase 7c expected audit outcomes
 
@@ -269,8 +294,8 @@ The existing four-case evaluation block above remains the Phase 7b runtime lane.
 | Case | Cut sheet | Expected outcome | Evidence |
 | --- | --- | --- | --- |
 | `E-11` through `E-17` | `zarqelune_vantrel_package.pdf` | `finding` — the run must reproduce the named `M-*` pair. | `M-01` through `M-07` respectively |
-| `E-18` | `zarqelune_vantrel_package.pdf` | `no_finding` — the graphite-gray wording is compliant. | none (`N-01` decoy) |
-| `E-19` | `zarqelune_vantrel_package.pdf` | `no_finding` — the 24 VDC wording is compliant. | none (`N-02` decoy) |
+| `E-18` | `zarqelune_vantrel_package.pdf` | `no_finding` — the graphite-gray wording is compliant. | `N-01` decoy pair, which a run must not report |
+| `E-19` | `zarqelune_vantrel_package.pdf` | `no_finding` — the 24 VDC wording is compliant. | `N-02` decoy pair, which a run must not report |
 
 <!-- eval-cases-messy
 [
@@ -328,14 +353,16 @@ The existing four-case evaluation block above remains the Phase 7b runtime lane.
     "spec_pdf": "nimbrin_thermal_annex_specification.pdf",
     "cut_sheet_pdf": "zarqelune_vantrel_package.pdf",
     "expected_outcome": "no_finding",
-    "evidence_id": null
+    "evidence_id": null,
+    "decoy_id": "N-01"
   },
   {
     "id": "E-19",
     "spec_pdf": "nimbrin_thermal_annex_specification.pdf",
     "cut_sheet_pdf": "zarqelune_vantrel_package.pdf",
     "expected_outcome": "no_finding",
-    "evidence_id": null
+    "evidence_id": null,
+    "decoy_id": "N-02"
   }
 ]
 -->

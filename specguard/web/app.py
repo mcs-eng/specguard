@@ -838,6 +838,8 @@ def _run_record(
             ),
             "agent_mode": summary.agent_mode.value,
             "model_tool_calls": [call.model_dump(mode="json") for call in summary.model_tool_calls],
+            "self_check_rejections": summary.self_check_rejections,
+            "self_check_rejected_quote_returned": summary.self_check_rejected_quote_returned,
         },
         "documents": {
             "specification": _stored_object_record(specification),
@@ -858,6 +860,8 @@ def _empty_summary() -> dict[str, Any]:
         "audit_model_usage": None,
         "agent_mode": None,
         "model_tool_calls": [],
+        "self_check_rejections": 0,
+        "self_check_rejected_quote_returned": False,
     }
 
 
@@ -1259,6 +1263,8 @@ def _export_payload(
             "audit_model_usage": _export_usage(summary.get("audit_model_usage")),
             "agent_mode": summary.get("agent_mode"),
             "model_tool_calls": _export_model_tool_calls(summary.get("model_tool_calls")),
+            "self_check_rejections": summary.get("self_check_rejections"),
+            "self_check_rejected_quote_returned": summary.get("self_check_rejected_quote_returned"),
             "quarantine": _export_quarantine(summary.get("quarantine")),
         },
         "documents": [
@@ -1329,6 +1335,7 @@ def _export_model_tool_calls(calls: Any) -> list[dict[str, Any]]:
             "page_number": call.get("page_number"),
             "response_verified": call.get("response_verified"),
             "response_error_code": call.get("response_error_code"),
+            "quote_sha256": call.get("quote_sha256"),
         }
         for call in calls
         if isinstance(call, dict)

@@ -342,6 +342,14 @@ class ModelToolCall(BaseModel):
     response_error_code: str | None = Field(
         default=None, description="The ``error_code`` field of the tool answer, when it had one."
     )
+    quote_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        description=(
+            "SHA-256 of the normalized quote a quote-checking call carried. It "
+            "identifies which quote was checked without recording its text."
+        ),
+    )
 
 
 class AuditRunSummary(BaseModel):
@@ -380,6 +388,19 @@ class AuditRunSummary(BaseModel):
     model_tool_calls: list[ModelToolCall] = Field(
         default_factory=list,
         description="Every model-initiated tool call this run recorded, in the order made.",
+    )
+    self_check_rejections: int = Field(
+        default=0,
+        ge=0,
+        description="Model-initiated quote checks that answered that the quote was not found.",
+    )
+    self_check_rejected_quote_returned: bool = Field(
+        default=False,
+        description=(
+            "Whether the model still returned a quote its own check had rejected. "
+            "Together with the count above this is the honest measure of whether "
+            "the self-check changed anything; the runtime gate never trusted it."
+        ),
     )
 
     @property

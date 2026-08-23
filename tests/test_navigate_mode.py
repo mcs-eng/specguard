@@ -19,10 +19,17 @@ from specguard.agent import (
     AuditRuntime,
     create_adk_agent,
     load_audit_prompt,
+    quote_digest,
     registered_tools,
     resolve_agent_mode,
 )
-from specguard.models import AgentMode, AuditClaim, AuditClaimBatch, DocumentRole
+from specguard.models import (
+    AgentMode,
+    AuditClaim,
+    AuditClaimBatch,
+    DocumentRole,
+    ModelToolCall,
+)
 from specguard.tools import (
     DEFAULT_INTEGRITY_CHECK_BUDGET,
     DEFAULT_PAGE_BUDGET,
@@ -517,7 +524,13 @@ def _read_events(call_id: str, page_number: int, *, role: str = "specification")
     ]
 
 
-def _check_events(call_id: str, page_number: int, *, verified: bool) -> list[FakeEvent]:
+def _check_events(
+    call_id: str,
+    page_number: int,
+    *,
+    verified: bool,
+    quote: str = "a quoted passage",
+) -> list[FakeEvent]:
     return [
         FakeEvent(
             function_calls=(
@@ -525,7 +538,7 @@ def _check_events(call_id: str, page_number: int, *, verified: bool) -> list[Fak
                     id=call_id,
                     name="verify_quote",
                     args={
-                        "quote": "a quoted passage",
+                        "quote": quote,
                         "page_number": page_number,
                         "document_role": "specification",
                     },
@@ -631,7 +644,137 @@ def test_the_recording_state_is_not_shared_between_generators() -> None:
     assert second.model_tool_calls() == []
 
 
-# --- 6. What the run summary records -------------------------------------
+# --- 6. The quote self-check receipt -------------------------------------
+
+
+def test_a_checked_quote_is_identified_by_digest_not_by_its_text() -> None:
+    generator = _generator_over(
+        [
+            *_check_events("call-1", 5, verified=False, quote="A quoted passage."),
+            FakeEvent(text="{}"),
+        ]
+    )
+
+    asyncio.run(generator.generate_claims("Audit this document."))
+    recorded = generator.model_tool_calls()[0]
+
+    assert recorded.quote_sha256 == quote_digest("A quoted passage.")
+    assert "A quoted passage." not in recorded.model_dump_json()
+
+
+def test_the_digest_ignores_spacing_the_gate_would_ignore() -> None:
+    assert quote_digest("The  required\ncharacteristic.") == quote_digest(
+        "the required characteristic."
+    )
+    assert quote_digest("") is None
+    assert quote_digest(None) is None
+
+
+def test_a_page_read_records_no_quote_digest() -> None:
+    generator = _generator_over([*_read_events("call-1", 4), FakeEvent(text="{}")])
+
+    asyncio.run(generator.generate_claims("Audit this document."))
+
+    assert generator.model_tool_calls()[0].quote_sha256 is None
+
+
+def _self_check_runtime(
+    tmp_path: Path, generator: FakeClaimGenerator, calls: list[object]
+) -> AuditRuntime:
+    spec, cut_sheet = _documents(tmp_path)
+    return AuditRuntime(
+        claim_generator=RecordingClaimGeneratorFrom(generator, calls),
+        tools=_tools(tmp_path, spec, cut_sheet),
+        spec_path=spec,
+        cut_sheet_path=cut_sheet,
+        run_id="audit-run-1",
+        agent_mode=AgentMode.NAVIGATE,
+    )
+
+
+class RecordingClaimGeneratorFrom:
+    """Delegate to one generator while reporting a fixed tool-call receipt."""
+
+    def __init__(self, inner: FakeClaimGenerator, calls: list[object]) -> None:
+        self._inner = inner
+        self._calls = calls
+
+    async def generate_claims(self, message: str) -> AuditClaimBatch:
+        return await self._inner.generate_claims(message)
+
+    def model_tool_calls(self) -> list[object]:
+        return list(self._calls)
+
+
+def _rejected_check(quote: str) -> ModelToolCall:
+    return ModelToolCall(
+        turn_index=0,
+        tool_name="verify_quote",
+        document_role=DocumentRole.SPECIFICATION,
+        page_number=1,
+        response_verified=False,
+        quote_sha256=quote_digest(quote),
+    )
+
+
+def test_a_self_check_the_model_obeyed_is_recorded_as_a_rejection_it_dropped(
+    tmp_path: Path,
+) -> None:
+    """The model checked a bad quote, was told no, and did not return it."""
+    generator = FakeClaimGenerator(AuditClaimBatch(claims=[_claim()]))
+    runtime = _self_check_runtime(
+        tmp_path, generator, [_rejected_check("A quote the model then dropped.")]
+    )
+
+    summary = asyncio.run(runtime.run())
+
+    assert summary.self_check_rejections == 1
+    assert summary.self_check_rejected_quote_returned is False
+
+
+def test_a_self_check_the_model_ignored_is_recorded_as_such(tmp_path: Path) -> None:
+    """The model checked a quote, was told no, and returned it anyway."""
+    generator = FakeClaimGenerator(AuditClaimBatch(claims=[_claim()]))
+    runtime = _self_check_runtime(tmp_path, generator, [_rejected_check(SPEC_PAGE_ONE)])
+
+    summary = asyncio.run(runtime.run())
+
+    assert summary.self_check_rejections == 1
+    assert summary.self_check_rejected_quote_returned is True
+    # The runtime never trusted the self-check: its own gate still ran and this
+    # quote is real, so the finding was persisted on the gate's verdict.
+    assert summary.findings_persisted == 1
+
+
+def test_a_run_with_no_self_check_reports_zero_rather_than_nothing(tmp_path: Path) -> None:
+    generator = FakeClaimGenerator(AuditClaimBatch(claims=[_claim()]))
+    runtime, _, _ = _runtime(tmp_path, generator)
+
+    summary = asyncio.run(runtime.run())
+
+    assert summary.self_check_rejections == 0
+    assert summary.self_check_rejected_quote_returned is False
+
+
+def test_a_passing_self_check_is_not_counted_as_a_rejection(tmp_path: Path) -> None:
+    passing = ModelToolCall(
+        turn_index=0,
+        tool_name="verify_quote",
+        document_role=DocumentRole.SPECIFICATION,
+        page_number=1,
+        response_verified=True,
+        quote_sha256=quote_digest(SPEC_PAGE_ONE),
+    )
+    generator = FakeClaimGenerator(AuditClaimBatch(claims=[_claim()]))
+    runtime = _self_check_runtime(tmp_path, generator, [passing])
+
+    summary = asyncio.run(runtime.run())
+
+    assert summary.self_check_rejections == 0
+    assert summary.self_check_rejected_quote_returned is False
+
+
+# --- 7. What the run summary records -------------------------------------
 
 
 def test_the_summary_records_the_mode_and_the_recorded_calls(tmp_path: Path) -> None:

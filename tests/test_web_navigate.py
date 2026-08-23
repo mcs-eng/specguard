@@ -11,9 +11,12 @@ from datetime import UTC, datetime
 
 import pytest
 
+from specguard.agent import quote_digest
 from specguard.models import AgentMode, AuditRunSummary, DocumentRole, ModelToolCall
 from specguard.web.app import WebSettings
 from tests.test_web import RUN_ID, _client
+
+QUOTE_DIGEST = quote_digest("A quoted passage the model checked.")
 
 NAVIGATE_CALLS = [
     ModelToolCall(
@@ -28,6 +31,7 @@ NAVIGATE_CALLS = [
         document_role=DocumentRole.SPECIFICATION,
         page_number=17,
         response_verified=False,
+        quote_sha256=QUOTE_DIGEST,
     ),
     ModelToolCall(
         turn_index=0,
@@ -48,6 +52,7 @@ def _navigate_summary() -> AuditRunSummary:
         findings_persisted=0,
         agent_mode=AgentMode.NAVIGATE,
         model_tool_calls=NAVIGATE_CALLS,
+        self_check_rejections=1,
     )
 
 
@@ -75,6 +80,8 @@ def test_a_navigate_run_persists_its_mode_and_every_recorded_tool_call() -> None
     assert summary["model_tool_calls"][0]["page_number"] == 17
     assert summary["model_tool_calls"][1]["response_verified"] is False
     assert summary["model_tool_calls"][2]["response_error_code"] == "page_budget_exhausted"
+    assert summary["self_check_rejections"] == 1
+    assert summary["self_check_rejected_quote_returned"] is False
 
 
 def test_a_full_text_run_persists_the_default_mode_and_an_empty_receipt() -> None:
@@ -178,6 +185,8 @@ def test_the_json_export_carries_the_mode_and_the_tool_call_receipt() -> None:
             "findings_persisted": 0,
             "agent_mode": "navigate",
             "model_tool_calls": [call.model_dump(mode="json") for call in NAVIGATE_CALLS],
+            "self_check_rejections": 1,
+            "self_check_rejected_quote_returned": False,
         },
         "documents": {},
         "rfi": None,
@@ -194,6 +203,7 @@ def test_the_json_export_carries_the_mode_and_the_tool_call_receipt() -> None:
             "page_number": 17,
             "response_verified": None,
             "response_error_code": None,
+            "quote_sha256": None,
         },
         {
             "turn_index": 0,
@@ -202,6 +212,7 @@ def test_the_json_export_carries_the_mode_and_the_tool_call_receipt() -> None:
             "page_number": 17,
             "response_verified": False,
             "response_error_code": None,
+            "quote_sha256": QUOTE_DIGEST,
         },
         {
             "turn_index": 0,
@@ -210,8 +221,11 @@ def test_the_json_export_carries_the_mode_and_the_tool_call_receipt() -> None:
             "page_number": 41,
             "response_verified": None,
             "response_error_code": "page_budget_exhausted",
+            "quote_sha256": None,
         },
     ]
+    assert payload["summary"]["self_check_rejections"] == 1
+    assert payload["summary"]["self_check_rejected_quote_returned"] is False
 
 
 def test_the_json_export_of_an_older_run_reports_an_empty_receipt() -> None:

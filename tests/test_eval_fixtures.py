@@ -1,7 +1,8 @@
-"""Aggregation and publication logic of the measured eval harness, driven by fakes.
+"""Tests for the fixture evaluation harness.
 
-No test here touches Vertex, Firestore, or the network. The real run is a
-receipted script execution recorded in EVAL.md and HANDOFF.md.
+Every test here is network-free. The harness's own scoring, rendering, ship
+gate, and revision reporting are exercised against constructed results; the
+real model path is never called.
 """
 
 from __future__ import annotations
@@ -11,30 +12,52 @@ from pathlib import Path
 import pytest
 
 from scripts.eval_fixtures import (
+    LANE_MESSY,
+    LANE_ORIGINAL,
+    LANES,
     README_TABLE_END,
     README_TABLE_START,
+    CasePair,
     CaseResult,
     EvalCase,
     EvidencePair,
+    LaneResult,
+    PairResult,
     RunOutcome,
+    ShipGateVerdict,
     aggregate,
     build_run_outcome,
     compare_to_previous,
     current_code_revision,
+    eval_summary_line,
+    evaluate_ship_gate,
     format_code_revision,
+    group_cases_into_pairs,
+    load_decoy_pairs,
     load_eval_cases,
     load_evidence_pairs,
     overall_catch_rate,
     read_previous_readme_section,
+    render_case_table,
     render_eval_markdown,
+    render_pair_table,
     render_readme_section,
-    render_results_table,
+    selected_lanes,
+    selected_modes,
     uncommitted_source_paths,
     write_readme_section,
 )
-from specguard.models import AuditRunSummary, DocumentRole, QuarantinedDocument, RunQuarantine
+from specguard.models import (
+    AgentMode,
+    AuditModelUsage,
+    AuditRunSummary,
+    DocumentRole,
+    QuarantinedDocument,
+    RunQuarantine,
+)
 
 MANIFEST_PATH = Path(__file__).parents[1] / "fixtures" / "MANIFEST.md"
+MANIFEST_TEXT = MANIFEST_PATH.read_text(encoding="utf-8")
 
 D01 = EvidencePair(
     id="D-01",
@@ -43,12 +66,34 @@ D01 = EvidencePair(
     cut_sheet_page=1,
     cut_sheet_quote="Nominal system: 208V, 3-phase, 4-wire.",
 )
+D02 = EvidencePair(
+    id="D-02",
+    spec_page=5,
+    spec_quote="Terminations shall be rated 90 deg C minimum.",
+    cut_sheet_page=1,
+    cut_sheet_quote="Termination rating: 158 deg F.",
+)
+DECOY = EvidencePair(
+    id="N-01",
+    spec_page=17,
+    spec_quote="The cabinet finish shall be graphite gray.",
+    cut_sheet_page=9,
+    cut_sheet_quote="graphite-grey baked coating",
+)
+
 FINDING_CASE = EvalCase(
     id="E-02",
     spec_pdf="spec.pdf",
     cut_sheet_pdf="veylan.pdf",
     expected_outcome="finding",
     evidence=D01,
+)
+SECOND_FINDING_CASE = EvalCase(
+    id="E-03",
+    spec_pdf="spec.pdf",
+    cut_sheet_pdf="veylan.pdf",
+    expected_outcome="finding",
+    evidence=D02,
 )
 COMPLIANT_CASE = EvalCase(
     id="E-01",
@@ -57,6 +102,14 @@ COMPLIANT_CASE = EvalCase(
     expected_outcome="no_finding",
     evidence=None,
 )
+DECOY_CASE = EvalCase(
+    id="E-18",
+    spec_pdf="spec.pdf",
+    cut_sheet_pdf="veylan.pdf",
+    expected_outcome="no_finding",
+    evidence=None,
+    decoy=DECOY,
+)
 QUARANTINE_CASE = EvalCase(
     id="E-04",
     spec_pdf="spec.pdf",
@@ -64,6 +117,12 @@ QUARANTINE_CASE = EvalCase(
     expected_outcome="quarantine",
     evidence=None,
 )
+
+
+def _pair(*cases: EvalCase) -> CasePair:
+    return CasePair(
+        spec_pdf=cases[0].spec_pdf, cut_sheet_pdf=cases[0].cut_sheet_pdf, cases=tuple(cases)
+    )
 
 
 def _summary(**overrides: object) -> AuditRunSummary:
@@ -79,34 +138,63 @@ def _summary(**overrides: object) -> AuditRunSummary:
     return AuditRunSummary(**values)  # type: ignore[arg-type]
 
 
-def _expected_finding(severity: str = "high") -> dict[str, object]:
+def _finding(evidence: EvidencePair, severity: str = "high", **extra: object) -> dict[str, object]:
     return {
-        "spec_quote": {"text": D01.spec_quote, "page_number": D01.spec_page},
-        "cut_sheet_quote": {"text": D01.cut_sheet_quote, "page_number": D01.cut_sheet_page},
+        "spec_quote": {"text": evidence.spec_quote, "page_number": evidence.spec_page},
+        "cut_sheet_quote": {
+            "text": evidence.cut_sheet_quote,
+            "page_number": evidence.cut_sheet_page,
+        },
         "severity": severity,
+        **extra,
     }
 
 
-def _outcome(case: EvalCase, **overrides: object) -> RunOutcome:
+def _outcome(**overrides: object) -> RunOutcome:
     values: dict[str, object] = {
         "run_id": "run-1",
         "quarantined": False,
-        "model_calls": 1,
+        "model_turns": 1,
         "claims_made": 1,
         "rejected": 0,
         "retried": 0,
         "findings_persisted": 1,
-        "caught_expected_pair": case.expected_outcome == "finding",
-        "false_positives": 0,
+        "caught_case_ids": frozenset(),
+        "decoy_hit_case_ids": (),
+        "unattributed_false_positives": 0,
         "severities": ("high",),
     }
     values.update(overrides)
     return RunOutcome(**values)  # type: ignore[arg-type]
 
 
-def test_the_committed_manifest_declares_four_bound_audit_cases() -> None:
+def _lane(
+    *,
+    lane: str = LANE_ORIGINAL,
+    mode: AgentMode = AgentMode.NAVIGATE,
+    pairs: list[tuple[CasePair, list[RunOutcome]]],
+) -> LaneResult:
+    return aggregate(
+        lane, mode, [pair for pair, _ in pairs], {pair.key: runs for pair, runs in pairs}
+    )
+
+
+def _one_case_lane(
+    *, mode: AgentMode = AgentMode.NAVIGATE, catches: int = 1, iterations: int = 1
+) -> LaneResult:
+    runs = [
+        _outcome(caught_case_ids=frozenset({FINDING_CASE.id} if index < catches else set()))
+        for index in range(iterations)
+    ]
+    return _lane(mode=mode, pairs=[(_pair(FINDING_CASE), runs)])
+
+
+# --- 1. Reading the manifest, lane by lane --------------------------------
+
+
+def test_the_original_lane_declares_four_bound_audit_cases() -> None:
     """The harness reads its expectations from the manifest, not from itself."""
-    cases = load_eval_cases(MANIFEST_PATH.read_text(encoding="utf-8"))
+    cases = load_eval_cases(MANIFEST_TEXT, LANES[LANE_ORIGINAL])
 
     assert [case.id for case in cases] == ["E-01", "E-02", "E-03", "E-04"]
     assert [case.expected_outcome for case in cases] == [
@@ -115,558 +203,1031 @@ def test_the_committed_manifest_declares_four_bound_audit_cases() -> None:
         "finding",
         "quarantine",
     ]
-    veylan = next(case for case in cases if case.id == "E-02")
-    assert veylan.evidence is not None
-    assert veylan.evidence.id == "D-01"
-    assert veylan.evidence.spec_page == 3
-    assert veylan.cut_sheet_path.is_file()
-    assert veylan.spec_path.is_file()
+    assert all(case.spec_path.is_file() and case.cut_sheet_path.is_file() for case in cases)
 
 
-def test_manifest_evidence_pairs_are_read_from_the_existing_block() -> None:
-    """The quote a run must reproduce is recorded once and read twice."""
-    pairs = load_evidence_pairs(MANIFEST_PATH.read_text(encoding="utf-8"))
+def test_the_messy_lane_declares_nine_cases_over_one_document_pair() -> None:
+    cases = load_eval_cases(MANIFEST_TEXT, LANES[LANE_MESSY])
 
-    assert sorted(pairs) == ["D-01", "D-02"]
-    assert pairs["D-02"].cut_sheet_quote == "Field conductor termination rating: 158 deg F."
+    assert [case.id for case in cases] == [f"E-{number}" for number in range(11, 20)]
+    assert sum(1 for case in cases if case.expected_outcome == "finding") == 7
+    assert sum(1 for case in cases if case.expected_outcome == "no_finding") == 2
+    assert {case.pair_key for case in cases} == {
+        ("nimbrin_thermal_annex_specification.pdf", "zarqelune_vantrel_package.pdf")
+    }
+
+
+def test_the_messy_lane_binds_each_decoy_case_to_its_decoy_pair() -> None:
+    cases = {case.id: case for case in load_eval_cases(MANIFEST_TEXT, LANES[LANE_MESSY])}
+
+    assert cases["E-18"].decoy is not None
+    assert cases["E-18"].decoy.id == "N-01"
+    assert cases["E-19"].decoy is not None
+    assert cases["E-19"].decoy.id == "N-02"
+    assert cases["E-11"].decoy is None
+
+
+def test_each_lane_reads_its_own_evidence_block() -> None:
+    original = load_evidence_pairs(MANIFEST_TEXT, LANES[LANE_ORIGINAL])
+    messy = load_evidence_pairs(MANIFEST_TEXT, LANES[LANE_MESSY])
+
+    assert set(original) == {"D-01", "D-02"}
+    assert set(messy) == {f"M-0{number}" for number in range(1, 8)}
+    assert messy["M-01"].spec_page == 17
+
+
+def test_only_the_messy_lane_records_decoy_pairs() -> None:
+    assert load_decoy_pairs(MANIFEST_TEXT, LANES[LANE_ORIGINAL]) == {}
+    assert set(load_decoy_pairs(MANIFEST_TEXT, LANES[LANE_MESSY])) == {"N-01", "N-02"}
 
 
 def test_a_finding_case_without_evidence_is_refused() -> None:
-    """A case cannot claim a catch rate with no pair to catch."""
-    manifest = (
-        "<!-- fixture-evidence\n[]\n-->\n"
-        '<!-- eval-cases\n[{"id": "E-09", "spec_pdf": "a.pdf", "cut_sheet_pdf": "b.pdf", '
-        '"expected_outcome": "finding", "evidence_id": null}]\n-->'
+    text = MANIFEST_TEXT.replace('"evidence_id": "D-01"', '"evidence_id": null')
+
+    with pytest.raises(ValueError, match="expects a finding but names no evidence pair"):
+        load_eval_cases(text, LANES[LANE_ORIGINAL])
+
+
+def test_a_case_naming_unknown_evidence_is_refused() -> None:
+    text = MANIFEST_TEXT.replace('"evidence_id": "D-01"', '"evidence_id": "D-99"')
+
+    with pytest.raises(ValueError, match="names unknown evidence D-99"):
+        load_eval_cases(text, LANES[LANE_ORIGINAL])
+
+
+def test_a_case_naming_an_unknown_decoy_is_refused() -> None:
+    text = MANIFEST_TEXT.replace('"decoy_id": "N-01"', '"decoy_id": "N-99"')
+
+    with pytest.raises(ValueError, match="names unknown decoy N-99"):
+        load_eval_cases(text, LANES[LANE_MESSY])
+
+
+def test_a_missing_manifest_block_is_named_in_the_error() -> None:
+    with pytest.raises(ValueError, match="must contain the decoy-evidence-messy block"):
+        load_decoy_pairs("no blocks here", LANES[LANE_MESSY])
+
+
+# --- 2. Grouping cases into the audits that measure them ------------------
+
+
+def test_the_original_lane_groups_into_four_single_case_audits() -> None:
+    pairs = group_cases_into_pairs(load_eval_cases(MANIFEST_TEXT, LANES[LANE_ORIGINAL]))
+
+    assert len(pairs) == 4
+    assert all(len(pair.cases) == 1 for pair in pairs)
+
+
+def test_the_messy_lane_groups_nine_cases_into_one_audit() -> None:
+    """Nine cases on one pair are five audits at five iterations, not forty-five."""
+    pairs = group_cases_into_pairs(load_eval_cases(MANIFEST_TEXT, LANES[LANE_MESSY]))
+
+    assert len(pairs) == 1
+    assert len(pairs[0].cases) == 9
+
+
+def test_grouping_keeps_the_manifest_order_of_first_appearance() -> None:
+    pairs = group_cases_into_pairs(
+        [COMPLIANT_CASE, FINDING_CASE, SECOND_FINDING_CASE, QUARANTINE_CASE]
     )
-    with pytest.raises(ValueError, match="names no evidence pair"):
-        load_eval_cases(manifest)
+
+    assert [pair.cut_sheet_pdf for pair in pairs] == ["caldra.pdf", "veylan.pdf", "altered.pdf"]
+    assert [case.id for case in pairs[1].cases] == ["E-02", "E-03"]
 
 
-def test_an_exact_evidence_match_counts_as_a_catch() -> None:
-    """Both quotes and both page numbers must equal the manifest pair."""
-    outcome = build_run_outcome(FINDING_CASE, _summary(), [_expected_finding()], model_calls=1)
-
-    assert outcome.caught_expected_pair is True
-    assert outcome.false_positives == 0
-    assert outcome.severities == ("high",)
+# --- 3. Scoring one audit against every case of its pair ------------------
 
 
-def test_a_near_miss_is_not_a_catch_and_is_a_false_positive() -> None:
-    """A right quote on the wrong page must not be scored as a catch."""
-    near_miss = _expected_finding()
-    near_miss["spec_quote"] = {"text": D01.spec_quote, "page_number": D01.spec_page + 1}
+def test_an_exact_match_counts_as_a_catch_for_its_own_case() -> None:
+    pair = _pair(FINDING_CASE, SECOND_FINDING_CASE)
 
-    outcome = build_run_outcome(FINDING_CASE, _summary(), [near_miss], model_calls=1)
+    outcome = build_run_outcome(pair, _summary(), [_finding(D01)], model_turns=1)
 
-    assert outcome.caught_expected_pair is False
-    assert outcome.false_positives == 1
+    assert outcome.caught_case_ids == frozenset({"E-02"})
+    assert outcome.unattributed_false_positives == 0
 
 
-def test_every_persisted_finding_on_the_compliant_case_is_a_false_positive() -> None:
-    """The compliant cut sheet has nothing planted, so any finding is a miss."""
+def test_one_audit_can_catch_several_cases_of_the_same_pair() -> None:
+    pair = _pair(FINDING_CASE, SECOND_FINDING_CASE)
+
     outcome = build_run_outcome(
-        COMPLIANT_CASE, _summary(), [_expected_finding(), _expected_finding()], model_calls=1
+        pair, _summary(findings_persisted=2), [_finding(D01), _finding(D02)], model_turns=1
     )
 
-    assert outcome.caught_expected_pair is False
-    assert outcome.false_positives == 2
+    assert outcome.caught_case_ids == frozenset({"E-02", "E-03"})
+    assert outcome.unattributed_false_positives == 0
 
 
-def test_a_quarantined_run_reports_no_model_call_and_no_finding() -> None:
-    """The altered fixture must stop before the model and persist nothing."""
+def test_a_near_miss_is_not_a_catch_and_is_an_unattributed_false_positive() -> None:
+    near_miss = _finding(D01)
+    near_miss["cut_sheet_quote"] = {"text": "Nominal system: 208V, 3-phase.", "page_number": 1}
+
+    outcome = build_run_outcome(_pair(FINDING_CASE), _summary(), [near_miss], model_turns=1)
+
+    assert outcome.caught_case_ids == frozenset()
+    assert outcome.unattributed_false_positives == 1
+    assert outcome.decoy_hit_case_ids == ()
+
+
+def test_a_decoy_match_is_counted_as_a_decoy_and_never_as_an_invention() -> None:
+    pair = _pair(FINDING_CASE, DECOY_CASE)
+
+    outcome = build_run_outcome(pair, _summary(), [_finding(DECOY)], model_turns=1)
+
+    assert outcome.decoy_hit_case_ids == ("E-18",)
+    assert outcome.unattributed_false_positives == 0
+    assert outcome.caught_case_ids == frozenset()
+
+
+def test_every_persisted_finding_on_a_compliant_case_is_a_false_positive() -> None:
+    outcome = build_run_outcome(
+        _pair(COMPLIANT_CASE), _summary(), [_finding(D01), _finding(D02)], model_turns=1
+    )
+
+    assert outcome.caught_case_ids == frozenset()
+    assert outcome.unattributed_false_positives == 2
+
+
+def test_a_quarantined_run_reports_no_model_turn_and_no_finding() -> None:
     quarantine = RunQuarantine(
-        reason="text_layer_integrity_screen",
+        reason="hidden_text_layer",
         documents=[
             QuarantinedDocument(
                 document_role=DocumentRole.SUBMITTED_DOCUMENT,
-                document_sha256="ab" * 32,
+                document_sha256="a" * 64,
                 page_count=2,
                 flagged_pages=[1],
+                detectors=["invisible_render_mode"],
                 hidden_span_count=2,
             )
         ],
     )
     summary = _summary(claims_made=0, findings_persisted=0, rfi_path=None, quarantine=quarantine)
 
-    outcome = build_run_outcome(QUARANTINE_CASE, summary, [], model_calls=0)
+    outcome = build_run_outcome(_pair(QUARANTINE_CASE), summary, [], model_turns=0)
 
     assert outcome.quarantined is True
-    assert outcome.model_calls == 0
+    assert outcome.model_turns == 0
     assert outcome.findings_persisted == 0
-    assert outcome.false_positives == 0
+    assert outcome.model_output_invalid is False
+
+
+def test_the_outcome_carries_the_token_tool_and_self_check_receipts() -> None:
+    summary = _summary(
+        audit_model_usage=AuditModelUsage(prompt_tokens=1234, output_tokens=56, total_tokens=1290),
+        self_check_rejections=2,
+        self_check_rejected_quote_returned=True,
+    )
+
+    outcome = build_run_outcome(_pair(FINDING_CASE), summary, [_finding(D01)], model_turns=1)
+
+    assert outcome.prompt_tokens == 1234
+    assert outcome.self_check_rejections == 2
+    assert outcome.self_check_rejected_quote_returned is True
+
+
+def test_a_run_with_no_usable_model_turn_is_flagged() -> None:
+    summary = _summary(claims_made=0, rejected=1, findings_persisted=0, rfi_path=None)
+
+    outcome = build_run_outcome(_pair(COMPLIANT_CASE), summary, [], model_turns=1)
+
+    assert outcome.model_output_invalid is True
+
+
+# --- 4. Rates, and the promise never to round one up ----------------------
 
 
 def test_catch_rate_is_the_measured_fraction_not_a_rounded_claim() -> None:
-    """Three catches in five runs publishes as 60 percent."""
-    runs = [_outcome(FINDING_CASE, caught_expected_pair=index < 3) for index in range(5)]
-    result = CaseResult(case=FINDING_CASE, runs=runs)
+    lane = _one_case_lane(catches=3, iterations=4)
 
-    assert result.catches == 3
-    assert result.catch_rate == pytest.approx(0.6)
-    assert result.meets_expectation is False
-    assert "60%" in render_results_table([result])
+    assert lane.cases[0].catch_rate == 0.75
+    assert "75%" in render_case_table(lane.cases)
 
 
 def test_a_case_with_nothing_planted_reports_no_catch_rate() -> None:
-    """An unmeasured case must not inflate the published average."""
-    compliant = CaseResult(
-        case=COMPLIANT_CASE,
-        runs=[
-            _outcome(
-                COMPLIANT_CASE, caught_expected_pair=False, findings_persisted=0, severities=()
-            )
-            for _ in range(5)
-        ],
-    )
-    caught = CaseResult(case=FINDING_CASE, runs=[_outcome(FINDING_CASE) for _ in range(5)])
+    lane = _lane(pairs=[(_pair(COMPLIANT_CASE), [_outcome(findings_persisted=0, severities=())])])
 
-    assert compliant.catch_rate is None
-    assert "n/a" in render_results_table([compliant])
-    assert overall_catch_rate([compliant, caught]) == pytest.approx(1.0)
+    assert lane.cases[0].catch_rate is None
+    assert "| n/a |" in render_case_table(lane.cases)
 
 
 def test_the_overall_catch_rate_weights_every_run_equally() -> None:
-    """Two cases, one perfect and one at 40 percent, average to 70 percent."""
-    perfect = CaseResult(case=FINDING_CASE, runs=[_outcome(FINDING_CASE) for _ in range(5)])
-    partial_case = EvalCase(
-        id="E-03",
-        spec_pdf="spec.pdf",
-        cut_sheet_pdf="torven.pdf",
-        expected_outcome="finding",
-        evidence=D01,
+    first = CaseResult(
+        case=FINDING_CASE,
+        runs=[_outcome(caught_case_ids=frozenset({"E-02"})) for _ in range(3)],
     )
-    partial = CaseResult(
-        case=partial_case,
-        runs=[_outcome(partial_case, caught_expected_pair=index < 2) for index in range(5)],
-    )
+    second = CaseResult(case=SECOND_FINDING_CASE, runs=[_outcome() for _ in range(1)])
 
-    assert overall_catch_rate([perfect, partial]) == pytest.approx(0.7)
+    assert overall_catch_rate([first, second]) == 0.75
 
 
-def test_the_quarantine_case_only_passes_with_zero_model_calls() -> None:
-    """A quarantine that still called the model has not met the expectation."""
-    clean = CaseResult(
-        case=QUARANTINE_CASE,
-        runs=[
-            _outcome(
-                QUARANTINE_CASE,
-                quarantined=True,
-                model_calls=0,
-                findings_persisted=0,
-                caught_expected_pair=False,
-                severities=(),
+def test_a_short_catch_rate_falls_back_to_a_decimal_rather_than_rounding_up() -> None:
+    """199 of 200 rounds to 100 at whole percent, so it is published as 99.5."""
+    table = render_case_table(_one_case_lane(catches=199, iterations=200).cases)
+
+    assert "| 99.5% |" in table
+    assert "| 100% |" not in table
+
+
+def test_a_rate_that_still_rounds_to_complete_publishes_as_under_one_hundred() -> None:
+    """9999 of 10000 rounds to 100 even at one decimal, so it publishes as `<100%`."""
+    table = render_case_table(_one_case_lane(catches=9999, iterations=10000).cases)
+
+    assert "| <100% |" in table
+    assert "| 100% |" not in table
+
+
+def test_a_rare_catch_never_publishes_as_zero_percent() -> None:
+    """The same guard runs at the bottom: 1 of 10000 is not none."""
+    table = render_case_table(_one_case_lane(catches=1, iterations=10000).cases)
+
+    catch_rate_cell = table.splitlines()[-1].split("|")[4].strip()
+
+    assert catch_rate_cell == ">0%"
+
+
+def test_an_exact_rate_still_publishes_as_one_hundred_percent() -> None:
+    lane = _one_case_lane(catches=5, iterations=5)
+
+    assert "100%" in render_case_table(lane.cases)
+
+
+def test_a_mean_with_nothing_to_average_reads_as_not_applicable() -> None:
+    lane = _lane(pairs=[(_pair(FINDING_CASE), [_outcome(prompt_tokens=None)])])
+
+    assert lane.pairs[0].mean_prompt_tokens is None
+    assert "| n/a |" in render_pair_table(lane.pairs)
+
+
+def test_the_mean_prompt_token_count_skips_runs_that_reported_none() -> None:
+    lane = _lane(
+        pairs=[
+            (
+                _pair(FINDING_CASE),
+                [
+                    _outcome(prompt_tokens=100),
+                    _outcome(prompt_tokens=None),
+                    _outcome(prompt_tokens=200),
+                ],
             )
-            for _ in range(5)
-        ],
-    )
-    leaked = CaseResult(
-        case=QUARANTINE_CASE,
-        runs=[
-            _outcome(
-                QUARANTINE_CASE,
-                quarantined=True,
-                model_calls=1,
-                findings_persisted=0,
-                caught_expected_pair=False,
-                severities=(),
-            )
-            for _ in range(5)
-        ],
+        ]
     )
 
-    assert clean.quarantine_rate == pytest.approx(1.0)
-    assert clean.meets_expectation is True
-    assert leaked.meets_expectation is False
+    assert lane.pairs[0].mean_prompt_tokens == 150
+
+
+# --- 5. Whether a case matched what the manifest declared -----------------
+
+
+def test_a_finding_case_passes_only_when_every_run_caught_it() -> None:
+    caught = _one_case_lane(catches=2, iterations=2)
+    missed = _one_case_lane(catches=1, iterations=2)
+
+    assert caught.cases[0].meets_expectation is True
+    assert missed.cases[0].meets_expectation is False
+
+
+def test_a_decoy_case_fails_when_a_run_reproduced_its_decoy() -> None:
+    lane = _lane(pairs=[(_pair(DECOY_CASE), [_outcome(decoy_hit_case_ids=("E-18",))])])
+
+    assert lane.cases[0].decoy_false_positives == 1
+    assert lane.cases[0].meets_expectation is False
+
+
+def test_a_decoy_case_fails_when_a_run_invented_a_finding() -> None:
+    lane = _lane(pairs=[(_pair(DECOY_CASE), [_outcome(unattributed_false_positives=1)])])
+
+    assert lane.cases[0].meets_expectation is False
+
+
+def test_a_compliant_case_passes_only_with_no_finding_of_any_kind() -> None:
+    lane = _lane(pairs=[(_pair(COMPLIANT_CASE), [_outcome(findings_persisted=0, severities=())])])
+
+    assert lane.cases[0].meets_expectation is True
+
+
+def test_a_run_with_no_usable_model_turn_fails_the_compliant_case() -> None:
+    """Persisting nothing because the model broke is not the declared outcome."""
+    lane = _lane(
+        pairs=[
+            (
+                _pair(COMPLIANT_CASE),
+                [_outcome(findings_persisted=0, severities=(), model_output_invalid=True)],
+            )
+        ]
+    )
+
+    assert lane.cases[0].meets_expectation is False
+
+
+def test_a_compliant_case_that_never_reached_the_model_fails() -> None:
+    lane = _lane(
+        pairs=[
+            (_pair(COMPLIANT_CASE), [_outcome(findings_persisted=0, severities=(), model_turns=0)])
+        ]
+    )
+
+    assert lane.cases[0].meets_expectation is False
+
+
+def test_the_quarantine_case_only_passes_with_zero_model_turns() -> None:
+    clean = _lane(
+        pairs=[
+            (
+                _pair(QUARANTINE_CASE),
+                [_outcome(quarantined=True, model_turns=0, findings_persisted=0, severities=())],
+            )
+        ]
+    )
+    leaked = _lane(
+        pairs=[
+            (
+                _pair(QUARANTINE_CASE),
+                [_outcome(quarantined=True, model_turns=1, findings_persisted=0, severities=())],
+            )
+        ]
+    )
+
+    assert clean.cases[0].meets_expectation is True
+    assert leaked.cases[0].meets_expectation is False
+
+
+def test_a_quarantined_run_that_persisted_a_finding_fails() -> None:
+    lane = _lane(
+        pairs=[
+            (
+                _pair(QUARANTINE_CASE),
+                [_outcome(quarantined=True, model_turns=0, findings_persisted=1)],
+            )
+        ]
+    )
+
+    assert lane.cases[0].meets_expectation is False
+
+
+def test_aggregate_keeps_manifest_order_and_survives_a_pair_with_no_runs() -> None:
+    pairs = [_pair(FINDING_CASE), _pair(COMPLIANT_CASE)]
+    lane = aggregate(LANE_ORIGINAL, AgentMode.NAVIGATE, pairs, {pairs[0].key: [_outcome()]})
+
+    assert [result.case.id for result in lane.cases] == ["E-02", "E-01"]
+    assert lane.cases[1].iterations == 0
+    assert lane.cases[1].catch_rate is None
+    assert lane.cases[1].meets_expectation is False
 
 
 def test_severity_distribution_counts_labels_across_every_run() -> None:
-    """The distribution is per case, over every persisted finding of that case."""
-    runs = [
-        _outcome(FINDING_CASE, severities=("high",)),
-        _outcome(FINDING_CASE, severities=("high", "medium")),
-        _outcome(FINDING_CASE, severities=("unclassified",)),
-    ]
-    result = CaseResult(case=FINDING_CASE, runs=runs)
-
-    assert result.severity_distribution == {"high": 2, "medium": 1, "unclassified": 1}
-    assert "high 2, medium 1, unclassified 1" in render_results_table([result])
-
-
-def test_aggregate_keeps_manifest_order_and_survives_a_case_with_no_runs() -> None:
-    """The published table lists cases in the order the manifest declares them."""
-    results = aggregate(
-        [COMPLIANT_CASE, FINDING_CASE, QUARANTINE_CASE],
-        {"E-02": [_outcome(FINDING_CASE)]},
+    lane = _lane(
+        pairs=[
+            (
+                _pair(FINDING_CASE),
+                [_outcome(severities=("high", "low")), _outcome(severities=("high",))],
+            )
+        ]
     )
 
-    assert [result.case.id for result in results] == ["E-01", "E-02", "E-04"]
-    assert results[0].iterations == 0
-    assert results[0].catch_rate is None
-    assert results[0].meets_expectation is False
+    assert lane.cases[0].severity_distribution == {"high": 2, "low": 1}
 
 
-def test_eval_markdown_publishes_a_short_catch_rate_as_measured() -> None:
-    """A miss is named in the document, not smoothed away."""
-    partial = CaseResult(
-        case=FINDING_CASE,
-        runs=[_outcome(FINDING_CASE, caught_expected_pair=index < 2) for index in range(5)],
+# --- 6. The ship gate, against known-good and known-bad results -----------
+
+
+def _gate_lane(
+    lane: str,
+    mode: AgentMode,
+    *,
+    e01_false_positives: int = 0,
+    e02_catches: int = 5,
+    e03_catches: int = 5,
+    e04_quarantines: int = 5,
+    e04_turns: int = 0,
+    messy_catches: int = 5,
+    messy_decoys: int = 0,
+    iterations: int = 5,
+) -> LaneResult:
+    """Build one lane result with exactly the numbers the gate reads."""
+    if lane == LANE_ORIGINAL:
+        return _lane(
+            lane=lane,
+            mode=mode,
+            pairs=[
+                (
+                    _pair(COMPLIANT_CASE),
+                    [
+                        _outcome(
+                            unattributed_false_positives=(e01_false_positives if index == 0 else 0),
+                            findings_persisted=0,
+                            severities=(),
+                        )
+                        for index in range(iterations)
+                    ],
+                ),
+                (
+                    _pair(FINDING_CASE),
+                    [
+                        _outcome(
+                            caught_case_ids=frozenset({"E-02"} if index < e02_catches else set())
+                        )
+                        for index in range(iterations)
+                    ],
+                ),
+                (
+                    _pair(
+                        EvalCase(
+                            id="E-03",
+                            spec_pdf="spec.pdf",
+                            cut_sheet_pdf="torven.pdf",
+                            expected_outcome="finding",
+                            evidence=D02,
+                        )
+                    ),
+                    [
+                        _outcome(
+                            caught_case_ids=frozenset({"E-03"} if index < e03_catches else set())
+                        )
+                        for index in range(iterations)
+                    ],
+                ),
+                (
+                    _pair(QUARANTINE_CASE),
+                    [
+                        _outcome(
+                            quarantined=index < e04_quarantines,
+                            model_turns=e04_turns,
+                            findings_persisted=0,
+                            severities=(),
+                        )
+                        for index in range(iterations)
+                    ],
+                ),
+            ],
+        )
+    messy_case = EvalCase(
+        id="E-11",
+        spec_pdf="nimbrin.pdf",
+        cut_sheet_pdf="zarqelune.pdf",
+        expected_outcome="finding",
+        evidence=D01,
+    )
+    messy_decoy_case = EvalCase(
+        id="E-18",
+        spec_pdf="nimbrin.pdf",
+        cut_sheet_pdf="zarqelune.pdf",
+        expected_outcome="no_finding",
+        evidence=None,
+        decoy=DECOY,
+    )
+    return _lane(
+        lane=lane,
+        mode=mode,
+        pairs=[
+            (
+                _pair(messy_case, messy_decoy_case),
+                [
+                    _outcome(
+                        caught_case_ids=frozenset({"E-11"} if index < messy_catches else set()),
+                        decoy_hit_case_ids=("E-18",) if index < messy_decoys else (),
+                    )
+                    for index in range(iterations)
+                ],
+            )
+        ],
     )
 
-    document = render_eval_markdown(
-        [partial],
-        iterations=5,
-        run_date="2026-08-21",
-        model_id="gemini-3.7-flash",
-        severity_model_id="`gemma-3-1b-it` on a Vertex AI endpoint",
-        vertex_spend="not visible in the run output",
+
+def _gate_results(**navigate_overrides: object) -> dict[tuple[str, str], LaneResult]:
+    """A known-good result set, with the named navigate numbers overridden."""
+    original_overrides = {
+        key: value for key, value in navigate_overrides.items() if key.startswith("e0")
+    }
+    messy_overrides = {
+        key: value for key, value in navigate_overrides.items() if key.startswith("messy")
+    }
+    return {
+        (LANE_ORIGINAL, AgentMode.FULL_TEXT.value): _gate_lane(LANE_ORIGINAL, AgentMode.FULL_TEXT),
+        (LANE_ORIGINAL, AgentMode.NAVIGATE.value): _gate_lane(
+            LANE_ORIGINAL,
+            AgentMode.NAVIGATE,
+            **original_overrides,  # type: ignore[arg-type]
+        ),
+        (LANE_MESSY, AgentMode.FULL_TEXT.value): _gate_lane(LANE_MESSY, AgentMode.FULL_TEXT),
+        (LANE_MESSY, AgentMode.NAVIGATE.value): _gate_lane(
+            LANE_MESSY,
+            AgentMode.NAVIGATE,
+            **messy_overrides,  # type: ignore[arg-type]
+        ),
+    }
+
+
+def test_the_ship_gate_passes_a_known_good_result_set() -> None:
+    verdict = evaluate_ship_gate(_gate_results())
+
+    assert verdict.evaluable is True
+    assert verdict.navigate_ships is True
+    assert verdict.shipping_mode is AgentMode.NAVIGATE
+    assert all(line.passed for line in verdict.lines)
+    assert "navigate SHIPS as default" in verdict.render()
+
+
+@pytest.mark.parametrize(
+    ("override", "failing_line"),
+    [
+        ({"e02_catches": 4}, "E-02 catch rate is 100%"),
+        ({"e03_catches": 0}, "E-03 catch rate is 100%"),
+        ({"e01_false_positives": 1}, "E-01 false positives are 0"),
+        ({"e04_quarantines": 4}, "E-04 quarantine rate is 100% with 0 model turns"),
+        ({"e04_turns": 1}, "E-04 quarantine rate is 100% with 0 model turns"),
+        ({"messy_catches": 2}, "messy-lane catch rate is at least full_text's"),
+        ({"messy_decoys": 1}, "messy-lane decoy false positives are at most full_text's"),
+    ],
+)
+def test_the_ship_gate_fails_each_known_bad_result_set(
+    override: dict[str, object], failing_line: str
+) -> None:
+    verdict = evaluate_ship_gate(_gate_results(**override))
+
+    assert verdict.navigate_ships is False
+    assert verdict.shipping_mode is AgentMode.FULL_TEXT
+    failed = [line.name for line in verdict.lines if not line.passed]
+    assert failing_line in failed
+    assert "navigate does NOT ship" in verdict.render()
+
+
+def test_a_catch_rate_regression_against_full_text_fails_the_gate() -> None:
+    results = _gate_results()
+    results[(LANE_ORIGINAL, AgentMode.NAVIGATE.value)] = _gate_lane(
+        LANE_ORIGINAL, AgentMode.NAVIGATE, e02_catches=3
     )
 
-    assert "- Date: 2026-08-21" in document
-    assert "- Iterations per case: 5" in document
-    assert "`gemini-3.7-flash`" in document
-    assert "gemma-3-1b-it" in document
-    assert "not visible in the run output" in document
-    assert "**40%**" in document
-    assert "## Cases that did not match the manifest" in document
-    assert "2 of 5 runs caught the expected pair" in document
-    assert "published as measured" in document
+    verdict = evaluate_ship_gate(results)
+
+    failed = [line.name for line in verdict.lines if not line.passed]
+    assert "no original-lane catch-rate regression against full_text" in failed
 
 
-def test_eval_markdown_states_plainly_when_every_case_matched() -> None:
-    """A clean sheet says so once, without decorating the result."""
-    document = render_eval_markdown(
-        [CaseResult(case=FINDING_CASE, runs=[_outcome(FINDING_CASE) for _ in range(5)])],
-        iterations=5,
-        run_date="2026-08-21",
-        model_id="gemini-3.7-flash",
-        severity_model_id="no endpoint configured for this run",
-        vertex_spend="not visible in the run output",
+def test_a_false_positive_regression_against_full_text_fails_the_gate() -> None:
+    results = _gate_results(e01_false_positives=1)
+
+    verdict = evaluate_ship_gate(results)
+
+    failed = [line.name for line in verdict.lines if not line.passed]
+    assert "no original-lane false-positive regression against full_text" in failed
+
+
+def test_the_gate_is_not_evaluable_without_both_modes_and_both_lanes() -> None:
+    partial = {
+        key: value
+        for key, value in _gate_results().items()
+        if key != (LANE_MESSY, AgentMode.NAVIGATE.value)
+    }
+
+    verdict = evaluate_ship_gate(partial)
+
+    assert verdict.evaluable is False
+    assert verdict.navigate_ships is False
+    assert verdict.shipping_mode is AgentMode.FULL_TEXT
+    assert "missing messy/navigate" in verdict.render()
+
+
+def test_an_empty_verdict_never_ships() -> None:
+    """An unevaluated gate is not a pass, however few conditions it holds."""
+    assert ShipGateVerdict(lines=(), evaluable=True).navigate_ships is False
+
+
+# --- 7. What the published documents say ----------------------------------
+
+
+def _two_section_results() -> dict[tuple[str, str], LaneResult]:
+    return {
+        (LANE_ORIGINAL, AgentMode.FULL_TEXT.value): _one_case_lane(
+            mode=AgentMode.FULL_TEXT, catches=1, iterations=1
+        ),
+        (LANE_ORIGINAL, AgentMode.NAVIGATE.value): _one_case_lane(
+            mode=AgentMode.NAVIGATE, catches=1, iterations=1
+        ),
+    }
+
+
+def _document(results: dict[tuple[str, str], LaneResult] | None = None, **overrides: object) -> str:
+    values: dict[str, object] = {
+        "iterations": 1,
+        "run_date": "2026-08-23",
+        "model_id": "gemini-3.7-flash",
+        "severity_model_id": "none",
+        "vertex_spend": "unavailable",
+        "verdict": evaluate_ship_gate({}),
+        "code_revision": "abc1234",
+    }
+    values.update(overrides)
+    return render_eval_markdown(
+        _two_section_results() if results is None else results,
+        **values,  # type: ignore[arg-type]
     )
 
-    assert "**100%**" in document
+
+def test_the_eval_document_carries_one_section_per_mode_and_lane() -> None:
+    document = _document()
+
+    assert "## Results — `full_text` mode, original four-case lane" in document
+    assert "## Results — `navigate` mode, original four-case lane" in document
+    assert document.index("`full_text` mode") < document.index("`navigate` mode")
+
+
+def test_the_eval_document_carries_the_gate_verdict_verbatim() -> None:
+    verdict = evaluate_ship_gate(_gate_results())
+
+    document = _document(verdict=verdict)
+
+    assert verdict.render() in document
+    assert "No condition was relaxed" in document
+
+
+def test_the_eval_document_publishes_a_short_catch_rate_as_measured() -> None:
+    results = {(LANE_ORIGINAL, AgentMode.NAVIGATE.value): _one_case_lane(catches=3, iterations=4)}
+
+    document = _document(results)
+
+    assert "75%" in document
+    assert "did not match the manifest" in document
+    assert "`E-02`" in document
+
+
+def test_the_eval_document_states_plainly_when_every_case_matched() -> None:
+    document = _document()
+
     assert "None. Every case matched its declared expected outcome in every run." in document
-    assert "not a compliance determination" in document
+
+
+def test_the_eval_document_says_when_the_retry_loop_never_fired() -> None:
+    document = _document()
+
+    assert "the rejection-and-retry loop did not fire" in document
+
+
+def test_the_eval_document_reports_a_retry_loop_that_did_fire() -> None:
+    results = {
+        (LANE_ORIGINAL, AgentMode.NAVIGATE.value): _lane(
+            pairs=[
+                (
+                    _pair(FINDING_CASE),
+                    [_outcome(caught_case_ids=frozenset({"E-02"}), rejected=2, retried=1)],
+                )
+            ]
+        )
+    }
+
+    document = _document(results)
+
+    assert "rejected 2 claims and the runtime retried 1" in document
+
+
+def test_the_eval_document_says_a_navigate_self_check_changed_nothing() -> None:
+    document = _document({(LANE_ORIGINAL, AgentMode.NAVIGATE.value): _one_case_lane()})
+
+    assert "quote self-check rejected nothing in this lane" in document
+
+
+def test_the_eval_document_reports_a_self_check_the_model_ignored() -> None:
+    results = {
+        (LANE_ORIGINAL, AgentMode.NAVIGATE.value): _lane(
+            pairs=[
+                (
+                    _pair(FINDING_CASE),
+                    [
+                        _outcome(
+                            caught_case_ids=frozenset({"E-02"}),
+                            self_check_rejections=3,
+                            self_check_rejected_quote_returned=True,
+                        )
+                    ],
+                )
+            ]
+        )
+    }
+
+    document = _document(results)
+
+    assert "self-check rejected 3 quotes, and 1 runs still returned" in document
+    assert "The runtime never trusted that check" in document
+
+
+def test_the_eval_document_says_full_text_has_no_tool_calls_by_construction() -> None:
+    document = _document(
+        {(LANE_ORIGINAL, AgentMode.FULL_TEXT.value): _one_case_lane(mode=AgentMode.FULL_TEXT)}
+    )
+
+    assert "zero by construction, not by measurement" in document
+
+
+def test_the_eval_document_names_every_severity_fallback() -> None:
+    results = {
+        (LANE_ORIGINAL, AgentMode.NAVIGATE.value): _lane(
+            pairs=[
+                (
+                    _pair(FINDING_CASE),
+                    [
+                        _outcome(
+                            caught_case_ids=frozenset({"E-02"}),
+                            severities=("unclassified",),
+                        )
+                    ],
+                )
+            ]
+        )
+    }
+
+    document = _document(results)
+
+    assert "1 of 1 persisted findings carry `unclassified` severity" in document
+
+
+def test_the_eval_document_omits_the_fallback_note_when_all_were_classified() -> None:
+    document = _document()
+
+    assert "unclassified` severity" not in document
+
+
+def test_the_eval_document_lists_every_run_identifier_as_a_receipt() -> None:
+    results = {
+        (LANE_ORIGINAL, AgentMode.NAVIGATE.value): _lane(
+            pairs=[
+                (
+                    _pair(FINDING_CASE),
+                    [
+                        _outcome(run_id="run-a", caught_case_ids=frozenset({"E-02"})),
+                        _outcome(run_id="run-b", caught_case_ids=frozenset({"E-02"})),
+                    ],
+                )
+            ]
+        )
+    }
+
+    document = _document(results)
+
+    assert "`run-a`, `run-b`" in document
+
+
+def test_the_eval_document_names_unusable_runs() -> None:
+    results = {
+        (LANE_ORIGINAL, AgentMode.NAVIGATE.value): _lane(
+            pairs=[(_pair(FINDING_CASE), [_outcome(model_output_invalid=True)])]
+        )
+    }
+
+    document = _document(results)
+
+    assert "1 case-runs produced no usable model turn" in document
+
+
+def test_the_eval_header_names_the_code_revision_the_numbers_describe() -> None:
+    assert "- Code revision these numbers describe: `abc1234`" in _document()
+
+
+def test_an_unreadable_revision_is_recorded_as_unrecorded() -> None:
+    document = _document(code_revision="not recorded for this run")
+
+    assert "- Code revision these numbers describe: `not recorded for this run`" in document
+
+
+def test_the_header_publishes_the_severity_model_the_runs_recorded() -> None:
+    results = {
+        (LANE_ORIGINAL, AgentMode.NAVIGATE.value): _lane(
+            pairs=[
+                (
+                    _pair(FINDING_CASE),
+                    [
+                        _outcome(
+                            caught_case_ids=frozenset({"E-02"}),
+                            severity_model_ids=("gemma-3-12b-it",),
+                        )
+                    ],
+                )
+            ]
+        )
+    }
+
+    document = _document(results)
+
+    assert "measured from the persisted findings: `gemma-3-12b-it`" in document
+
+
+def test_the_header_says_so_when_no_severity_model_was_recorded() -> None:
+    assert "none recorded on any persisted finding" in _document()
+
+
+# --- 8. The README block --------------------------------------------------
+
+
+def _readme_section(
+    results: dict[tuple[str, str], LaneResult] | None = None, **overrides: object
+) -> str:
+    values: dict[str, object] = {
+        "iterations": 1,
+        "run_date": "2026-08-23",
+        "verdict": evaluate_ship_gate({}),
+        "code_revision": "abc1234",
+    }
+    values.update(overrides)
+    return render_readme_section(
+        _two_section_results() if results is None else results,
+        **values,  # type: ignore[arg-type]
+    )
+
+
+def test_the_readme_publishes_the_mode_that_ships() -> None:
+    section = _readme_section(verdict=evaluate_ship_gate(_gate_results()))
+
+    assert "in `navigate` mode" in section
+    assert "met every condition of the ship gate and is the deployed default" in section
+
+
+def test_the_readme_says_navigate_did_not_ship_when_the_gate_failed() -> None:
+    section = _readme_section(verdict=evaluate_ship_gate(_gate_results(e02_catches=1)))
+
+    assert "in `full_text` mode" in section
+    assert "did not meet the ship gate" in section
+
+
+def test_the_readme_says_the_gate_was_not_evaluated_when_it_could_not_be() -> None:
+    section = _readme_section()
+
+    assert "The ship gate was not evaluated for this run" in section
+    assert "in `full_text` mode" in section
 
 
 def test_the_readme_section_says_so_when_the_catch_rate_is_short() -> None:
-    """The README must not describe the runtime as catching everything."""
-    partial = CaseResult(
-        case=FINDING_CASE,
-        runs=[_outcome(FINDING_CASE, caught_expected_pair=index < 2) for index in range(5)],
-    )
+    results = {
+        (LANE_ORIGINAL, AgentMode.FULL_TEXT.value): _one_case_lane(
+            mode=AgentMode.FULL_TEXT, catches=3, iterations=4
+        )
+    }
 
-    section = render_readme_section([partial], iterations=5, run_date="2026-08-21")
+    section = _readme_section(results)
 
-    assert section.startswith(README_TABLE_START)
-    assert section.endswith(README_TABLE_END)
-    assert "40%" in section
-    assert "does not catch every planted discrepancy on every run" in section
-    assert "EVAL.md" in section
+    assert "75%" in section
+    assert "SpecGuard does not catch every planted discrepancy on every run." in section
+
+
+def test_the_readme_block_names_the_code_revision() -> None:
+    assert "on code revision `abc1234`" in _readme_section()
 
 
 def test_write_readme_section_replaces_only_the_marked_block() -> None:
-    """Publication is idempotent and never disturbs the rest of the README."""
-    readme = f"before\n\n{README_TABLE_START}\nold\n{README_TABLE_END}\n\nafter\n"
-    section = render_readme_section(
-        [CaseResult(case=FINDING_CASE, runs=[_outcome(FINDING_CASE)])],
-        iterations=1,
-        run_date="2026-08-21",
+    readme = "\n".join(["before", README_TABLE_START, "old", README_TABLE_END, "after", ""])
+    replacement = "\n".join([README_TABLE_START, "new", README_TABLE_END])
+
+    updated = write_readme_section(readme, replacement)
+
+    assert updated == "\n".join(
+        ["before", README_TABLE_START, "new", README_TABLE_END, "after", ""]
     )
-
-    written = write_readme_section(readme, section)
-    rewritten = write_readme_section(written, section)
-
-    assert written.startswith("before\n\n")
-    assert written.endswith("\n\nafter\n")
-    assert "old" not in written
-    assert rewritten == written
 
 
 def test_write_readme_section_refuses_a_readme_with_no_markers() -> None:
-    """Silently appending a table to the wrong place is worse than failing."""
-    with pytest.raises(ValueError, match="eval-table markers"):
+    with pytest.raises(ValueError, match="must contain the eval-table markers"):
         write_readme_section("no markers here", "section")
 
 
 def test_the_committed_readme_carries_the_publication_markers() -> None:
-    """The harness can publish into the committed README without editing it first."""
     readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
 
     assert readme.count(README_TABLE_START) == 1
     assert readme.count(README_TABLE_END) == 1
 
 
-def test_eval_markdown_says_when_the_retry_loop_never_fired() -> None:
-    """A clean table must not read as evidence that the retry loop works."""
-    result = CaseResult(case=FINDING_CASE, runs=[_outcome(FINDING_CASE) for _ in range(5)])
+# --- 9. Comparing this run to the published one ---------------------------
 
-    document = render_eval_markdown(
-        [result],
-        iterations=5,
-        run_date="2026-08-21",
-        model_id="gemini-3.7-flash",
-        severity_model_id="an endpoint",
-        vertex_spend="not visible in the run output",
+
+def test_the_previous_published_table_is_read_back_from_the_readme() -> None:
+    section = _readme_section(run_date="2026-08-21")
+
+    previous = read_previous_readme_section(section)
+
+    assert previous is not None
+    assert previous.run_date == "2026-08-21"
+    assert "E-02" in previous.rows
+
+
+def test_an_unchanged_table_says_no_number_moved() -> None:
+    previous = read_previous_readme_section(_readme_section(run_date="2026-08-21"))
+    table = render_case_table(_one_case_lane().cases)
+
+    assert "No number in this table moved from the 2026-08-21 run." in compare_to_previous(
+        table, previous
     )
 
-    assert "## What this run did not exercise" in document
-    assert "rejection-and-retry loop did not fire" in document
-    assert "not evidence that the loop works" in document
-    assert "covered by the test suite" in document
+
+def test_a_changed_number_is_named_plainly() -> None:
+    previous = read_previous_readme_section(_readme_section(run_date="2026-08-21"))
+    table = render_case_table(_one_case_lane(catches=0, iterations=1).cases)
+
+    statement = compare_to_previous(table, previous)
+
+    assert "Numbers moved from the 2026-08-21 run." in statement
+    assert "`E-02`" in statement
 
 
-def test_eval_markdown_reports_a_retry_loop_that_did_fire() -> None:
-    """When the gate rejected a claim, the document says so instead."""
-    result = CaseResult(
-        case=FINDING_CASE,
-        runs=[_outcome(FINDING_CASE, rejected=1, retried=2) for _ in range(2)],
+def test_a_table_with_different_columns_is_not_compared_cell_by_cell() -> None:
+    """A changed column set is a changed table, not a changed measurement."""
+    previous = read_previous_readme_section(
+        "\n".join(
+            [
+                README_TABLE_START,
+                "Measured on 2026-08-21 by x",
+                "| `E-02` | a | b |",
+                README_TABLE_END,
+            ]
+        )
+    )
+    table = render_case_table(_one_case_lane().cases)
+
+    statement = compare_to_previous(table, previous)
+
+    assert "carried a different set of columns" in statement
+
+
+def test_a_readme_with_no_earlier_block_says_there_is_nothing_to_compare() -> None:
+    assert "No earlier measured table was published" in compare_to_previous("", None)
+
+
+def test_the_readme_block_carries_the_comparison_statement() -> None:
+    previous = read_previous_readme_section(_readme_section(run_date="2026-08-21"))
+
+    section = _readme_section(previous=previous)
+
+    assert "No number in this table moved from the 2026-08-21 run." in section
+
+
+# --- 10. Flags and the machine-readable summary line ----------------------
+
+
+def test_the_mode_flag_expands_to_the_modes_to_measure() -> None:
+    assert selected_modes("full_text") == [AgentMode.FULL_TEXT]
+    assert selected_modes("navigate") == [AgentMode.NAVIGATE]
+    assert selected_modes("both") == [AgentMode.FULL_TEXT, AgentMode.NAVIGATE]
+
+
+def test_the_lane_flag_expands_to_the_lanes_to_measure() -> None:
+    assert [lane.name for lane in selected_lanes("original")] == [LANE_ORIGINAL]
+    assert [lane.name for lane in selected_lanes("messy")] == [LANE_MESSY]
+    assert [lane.name for lane in selected_lanes("all")] == [LANE_ORIGINAL, LANE_MESSY]
+
+
+def test_the_summary_line_names_its_mode_lane_and_every_published_number() -> None:
+    lane = _one_case_lane(catches=3, iterations=4)
+
+    line = eval_summary_line(lane, run_date="2026-08-23", code_revision="abc1234")
+
+    assert "mode=navigate" in line
+    assert "lane=original" in line
+    assert "catch_rate=75%" in line
+    assert "runs=4" in line
+    assert "cases_matching_manifest=0/1" in line
+
+
+def test_the_pair_table_never_double_counts_a_shared_run() -> None:
+    """Nine cases share one audit, so run-level numbers appear once, on the pair."""
+    pair = _pair(FINDING_CASE, SECOND_FINDING_CASE, DECOY_CASE)
+    lane = _lane(pairs=[(pair, [_outcome(unattributed_false_positives=2, rejected=1)])])
+
+    table = render_pair_table(lane.pairs)
+
+    assert len(lane.cases) == 3
+    assert len(lane.pairs) == 1
+    assert table.count("veylan.pdf") == 1
+    assert lane.unattributed_false_positives == 2
+
+
+def test_the_case_table_reports_only_what_each_case_owns() -> None:
+    """A run's inventions belong to the audit, so no case row may claim them.
+
+    Three cases share one audit that invented two findings. Putting those two
+    in the case table would publish six inventions where the run produced two,
+    which is the whole reason the run-level numbers live in their own table.
+    """
+    pair = _pair(FINDING_CASE, SECOND_FINDING_CASE, DECOY_CASE)
+    lane = _lane(
+        pairs=[
+            (
+                pair,
+                [_outcome(unattributed_false_positives=2, decoy_hit_case_ids=("E-18",))],
+            )
+        ]
     )
 
-    document = render_eval_markdown(
-        [result],
-        iterations=2,
-        run_date="2026-08-21",
-        model_id="gemini-3.7-flash",
-        severity_model_id="an endpoint",
-        vertex_spend="not visible in the run output",
-    )
+    decoy_column = [
+        int(row.split("|")[5].strip()) for row in render_case_table(lane.cases).splitlines()[2:]
+    ]
 
-    assert "rejected 2 claims and the runtime retried 4" in document
-    assert "did fire in this run" in document
+    assert decoy_column == [0, 0, 1]
+    assert sum(decoy_column) == lane.decoy_false_positives == 1
+    assert lane.unattributed_false_positives == 2
+    assert "| 2 |" not in "\n".join(render_case_table(lane.cases).splitlines()[2:])
 
 
-def test_eval_markdown_names_every_severity_fallback() -> None:
-    """An unclassified finding is a recorded fallback, not a missing number."""
-    result = CaseResult(
-        case=FINDING_CASE,
-        runs=[
-            _outcome(FINDING_CASE, severities=("high",)),
-            _outcome(FINDING_CASE, severities=("unclassified",)),
-        ],
-    )
+def test_a_pair_result_reports_its_own_run_count() -> None:
+    pair = PairResult(pair=_pair(FINDING_CASE), runs=[_outcome(), _outcome()])
 
-    document = render_eval_markdown(
-        [result],
-        iterations=2,
-        run_date="2026-08-21",
-        model_id="gemini-3.7-flash",
-        severity_model_id="an endpoint",
-        vertex_spend="not visible in the run output",
-    )
-
-    assert "1 of 2 persisted findings carry `unclassified` severity" in document
-    assert "never blocks an audit" in document
-
-
-def test_eval_markdown_omits_the_fallback_note_when_every_finding_was_classified() -> None:
-    """No fallback, no note: the document reports only what happened."""
-    result = CaseResult(case=FINDING_CASE, runs=[_outcome(FINDING_CASE) for _ in range(3)])
-
-    document = render_eval_markdown(
-        [result],
-        iterations=3,
-        run_date="2026-08-21",
-        model_id="gemini-3.7-flash",
-        severity_model_id="an endpoint",
-        vertex_spend="not visible in the run output",
-    )
-
-    assert "unclassified` severity" not in document
-
-
-def test_a_short_catch_rate_never_publishes_as_one_hundred_percent() -> None:
-    """199 catches in 200 runs must not render as the number reserved for exact."""
-    runs = [_outcome(FINDING_CASE, caught_expected_pair=index != 0) for index in range(200)]
-    result = CaseResult(case=FINDING_CASE, runs=runs)
-
-    assert result.catch_rate == pytest.approx(0.995)
-    assert "100%" not in render_results_table([result]).split("|")[4]
-    assert "99.5%" in render_results_table([result])
-
-
-def test_a_rate_that_still_rounds_to_complete_publishes_as_under_one_hundred() -> None:
-    """Even one decimal can read as complete, so the renderer falls back again."""
-    runs = [_outcome(FINDING_CASE, caught_expected_pair=index != 0) for index in range(5000)]
-    result = CaseResult(case=FINDING_CASE, runs=runs)
-
-    assert "<100%" in render_results_table([result])
-
-
-def test_an_exact_rate_still_publishes_as_one_hundred_percent() -> None:
-    """The guard must not spoil a genuinely complete result."""
-    result = CaseResult(case=FINDING_CASE, runs=[_outcome(FINDING_CASE) for _ in range(5)])
-
-    assert "100%" in render_results_table([result])
-    assert "<100%" not in render_results_table([result])
-
-
-def test_a_run_with_no_usable_model_turn_fails_the_compliant_case() -> None:
-    """Persisting nothing because the model broke is not a clean pass."""
-    broken = build_run_outcome(
-        COMPLIANT_CASE,
-        _summary(claims_made=0, rejected=1, findings_persisted=0),
-        [],
-        model_calls=1,
-    )
-    result = CaseResult(case=COMPLIANT_CASE, runs=[broken])
-
-    assert broken.model_output_invalid is True
-    assert result.unusable_runs == 1
-    assert result.meets_expectation is False
-
-
-def test_a_compliant_case_that_never_reached_the_model_fails() -> None:
-    """A no_finding pass requires that the model actually read the documents."""
-    never_ran = _outcome(
-        COMPLIANT_CASE,
-        caught_expected_pair=False,
-        findings_persisted=0,
-        severities=(),
-        model_calls=0,
-    )
-    result = CaseResult(case=COMPLIANT_CASE, runs=[never_ran])
-
-    assert result.meets_expectation is False
-
-
-def test_a_quarantined_run_that_persisted_a_finding_fails() -> None:
-    """A quarantine that still wrote to the ledger is not a clean quarantine."""
-    inconsistent = _outcome(
-        QUARANTINE_CASE,
-        quarantined=True,
-        model_calls=0,
-        findings_persisted=1,
-        caught_expected_pair=False,
-        false_positives=1,
-        severities=("high",),
-    )
-    result = CaseResult(case=QUARANTINE_CASE, runs=[inconsistent])
-
-    assert result.quarantine_rate == pytest.approx(1.0)
-    assert result.meets_expectation is False
-
-
-def test_the_header_publishes_the_severity_model_the_runs_recorded() -> None:
-    """The operator's description is labelled as theirs, not as a measurement."""
-    measured = _outcome(FINDING_CASE, severity_model_ids=("google-gemma3-gemma-3-1b-it",))
-    result = CaseResult(case=FINDING_CASE, runs=[measured])
-
-    document = render_eval_markdown(
-        [result],
-        iterations=1,
-        run_date="2026-08-21",
-        model_id="gemini-3.7-flash",
-        severity_model_id="an operator-supplied string",
-        vertex_spend="not visible in the run output",
-    )
-
-    assert (
-        "Severity model, measured from the persisted findings: "
-        "`google-gemma3-gemma-3-1b-it`" in document
-    )
-    assert "Severity endpoint, as the operator named it: an operator-supplied string" in document
-
-
-def test_the_header_says_so_when_no_severity_model_was_recorded() -> None:
-    """No recorded model id means the header must not imply one ran."""
-    result = CaseResult(case=FINDING_CASE, runs=[_outcome(FINDING_CASE, severity_model_ids=())])
-
-    document = render_eval_markdown(
-        [result],
-        iterations=1,
-        run_date="2026-08-21",
-        model_id="gemini-3.7-flash",
-        severity_model_id="an operator-supplied string",
-        vertex_spend="not visible in the run output",
-    )
-
-    assert "none recorded on any persisted finding" in document
-
-
-def test_eval_markdown_lists_every_run_identifier_as_a_receipt() -> None:
-    """The document must let a reader check the table against Firestore."""
-    result = CaseResult(
-        case=FINDING_CASE,
-        runs=[_outcome(FINDING_CASE, run_id="run-aaa"), _outcome(FINDING_CASE, run_id="run-bbb")],
-    )
-
-    document = render_eval_markdown(
-        [result],
-        iterations=2,
-        run_date="2026-08-21",
-        model_id="gemini-3.7-flash",
-        severity_model_id="an endpoint",
-        vertex_spend="not visible in the run output",
-    )
-
-    assert "## Run identifiers" in document
-    assert "`run-aaa`, `run-bbb`" in document
-
-
-def test_eval_markdown_names_unusable_runs() -> None:
-    """A broken run is reported, not silently absorbed into the counters."""
-    broken = build_run_outcome(
-        FINDING_CASE, _summary(claims_made=0, rejected=1, findings_persisted=0), [], model_calls=1
-    )
-    result = CaseResult(case=FINDING_CASE, runs=[broken])
-
-    document = render_eval_markdown(
-        [result],
-        iterations=1,
-        run_date="2026-08-21",
-        model_id="gemini-3.7-flash",
-        severity_model_id="an endpoint",
-        vertex_spend="not visible in the run output",
-    )
-
-    assert "1 runs produced no usable model turn" in document
-    assert "## Cases that did not match the manifest" in document
-
-
-# --- Phase 6e: the code revision and the change-from-previous statement ---
-
-
-def _one_case_results() -> list[CaseResult]:
-    return aggregate([FINDING_CASE], {"E-02": [_outcome(FINDING_CASE)]})
-
-
-def _readme_with(section: str) -> str:
-    return f"# SpecGuard\n\n{section}\n\nAfter the block.\n"
-
-
-def test_the_eval_header_names_the_code_revision_the_numbers_describe() -> None:
-    document = render_eval_markdown(
-        _one_case_results(),
-        iterations=1,
-        run_date="2026-08-22",
-        model_id="gemini-3.7-flash",
-        severity_model_id="none",
-        vertex_spend="unavailable",
-        code_revision="abc1234",
-    )
-
-    assert "- Code revision these numbers describe: `abc1234`" in document
-
-
-def test_the_readme_block_names_the_code_revision() -> None:
-    section = render_readme_section(
-        _one_case_results(), iterations=1, run_date="2026-08-22", code_revision="abc1234"
-    )
-
-    assert "on code revision `abc1234`" in section
-
-
-def test_an_unreadable_revision_is_recorded_as_unrecorded() -> None:
-    document = render_eval_markdown(
-        _one_case_results(),
-        iterations=1,
-        run_date="2026-08-22",
-        model_id="gemini-3.7-flash",
-        severity_model_id="none",
-        vertex_spend="unavailable",
-    )
-
-    assert "- Code revision these numbers describe: `not recorded for this run`" in document
+    assert pair.iterations == 2
+    assert pair.mean_model_tool_calls == 0.0
 
 
 def test_current_code_revision_reads_this_repository() -> None:
@@ -722,92 +1283,3 @@ def test_an_unreadable_tree_state_is_written_as_unknown() -> None:
 def test_an_unreadable_commit_is_written_as_unrecorded() -> None:
     assert format_code_revision(None, "") == "not recorded for this run"
     assert format_code_revision("", "") == "not recorded for this run"
-
-
-def test_the_previous_published_table_is_read_back_from_the_readme() -> None:
-    section = render_readme_section(
-        _one_case_results(), iterations=1, run_date="2026-08-21", code_revision="old1234"
-    )
-
-    previous = read_previous_readme_section(_readme_with(section))
-
-    assert previous is not None
-    assert previous.run_date == "2026-08-21"
-    assert "E-02" in previous.rows
-
-
-def test_an_unchanged_table_says_no_number_moved() -> None:
-    results = _one_case_results()
-    section = render_readme_section(
-        results, iterations=1, run_date="2026-08-21", code_revision="old1234"
-    )
-    previous = read_previous_readme_section(_readme_with(section))
-
-    assert "No number in this table moved from the 2026-08-21 run." in compare_to_previous(
-        results, previous
-    )
-
-
-def test_a_changed_number_is_named_plainly() -> None:
-    before = aggregate([FINDING_CASE], {"E-02": [_outcome(FINDING_CASE)]})
-    section = render_readme_section(
-        before, iterations=1, run_date="2026-08-21", code_revision="old1234"
-    )
-    previous = read_previous_readme_section(_readme_with(section))
-    after = aggregate(
-        [FINDING_CASE],
-        {"E-02": [_outcome(FINDING_CASE), _outcome(FINDING_CASE, caught_expected_pair=False)]},
-    )
-
-    statement = compare_to_previous(after, previous)
-
-    assert "Numbers moved from the 2026-08-21 run." in statement
-    assert "`E-02`" in statement
-    assert "superseded, not corrected" in statement
-
-
-def test_the_readme_block_carries_the_comparison_statement() -> None:
-    results = _one_case_results()
-    section = render_readme_section(
-        results, iterations=1, run_date="2026-08-21", code_revision="old1234"
-    )
-    previous = read_previous_readme_section(_readme_with(section))
-
-    republished = render_readme_section(
-        results,
-        iterations=1,
-        run_date="2026-08-22",
-        code_revision="new1234",
-        previous=previous,
-    )
-
-    assert "No number in this table moved from the 2026-08-21 run." in republished
-    assert republished.startswith(README_TABLE_START)
-    assert republished.endswith(README_TABLE_END)
-
-
-def test_the_eval_document_carries_the_comparison_statement() -> None:
-    results = _one_case_results()
-    section = render_readme_section(
-        results, iterations=1, run_date="2026-08-21", code_revision="old1234"
-    )
-    previous = read_previous_readme_section(_readme_with(section))
-
-    document = render_eval_markdown(
-        results,
-        iterations=1,
-        run_date="2026-08-22",
-        model_id="gemini-3.7-flash",
-        severity_model_id="none",
-        vertex_spend="unavailable",
-        code_revision="new1234",
-        previous=previous,
-    )
-
-    assert "## Change from the previous published run" in document
-    assert "No number in this table moved from the 2026-08-21 run." in document
-
-
-def test_a_readme_with_no_earlier_block_says_there_is_nothing_to_compare() -> None:
-    assert read_previous_readme_section("# SpecGuard\n\nNo markers here.\n") is None
-    assert "No earlier measured table" in compare_to_previous(_one_case_results(), None)

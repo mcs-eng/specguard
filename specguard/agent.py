@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -243,6 +244,7 @@ class AdkClaimGenerator:
                 tool_name=getattr(function_call, "name", None) or "unnamed_tool",
                 document_role=_recorded_document_role(arguments.get("document_role")),
                 page_number=_recorded_page_number(arguments.get("page_number")),
+                quote_sha256=quote_digest(arguments.get("quote")),
             )
             self._model_tool_calls = (*self._model_tool_calls, recorded)
             self._recorded_call_ids = (
@@ -344,6 +346,41 @@ def _add_usage_count(current: int | None, reported: Any) -> int | None:
     if current is None or reported is None:
         return None
     return current + int(reported)
+
+
+def _self_check_rejected_digests(calls: list[ModelToolCall]) -> set[str]:
+    """Return the quotes the model's own checks reported as not found."""
+    return {
+        call.quote_sha256
+        for call in calls
+        if call.tool_name == "verify_quote"
+        and call.response_verified is False
+        and call.quote_sha256 is not None
+    }
+
+
+def _claim_quote_digests(claims: list[AuditClaim]) -> set[str]:
+    """Return the digest of every quote the model returned in this run."""
+    digests: set[str] = set()
+    for claim in claims:
+        for quote in (claim.spec_quote, claim.cut_sheet_quote):
+            digest = quote_digest(quote)
+            if digest is not None:
+                digests.add(digest)
+    return digests
+
+
+def quote_digest(value: Any) -> str | None:
+    """Identify one quote by the SHA-256 of its normalized text.
+
+    The receipt records which quote a check was about without recording the
+    quote. Normalizing first means the same passage hashes the same whether the
+    model retyped its spacing or not, because that is the text the gate would
+    compare.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    return hashlib.sha256(gate.normalize(value).encode("utf-8")).hexdigest()
 
 
 def _recorded_document_role(value: Any) -> DocumentRole | None:
@@ -451,6 +488,7 @@ class AuditRuntime:
 
         persisted_findings: list[PersistedFinding] = []
         severity_results: list[Any] = []
+        returned_claims: list[AuditClaim] = list(initial_batch.claims)
         retried = 0
         rejected = 0
 
@@ -480,6 +518,7 @@ class AuditRuntime:
                     )
                     continue
                 current_claim = retry_batch.claims[0]
+                returned_claims.append(current_claim)
                 verification_results = self._verify_claim(current_claim)
                 failed = [result for result in verification_results if not result["verified"]]
                 if failed:
@@ -504,6 +543,8 @@ class AuditRuntime:
             persisted_findings.append(persisted)
             severity_results.append(sev_result)
 
+        recorded_calls = self._recorded_model_tool_calls()
+        rejected_digests = _self_check_rejected_digests(recorded_calls)
         severity_status: str | None = None
         severity_reason: str | None = None
         if persisted_findings:
@@ -527,7 +568,11 @@ class AuditRuntime:
             severity_reason=severity_reason,
             audit_model_usage=self._audit_model_usage(),
             agent_mode=self._agent_mode,
-            model_tool_calls=self._recorded_model_tool_calls(),
+            model_tool_calls=recorded_calls,
+            self_check_rejections=len(rejected_digests),
+            self_check_rejected_quote_returned=bool(
+                rejected_digests & _claim_quote_digests(returned_claims)
+            ),
         )
 
     def _audit_model_usage(self) -> AuditModelUsage:
