@@ -913,12 +913,15 @@ def test_the_eval_document_reports_a_self_check_the_model_ignored() -> None:
     assert "The runtime never trusted that check" in document
 
 
-def test_the_eval_document_says_full_text_has_no_tool_calls_by_construction() -> None:
+def test_the_eval_document_says_full_text_registers_tools_and_records_calls() -> None:
     document = _document(
         {(LANE_ORIGINAL, AgentMode.FULL_TEXT.value): _one_case_lane(mode=AgentMode.FULL_TEXT)}
     )
 
-    assert "zero by construction, not by measurement" in document
+    assert "The mode still registers all five tools" in document
+    assert "the calls the model chose to make" in document
+    assert "zero by construction" not in document
+    assert "self-check rejected nothing in this lane" in document
 
 
 def test_the_eval_document_names_every_severity_fallback() -> None:

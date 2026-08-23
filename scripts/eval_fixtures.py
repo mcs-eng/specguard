@@ -755,27 +755,28 @@ def _unexercised_notes(lane_result: LaneResult) -> list[str]:
             "whatever its other counters say."
         )
 
-    if lane_result.mode is AgentMode.NAVIGATE:
-        rejected = lane_result.self_check_rejections
-        kept = lane_result.runs_that_kept_a_rejected_quote
-        if rejected == 0:
-            notes.append(
-                "- The model's own quote self-check rejected nothing in this lane. The "
-                "self-check therefore changed no answer here, and these numbers are not "
-                "evidence that it would. The runtime gate ran on every claim regardless."
-            )
-        else:
-            notes.append(
-                f"- The model's own quote self-check rejected {rejected} quotes, and "
-                f"{kept} runs still returned a quote their own check had rejected. The "
-                "runtime never trusted that check: its gate ran on every claim, and "
-                "again before any write."
-            )
+    if lane_result.mode is not AgentMode.NAVIGATE:
+        notes.append(
+            "- This lane ran in `full_text` mode, which sends every page of both "
+            "documents up front, so the model needs no tool call to read them. The "
+            "mode still registers all five tools, and the tool-call column records "
+            "the calls the model chose to make, including the structured-output "
+            "call ADK adds for this model."
+        )
+    rejected = lane_result.self_check_rejections
+    kept = lane_result.runs_that_kept_a_rejected_quote
+    if rejected == 0:
+        notes.append(
+            "- The model's own quote self-check rejected nothing in this lane. The "
+            "self-check therefore changed no answer here, and these numbers are not "
+            "evidence that it would. The runtime gate ran on every claim regardless."
+        )
     else:
         notes.append(
-            "- This lane ran in `full_text` mode, where the model initiates no tool "
-            "call. The tool-call and self-check columns are therefore zero by "
-            "construction, not by measurement."
+            f"- The model's own quote self-check rejected {rejected} quotes, and "
+            f"{kept} runs still returned a quote their own check had rejected. The "
+            "runtime never trusted that check: its gate ran on every claim, and "
+            "again before any write."
         )
 
     unclassified = sum(
@@ -1063,8 +1064,9 @@ def render_eval_markdown(
         "of planted discrepancies.",
         "",
         "The two agent modes differ only in what the model is shown and which tools "
-        "it may call. `full_text` sends every page of both documents and the model "
-        "initiates no tool call. `navigate` sends the submitted document in full plus "
+        "it may call. `full_text` sends every page of both documents up front and "
+        "needs no tool call, though all five tools stay registered. `navigate` "
+        "sends the submitted document in full plus "
         "a deterministic page index of the specification, and registers three "
         "read-only tools. The verification gate runs on every claim in both modes, "
         "and the runtime owns every write in both modes.",
