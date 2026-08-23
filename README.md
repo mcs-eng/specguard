@@ -24,7 +24,7 @@ The gate establishes one narrow thing: each quoted text anchor occurs on its cit
 
 <!-- test-count-start -->
 
-`uv run pytest -q` exited 0 with **583 passed** on code revision `09c8294`. This line is written by `scripts/record_test_count.py` from that run's own summary line; it is not typed by hand. No test requires the network or credentials; every model, Firestore, and storage dependency is an in-process fake.
+`uv run pytest -q` exited 0 with **603 passed** on code revision `1d0728a`. This line is written by `scripts/record_test_count.py` from that run's own summary line; it is not typed by hand. No test requires the network or credentials; every model, Firestore, and storage dependency is an in-process fake.
 
 <!-- test-count-end -->
 
