@@ -1867,3 +1867,138 @@ No Codex review ran on this phase. The changes are fixtures, a generator, a mani
 | `fa80754` | Format the Phase 7c fixture builder and its test module |
 
 Nothing was pushed, merged, or opened as a pull request. `origin/phase-2-demo-fixtures` still points at `07a63fb` (Phase 6b); every commit since is local only.
+
+## Phase 7c — the navigation agent, measured and shipped as the deployed default
+
+Date: 2026-08-23. Scope: the Phase 7c navigation-agent work order (claude-memory `reference/specguard-work-order-7c-agent-2026-08.md`), built in the worktree `C:\Users\mcspd\dev\specguard-agent` on branch `phase-7c-agent` from `df76de5`. The gate contract, `specguard/gate.py`, `specguard/integrity.py`, every committed fixture PDF, and `fixtures/build_fixtures.py` output are unchanged. The build ran across two sessions: a measurement session that closed checkpoints C1 and C2, and a verification session that read the ship-gate verdict with Mason, corrected the evaluation notes, wrote the docs, and assembled this section.
+
+### What was built
+
+- **Runtime mode.** `SPECGUARD_AGENT_MODE` selects `full_text` (the code default; byte-for-byte unchanged behavior) or `navigate`, plumbed through `AuditRuntime`, `run_audit.py`, `specguard/web/runtime.py`, and `scripts/eval_fixtures.py`, recorded in `AuditRunSummary` and persisted with the run (`d3c1af6`).
+- **Navigate message.** The initial message carries the submitted document in full plus a deterministic page index of the specification: one line per page plus the page count. The model reads specification pages through `extract_pdf_text`.
+- **Read-only tool surface.** Navigate registers exactly three tools to the model — `check_text_integrity`, `extract_pdf_text`, `verify_quote` — on `ModelFacingAuditTools`. Neither write tool is registered: the agent reads; the runtime writes. `full_text` keeps its five-tool registration unchanged.
+- **Budgets.** Per-run caps on model-initiated calls, enforced by `AuditTools`, returned as data on exhaustion: 40 page reads (`page_budget_exhausted`), 4 integrity screens (`integrity_check_budget_exhausted`). Runtime-owned calls are not counted.
+- **Receipted tool calls.** `AdkClaimGenerator` records every model-initiated function call (tool, bounded arguments, turn index) into `AuditRunSummary.model_tool_calls`; the run page lists every call the model initiated, and `export.json` carries the list (`3c09dc5`).
+- **Prompt.** `specguard/prompts/audit_claims_navigate_v1.txt`, fixture-neutral, requires the model to `verify_quote` each quote it intends to return. A denylist test built from `fixtures/MANIFEST.md` proper nouns and planted values scans every prompt file (`aa3317c`).
+- **Eval harness.** `scripts/eval_fixtures.py` gained `--mode full_text|navigate|both`, `--lane original|messy|all`, the `decoy-evidence-messy` manifest block, one-audit-per-pair-per-iteration scoring, decoy and unattributed false-positive columns, mean-prompt-token and tool-call columns, self-check columns, and the eight-condition ship gate as a pure function with known-good and known-bad test fixtures (`63f2cac`), plus pacing and a retry limited to provider rate limits (`1340748`).
+
+### The two C1 decisions, as Mason resolved them
+
+- **Page index width 240** (`ac7693d`). At the work order's 160 characters only 14 of 32 index lines of the messy specification were distinct, and the two pages governing most planted pairs were identical. At 240, 31 of 32 are distinct while requirement values stay past the cutoff. At 320 the planted values themselves enter the index, which would weaken the claim that the model opened the page. The measured rationale is recorded on `PAGE_INDEX_CHARACTERS` in `specguard/agent.py`.
+- **`check_text_integrity` registered read-only** (`ac7693d`), bounded by its own budget of 4. The runtime still screens both documents before any model call; the model-facing tool returns the flag summary only and never any flagged text.
+
+### Checkpoint C2 — the measurement
+
+`scripts/eval_fixtures.py` ran both modes over both lanes at N=5: 50 real audits at code revision `1340748`, severity sentinel `SPECGUARD_GEMMA_ENDPOINT=disabled`. `EVAL.md` is the full record; every run identifier in it is a Firestore document. Spot-checked here: runs `a5dcda50…`, `ee5a80f5…`, and `39d28870…` each hold their verified findings with creation times inside the measurement window (17:49–18:30 UTC, 2026-08-23).
+
+The ship gate, fixed in the work order before any run, passed all eight conditions:
+
+- Original lane, navigate: `E-02` and `E-03` catch 100%, `E-01` false positives 0, `E-04` quarantine 100% with 0 model turns, no regression against `full_text` measured in the same session.
+- Messy lane: navigate catch 77% (27 of 35 case-runs) against `full_text` 49% (17 of 35); decoy false positives 0 in both modes.
+
+Verdict: **navigate ships as the deployed default.** Published honestly beside it: `E-13` caught 2 of 5 and `E-15` 0 of 5 in both modes; `full_text` produced 13 unattributed false positives on the messy pair against navigate's 3; navigate costs more prompt tokens than full text (original lane roughly 23–37k against 4.5–21k per run; messy 228k against 198k). The default is justified by the catch rate and the receipts, not by cost. The rejection-and-retry loop fired once in 40 model-reaching runs.
+
+### Correction found while reading the verdict: the full_text evaluation note
+
+The generated `EVAL.md` claimed the `full_text` tool-call and self-check columns were "zero by construction", while the tables in the same sections recorded 1–22 model-initiated calls per run. `full_text` registers all five tools, so the model may call them; the receipt channel simply made that visible for the first time. `_unexercised_notes` in `scripts/eval_fixtures.py` now states the registration and points at the measured columns, the self-check sentences now apply to both modes, and the pinning test asserts the honest wording (`27ea9df`). The same wording was applied to `EVAL.md` by hand; no measured number changed. The added self-check bullets total the per-pair columns: 11 rejected with 8 kept in the original `full_text` lane, 4 with 3 in the messy lane. Which tools the eval runs called is not recoverable after the fact — the per-run summaries live only in harness memory for CLI-path runs — so the note names no tool breakdown.
+
+### The raw ADK receipt
+
+One local navigate audit was run from this worktree on 2026-08-23 (pair `asterquay_learning_workshop_specification.pdf` + `veylan_arcworks_208v_switchboard.pdf`, sentinel disabled) with a bounded spy on `AdkClaimGenerator._record_tool_calls` printing the first raw events. The first model-initiated call, verbatim from the ADK event stream (thought signature and usage tail truncated):
+
+```
+Event(model_version='gemini-3.7-flash', content=Content(
+  parts=[
+    Part(
+      function_call=FunctionCall(
+        args={
+          'document_role': 'specification',
+          'page_number': 2
+        },
+        id='call_2479636',
+        name='extract_pdf_text'
+      ), ...
+```
+
+The second event shows `page_number: 3` under id `call_2104503`. The run persisted as `b1673cd3ac3c47399fa25e29dabcbaf5` with one verified finding and its RFI at `artifacts/rfi-b1673cd3ac3c47399fa25e29dabcbaf5.pdf`.
+
+### Docs
+
+`6434120` rewrites the README introduction and board rows P3 and Review 7a, the DEVPOST architecture bullet and accomplishments, and the four honesty-boundary and narration lines of `VIDEO-SCRIPT.md` to the measured story: the model reads by tool with every call recorded; the runtime owns every write; navigation is the deployed default because of the messy-lane catch rate, not cost; the misses are published. The retired `a424ccf` provenance paragraphs in the README are replaced by the `1340748` provenance. `deploy-specguard.ps1` pins `SPECGUARD_AGENT_MODE=navigate` so the deployed configuration is in the recorded script.
+
+### Codex review
+
+One Codex review ran over `df76de5..6434120` and returned one P1, six P2, and one P3 finding; every one was verified against the code, confirmed real, and fixed in `19599a7` in a single correction pass.
+
+| Severity | Finding | Fix |
+| --- | --- | --- |
+| P1 | The ship gate treated two unmeasured messy-lane rates as equal, so empty or all-invalid lanes could ship navigate. | The gate refuses to evaluate when any required lane measured no usable run or a messy lane has no measurable catch rate; pinned by a known-bad test. The published verdict is unaffected: its lanes carried 50 real audits. |
+| P2 | Every case of a shared pair repeated the pair's whole severity tuple, so EVAL reported 270 findings where 30 exist. | Severity is attributed per case; the fallback note totals pair-level findings once. EVAL.md and the README table were realigned by hand — every finding in this run is `unclassified`, so each case's count equals its catches. |
+| P2 | A `--mode navigate` run rendered the README block for the absent `full_text` mode and claimed every case matched. | `render_readme_section` raises when the shipping mode measured no case; `main()` prints the reason and leaves README untouched. |
+| P2 | `self_check_rejections` counted distinct quote digests, not rejected calls. | Rejected `verify_quote` calls are counted. |
+| P2 | A kept-rejected-quote was correlated by digest alone, ignoring role and page. | The correlation needs the same (digest, role, page) anchor on both sides. |
+| P2 | The invalid-initial-output path returned zero self-check counters beside a populated call receipt. | That path reports the count its recorded calls show. |
+| P2 | A web audit failing after the model ran recorded an empty summary, discarding the mode and tool-call receipts. | The FAILED record keeps agent mode, tool calls, self-check counters, and usage. |
+| P3 | The run-page section said "Pages the model read" while listing every tool call. | Retitled "Tool calls the model initiated". |
+
+Disclosure: the self-check totals published in this EVAL (the per-pair columns and the bullets summing them) were measured under the digest rule then in force and stand as published; the corrected rule applies from the next regeneration. Which tools the 50 eval runs called is not recoverable after the fact — CLI-path run summaries live only in harness memory — so no by-tool breakdown is claimed for them.
+
+Seven new tests pin the fixes; the suite grew from 576 to 583.
+
+### Local quality-gate receipts
+
+All commands ran in `C:\Users\mcspd\dev\specguard-agent` on arya at `19599a7`. Every exit code is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `583 passed, 2 warnings`. The suite was 463 at `df76de5` and 576 before the review pass. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `52 files already formatted` |
+| `git diff --check` | 0 | No whitespace errors. |
+| `uv run python scripts/record_test_count.py` | 0 | README count rewritten from the run's own summary line. |
+
+### Deployment
+
+The permission gate of the verification session blocks Cloud Run deploys, so Mason ran the deploy himself on 2026-08-23 from this worktree, after `6434120` pinned `SPECGUARD_AGENT_MODE=navigate` into `deploy-specguard.ps1`:
+
+```
+Service [specguard] revision [specguard-00026-4vx] has been deployed and is serving 100 percent of traffic.
+Service URL: https://specguard-108657628939.us-central1.run.app
+```
+
+Live receipts against that revision, taken by the verification session:
+
+| Receipt | Result |
+| --- | --- |
+| `GET /health` | HTTP 200 in 0.12 s. |
+| `POST /sample/veylan-208v` | HTTP 303 to `/runs/f28d276f4e0045648a35a1d938ddc7fb`. |
+| The run page | Agent mode `navigate`; the "Pages the model read" section lists every model-initiated call; one finding with QUOTES VERIFIED (480V specification against the 208V submission); zero rejections. |
+| `GET /runs/f28d276f…/export.json` | HTTP 200. `summary.agent_mode` is `navigate`; `summary.model_tool_calls` holds 9 calls: `extract_pdf_text` on specification pages 2–7, `verify_quote` once per side of the finding (specification page 3, submitted document page 1), and the `set_model_response` structured-output call ADK adds for this model. |
+
+The recorded self-check matches the prompt's contract: the model checked both quotes it returned, and the runtime gate verified them again regardless.
+
+Revision `specguard-00026-4vx` was built from `6434120`, before the Codex corrections in `19599a7` landed. Nothing in those corrections changes an audit verdict on the deployed paths; the visible differences are the run-page section title and the failed-run receipt fix. One redeploy from the branch tip aligns the live service with the repository; that is Mason's call before the shoot.
+
+### Board
+
+- P3 "No receipt proves a model initiated a registered tool call" — FIXED at `3c09dc5`, measured across 50 audits.
+- Review 7a "The published evaluation names `a424ccf`" — FIXED by the 2026-08-23 regeneration at `1340748`.
+- NEW, ACCEPTED: `E-15` (0 of 5 both modes) and `E-13` (2 of 5 both modes) are published misses on the messy lane; whether the planted pairs are genuinely hard or mis-specified is a Phase 7d question. Disclosed in EVAL.md, the README table, and DEVPOST.
+- NEW, ACCEPTED: the EVAL self-check totals were measured under the digest-counting rule; the corrected call-and-anchor rule (`19599a7`) applies from the next regeneration.
+- NEW, ACCEPTED: `full_text` keeps its historical five-tool registration, so a model turn in that mode can call the write tools; every write path still runs the gate at write time, and the deployed default is navigate, which registers no write tool. Disclosed in the README introduction.
+
+### Local commits
+
+| Commit | Subject |
+| --- | --- |
+| `d3c1af6` | Add the navigate agent mode with a read-only, budgeted tool surface |
+| `3c09dc5` | Persist, render, and export the model-initiated tool-call receipt |
+| `aa3317c` | Scan every model-facing instruction against a fixture-name denylist |
+| `ac7693d` | Widen the page index to 240 characters and register the read-only screen |
+| `63f2cac` | Measure both agent modes across both fixture lanes behind a fixed ship gate |
+| `1340748` | Pace the evaluation and retry only a provider rate limit |
+| `27ea9df` | Record the both-mode measurement and correct the full_text tool-call note |
+| `6434120` | State the receipted navigation story across README, DEVPOST, and the video script |
+| `19599a7` | Apply the Codex review: gate preconditions, attributed severity, kept receipts |
+
+Plus the receipts commit that carries this section. Nothing was pushed, merged, or opened as a pull request; `origin/phase-2-demo-fixtures` still points at `df76de5`.

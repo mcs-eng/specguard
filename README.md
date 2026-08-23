@@ -24,7 +24,7 @@ The gate establishes one narrow thing: each quoted text anchor occurs on its cit
 
 <!-- test-count-start -->
 
-`uv run pytest -q` exited 0 with **463 passed** on code revision `fa80754`. This line is written by `scripts/record_test_count.py` from that run's own summary line; it is not typed by hand. No test requires the network or credentials; every model, Firestore, and storage dependency is an in-process fake.
+`uv run pytest -q` exited 0 with **583 passed** on code revision `19599a7 plus uncommitted changes to HANDOFF.md`. This line is written by `scripts/record_test_count.py` from that run's own summary line; it is not typed by hand. No test requires the network or credentials; every model, Firestore, and storage dependency is an in-process fake.
 
 <!-- test-count-end -->
 
@@ -420,6 +420,9 @@ This board mirrors the Phase 6d board in `HANDOFF.md`. `FIXED` rows name the cha
 | 7a review | Filtering sample runs after the query limit could empty the public list. | FIXED — `c0a380e` reads the newest 100 runs and keeps the newest 20 sample ones; disclosed in [Who can read a run](#who-can-read-a-run). |
 | 7a review | The generativelanguage backend still reported its configured request name as `severity_model_id`. | FIXED — `c0a380e` reads that response's reported model version and records the request name as the endpoint label, so one rule covers both backends. |
 | Review 7a | The published evaluation names `a424ccf`, and Phase 7a changed files inside the measured path. | FIXED — the harness re-ran on 2026-08-23 at `1340748`, both modes and both lanes, with the severity sentinel disabled and every fallback reason recorded; the table above is that run. |
+| 7c | `E-15` (0 of 5) and `E-13` (2 of 5) are published misses on the messy lane in both modes. | ACCEPTED — published as measured in EVAL.md and the table above; whether the planted pairs are genuinely hard or mis-specified is a Phase 7d question. |
+| 7c | `full_text` mode registers the write tools to the model, as it always has. | ACCEPTED — every write path runs the gate at write time; the deployed default is navigate, which registers no write tool; disclosed in the introduction. |
+| 7c | The EVAL self-check totals were measured under the digest-counting rule. | ACCEPTED — corrected in `19599a7` to count calls and anchor-match; the published totals stand as measured and the next regeneration uses the corrected rule. |
 | Review 7a | README stated a hand-typed test count. | FIXED — `ba1be8d` generates the count and its revision from a real `uv run pytest -q` receipt; disclosed in [What is in this repository](#what-is-in-this-repository). |
 | Review 7a | README called the web repository read-only, and its diagram called the severity annotation "never a write path". | FIXED — `ba1be8d` states that the repository writes runs, tokens, and rate-limit counters but no claim record, and that the severity annotation writes severity fields and cannot change a verification status. |
 | Review 7a | A configured model label was stored as `severity_model_id`, so provenance published an observation nobody made. | FIXED — `6f27d92` records the identifier the endpoint reports as `severity_model_id`, and the configured string as `severity_endpoint_label`; the two backends read separate model variables; disclosed in [Gemma severity annotation](#gemma-severity-annotation). |
