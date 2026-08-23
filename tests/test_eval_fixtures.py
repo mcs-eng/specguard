@@ -7,6 +7,7 @@ real model path is never called.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from scripts.eval_fixtures import (
     LANE_MESSY,
     LANE_ORIGINAL,
     LANES,
+    RATE_LIMIT_BACKOFF_SECONDS,
     README_TABLE_END,
     README_TABLE_START,
     CasePair,
@@ -33,6 +35,7 @@ from scripts.eval_fixtures import (
     evaluate_ship_gate,
     format_code_revision,
     group_cases_into_pairs,
+    is_rate_limited,
     load_decoy_pairs,
     load_eval_cases,
     load_evidence_pairs,
@@ -42,6 +45,7 @@ from scripts.eval_fixtures import (
     render_eval_markdown,
     render_pair_table,
     render_readme_section,
+    run_pair_with_backoff,
     selected_lanes,
     selected_modes,
     uncommitted_source_paths,
@@ -1283,3 +1287,98 @@ def test_an_unreadable_tree_state_is_written_as_unknown() -> None:
 def test_an_unreadable_commit_is_written_as_unrecorded() -> None:
     assert format_code_revision(None, "") == "not recorded for this run"
     assert format_code_revision("", "") == "not recorded for this run"
+
+
+# --- 11. Rate-limit pacing, which changes no measured number --------------
+
+
+def test_a_rate_limit_is_recognised_and_other_failures_are_not() -> None:
+    assert is_rate_limited(RuntimeError("429 RESOURCE_EXHAUSTED")) is True
+    assert is_rate_limited(RuntimeError("Resource exhausted, try later")) is False
+    assert is_rate_limited(RuntimeError("RESOURCE_EXHAUSTED")) is True
+    assert is_rate_limited(ValueError("the model returned an invalid quote")) is False
+    assert is_rate_limited(FileNotFoundError("fixtures/missing.pdf")) is False
+
+
+def test_a_rate_limited_audit_is_retried_after_a_recorded_wait() -> None:
+    waits: list[float] = []
+    attempts: list[int] = []
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    async def run_pair(pair: CasePair, **_: object) -> RunOutcome:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+        return _outcome(run_id="run-after-wait")
+
+    outcome = asyncio.run(
+        run_pair_with_backoff(
+            _pair(FINDING_CASE),
+            project_id="test-project",
+            output_directory=Path("artifacts"),
+            agent_mode=AgentMode.NAVIGATE,
+            sleep=sleep,
+            run_pair=run_pair,
+        )
+    )
+
+    assert outcome.run_id == "run-after-wait"
+    assert waits == [RATE_LIMIT_BACKOFF_SECONDS[0]]
+    assert len(attempts) == 2
+
+
+def test_the_backoff_stops_rather_than_looping_forever() -> None:
+    waits: list[float] = []
+    attempts: list[int] = []
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    async def run_pair(pair: CasePair, **_: object) -> RunOutcome:
+        attempts.append(1)
+        raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+    with pytest.raises(RuntimeError, match="429"):
+        asyncio.run(
+            run_pair_with_backoff(
+                _pair(FINDING_CASE),
+                project_id="test-project",
+                output_directory=Path("artifacts"),
+                agent_mode=AgentMode.NAVIGATE,
+                sleep=sleep,
+                run_pair=run_pair,
+            )
+        )
+
+    assert waits == list(RATE_LIMIT_BACKOFF_SECONDS)
+    assert len(attempts) == len(RATE_LIMIT_BACKOFF_SECONDS) + 1
+
+
+def test_a_failure_that_is_not_a_rate_limit_is_raised_at_once() -> None:
+    """A harness that swallowed this would publish a table with a silent hole."""
+    waits: list[float] = []
+    attempts: list[int] = []
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    async def run_pair(pair: CasePair, **_: object) -> RunOutcome:
+        attempts.append(1)
+        raise FileNotFoundError("fixtures/missing.pdf")
+
+    with pytest.raises(FileNotFoundError):
+        asyncio.run(
+            run_pair_with_backoff(
+                _pair(FINDING_CASE),
+                project_id="test-project",
+                output_directory=Path("artifacts"),
+                agent_mode=AgentMode.NAVIGATE,
+                sleep=sleep,
+                run_pair=run_pair,
+            )
+        )
+
+    assert waits == []
+    assert len(attempts) == 1

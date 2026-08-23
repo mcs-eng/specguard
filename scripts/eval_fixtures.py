@@ -37,6 +37,7 @@ import asyncio
 import json
 import re
 import sys
+import time
 import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -66,6 +67,13 @@ UNRECORDED_REVISION = "not recorded for this run"
 #: runtime did, and they are always dirty on a second run, so they are excluded
 #: from the working-tree check that names the measured code.
 HARNESS_OUTPUTS = frozenset({"EVAL.md", "README.md"})
+
+#: How long to wait before retrying one audit the model provider rate-limited,
+#: and how many times. A rate limit is an infrastructure condition, not a model
+#: outcome: the retried audit is a fresh audit, measured exactly like any other,
+#: and every wait is printed so the log shows what happened. After the last
+#: wait the harness stops rather than looping.
+RATE_LIMIT_BACKOFF_SECONDS = (90, 300)
 
 OUTCOME_FINDING = "finding"
 OUTCOME_NO_FINDING = "no_finding"
@@ -1353,6 +1361,50 @@ async def _run_one_pair(
     return build_run_outcome(pair, summary, findings, model_turns=counting.calls)
 
 
+def is_rate_limited(error: BaseException) -> bool:
+    """True for the provider's rate-limit refusal, which a wait can clear."""
+    text = f"{type(error).__name__}: {error}"
+    return "RESOURCE_EXHAUSTED" in text or "429" in text
+
+
+async def run_pair_with_backoff(
+    pair: CasePair,
+    *,
+    project_id: str,
+    output_directory: Path,
+    agent_mode: AgentMode,
+    sleep: Any = None,
+    run_pair: Any = None,
+) -> RunOutcome:
+    """Run one audit, waiting and retrying only when the provider rate-limits it.
+
+    Nothing about the measurement changes here. A rate-limited audit produced no
+    result to keep, so the retry measures the same case from the start; any
+    other failure is raised, because a harness that swallowed it would publish a
+    table with a silent hole in it.
+    """
+    waiter = asyncio.sleep if sleep is None else sleep
+    execute = _run_one_pair if run_pair is None else run_pair
+    for wait in (*RATE_LIMIT_BACKOFF_SECONDS, None):
+        try:
+            return await execute(
+                pair,
+                project_id=project_id,
+                output_directory=output_directory,
+                agent_mode=agent_mode,
+            )
+        except Exception as error:
+            if wait is None or not is_rate_limited(error):
+                raise
+            print(
+                f"  rate limited on {pair.cut_sheet_pdf}; waiting {wait}s before "
+                "one more attempt at this audit",
+                flush=True,
+            )
+            await waiter(wait)
+    raise RuntimeError("the backoff loop must either return an outcome or raise")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the real SpecGuard runtime over every fixture case and publish EVAL.md."
@@ -1382,6 +1434,15 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_OUTPUT_DIRECTORY,
         help="Directory for the RFI drafts these runs generate.",
+    )
+    parser.add_argument(
+        "--pause-seconds",
+        type=float,
+        default=0.0,
+        help=(
+            "Seconds to wait between audits. Pacing changes no measured number; "
+            "it keeps a long run under the provider's per-minute rate limit."
+        ),
     )
     parser.add_argument(
         "--vertex-spend",
@@ -1522,6 +1583,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     manifest_text = _manifest_text()
     lane_results: dict[tuple[str, str], LaneResult] = {}
+    audits_run = 0
 
     for mode in modes:
         for lane in lanes:
@@ -1530,14 +1592,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             outcomes: dict[tuple[str, str], list[RunOutcome]] = {pair.key: [] for pair in pairs}
             for iteration in range(1, args.iterations + 1):
                 for pair in pairs:
+                    if args.pause_seconds and audits_run:
+                        time.sleep(args.pause_seconds)
                     outcome = asyncio.run(
-                        _run_one_pair(
+                        run_pair_with_backoff(
                             pair,
                             project_id=args.project,
                             output_directory=args.output_dir,
                             agent_mode=mode,
                         )
                     )
+                    audits_run += 1
                     outcomes[pair.key].append(outcome)
                     print(
                         f"{mode.value}/{lane.name} iteration {iteration}/{args.iterations} "
