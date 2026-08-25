@@ -2332,3 +2332,101 @@ All commands run in `C:\Users\mcspd\dev\specguard-7d` on arya. Exit codes are un
 
 1. **One deploy from the final tip.** `deploy-specguard.ps1` now pins `SPECGUARD_AGENT_MODE=full_text`. The live revision runs `navigate`, so the deployed service does not match the published default until that deploy runs.
 2. **One decision on the read-only registration.** The receipt the guard asks for does not exist and cannot be recovered for those runs. The options are unchanged from the R2 decision: re-measure `full_text` after making the change, keep the five-tool registration and leave the board row open, or accept the narrower receipt above in place of the one the guard named. Nothing in the ledger guarantee turns on it.
+
+## Phase 7d — shipping-configuration campaign, and a ship gate published as informational
+
+Date: 2026-08-25. Scope: the Phase 7d shipping-configuration work order, continued in the worktree `C:\Users\mcspd\dev\specguard-7d` on branch `phase-7d` from the tip `f78cf51`. `specguard/gate.py`, `specguard/integrity.py`, every prompt file, every fixture PDF, and `fixtures/build_fixtures.py` are unchanged in this phase, and no measured number was edited. Nothing is pushed, merged, or opened as a PR. Subagents executed the implementation and the documentation work under Mason's 2026-08-26 grant; every claim below carries the command or the file it was read from.
+
+The phase closed the two items Phase 7d-remeasure left open, in the order the guard required: build the missing receipt first, then make the change the receipt was needed for, then measure the configuration that ships.
+
+### S1 — what was built
+
+**`b57c35a`, the receipts writer.** The runtime already recorded every model-initiated call onto `AuditRunSummary.model_tool_calls`, but a CLI campaign persists no `runs` document, so those receipts lived in harness memory and left with the process. The harness now writes `EVAL-RECEIPTS.jsonl` (`--receipts-path`, truncated at the start of each invocation): one JSON line per model-initiated call carrying mode, lane, document pair, iteration, run identifier, turn index, tool name and the bounded arguments the runtime already recorded, then one summary line per run with the total, the per-tool-name counts, and the self-check counters. A run that called nothing still writes its summary line, so an absent run and a silent run do not read alike. `RunOutcome.model_tool_calls` became a property over the recorded calls, so the published count and the receipt file cannot disagree. `git show --stat b57c35a`: `scripts/eval_fixtures.py` +173/-6 and `tests/test_eval_fixtures.py` +188, 355 insertions in two files.
+
+**`8900a76`, the read-only registration.** `full_text` registered all five tools to the model, `persist_finding` and `draft_rfi` included. Both modes now register exactly the three read-only methods on `ModelFacingAuditTools`, so the guarantee that the runtime owns every write no longer depends on a deployment setting. No write path changed behaviour: the runtime called both write tools directly before and calls them directly now, and the gate still runs at write time inside each. `full_text` model-initiated page reads and integrity screens now go through the same per-run caps `navigate` uses, at the same values. The `full_text` prompt names no tool, so no prompt wording needed adjusting. `git show --stat 8900a76`: seven files, `specguard/agent.py`, `specguard/tools.py`, `scripts/eval_fixtures.py`, and four test files, 83 insertions and 44 deletions. `tests/test_navigate_mode.py::test_both_modes_expose_one_identical_read_only_model_facing_surface` pins the parity.
+
+### S2 — the campaign
+
+```
+SPECGUARD_GEMMA_ENDPOINT=disabled uv run python scripts/eval_fixtures.py --mode both --lane all -n 10 --pause-seconds 5
+```
+
+100 real audits at code revision `8900a76`, both modes and both lanes, with the severity sentinel disabled. The harness wrote `EVAL.md`, the README block, and `EVAL-RECEIPTS.jsonl`; `d98e813` commits all three as produced.
+
+The four machine-readable summary lines the harness emits, one per mode and lane:
+
+```
+EVAL SUMMARY date=2026-08-25 code_revision=8900a76 mode=full_text lane=original cases=4 runs=40 catch_rate=100% decoy_false_positives=0 unattributed_false_positives=0 rejections=0 retries=0 model_turns=30 mean_prompt_tokens=7435.1 model_tool_calls=70 self_check_rejections=0 runs_returning_a_rejected_quote=0 cases_matching_manifest=4/4
+EVAL SUMMARY date=2026-08-25 code_revision=8900a76 mode=full_text lane=messy cases=9 runs=10 catch_rate=86% decoy_false_positives=0 unattributed_false_positives=0 rejections=0 retries=0 model_turns=10 mean_prompt_tokens=152424.8 model_tool_calls=148 self_check_rejections=0 runs_returning_a_rejected_quote=0 cases_matching_manifest=8/9
+EVAL SUMMARY date=2026-08-25 code_revision=8900a76 mode=navigate lane=original cases=4 runs=40 catch_rate=100% decoy_false_positives=0 unattributed_false_positives=0 rejections=0 retries=0 model_turns=30 mean_prompt_tokens=31749.7 model_tool_calls=258 self_check_rejections=0 runs_returning_a_rejected_quote=0 cases_matching_manifest=4/4
+EVAL SUMMARY date=2026-08-25 code_revision=8900a76 mode=navigate lane=messy cases=9 runs=10 catch_rate=90% decoy_false_positives=0 unattributed_false_positives=0 rejections=0 retries=0 model_turns=10 mean_prompt_tokens=274534.9 model_tool_calls=272 self_check_rejections=0 runs_returning_a_rejected_quote=0 cases_matching_manifest=8/9
+```
+
+Provenance of those four lines, stated exactly because it matters: the campaign console output was not captured to a file, and `d98e813` carries no summary lines in its message. They were regenerated offline by rebuilding the campaign's 100 `RunOutcome` objects from `EVAL-RECEIPTS.jsonl` and the committed `EVAL.md` tables and passing them through the harness's own `eval_summary_line`. The rebuild is faithful by construction check: rendering `EVAL.md` from those same objects with the pre-change generator reproduces the committed file byte for byte (`diff -u EVAL.md rendered`, exit 0). No model call was made to produce them.
+
+### S3 — the ship gate, and the pre-commitment that governs it
+
+The gate met all eight conditions this time, with the messy lane at `navigate` 90 percent against `full_text` 86 percent, which is 63 of 70 case-runs against 60 of 70. On the `31ef186` campaign earlier the same day the same conditions failed on the same line, at `navigate` 94 percent (66 of 70) against `full_text` 96 percent (67 of 70). A few case-runs in seventy moved in each direction between two runs of the same fixtures.
+
+The handling was fixed before this campaign ran, and is quoted here verbatim because it is the reason a PASS did not move the default: "the mode-selection question closed with the 08-25 campaign; the new campaign measures the shipping configuration and republishes both modes; the ship-gate output is recorded as informational, not as a decision input; the default remains full_text regardless of one-run noise in either direction."
+
+The generator was still selecting the published mode from the verdict, so `d98e813` published a README block claiming `navigate` ships as the deployed default. That is the defect this phase's documentation work fixed. `scripts/eval_fixtures.py` now carries a `DecidedDefault` value — the mode and the date the decision closed — which selects the mode the README publishes; the gate is still evaluated by the same pure function and still printed condition by condition under a heading that names it informational, with a paragraph beside it stating the decision. Tests pin the informational wording, the header line, and the fact that both renderers follow the `DecidedDefault` value rather than the verdict, using a different mode and date so a hardcoded renderer fails.
+
+Neither campaign's numbers were pooled with the other's anywhere in the published documents, and every published figure names the campaign that measured it.
+
+### S4 — the receipts, verified
+
+`EVAL-RECEIPTS.jsonl` holds 848 lines: 748 tool-call lines and 100 run-summary lines, one summary per audit. Counted from the file itself.
+
+| Mode | `check_text_integrity` | `extract_pdf_text` | `set_model_response` | `verify_quote` |
+| --- | ---: | ---: | ---: | ---: |
+| `full_text` | 0 | 0 | 40 | 178 |
+| `navigate` | 1 | 295 | 40 | 194 |
+
+All 372 `verify_quote` calls carry `response_verified: true`; none answered otherwise. That is what the self-check rejection column of 0 means in both modes: the counter had nothing to count, not that it failed to fire. The same counter recorded 53 rejections across the `full_text` lanes of the `31ef186` campaign, which is the contrast that makes the zero readable.
+
+Two facts the earlier phase could not establish are now established for this configuration. No call to `persist_finding` or `draft_rfi` appears anywhere in the file, in either mode — which is the receipt the 7c board row asked for and could not have. And the per-tool breakdown of the reading paths is now measured rather than described: `full_text` made no `extract_pdf_text` call at all against `navigate`'s 295. The single `check_text_integrity` call is one model's choice on one `navigate` run.
+
+The per-pair call totals in the file reproduce the "Model tool calls per run" column of `EVAL.md` exactly, in all ten pair rows.
+
+### S5 — spend
+
+Prompt tokens, from the four summary lines above: `full_text` 40 runs at a mean of 7,435.1 plus 10 at 152,424.8, and `navigate` 40 at 31,749.7 plus 10 at 274,534.9. That is 1,821,652 for `full_text`, 4,015,337 for `navigate`, and about 5.84 million prompt tokens for the campaign. The 20 altered-fixture runs quarantined before any model call and report no count.
+
+For comparison, and labelled so it is not read as this campaign's figure: the `31ef186` campaign spent 7,010,120 prompt tokens over the same 80 model-reaching audits. The drop is `full_text`'s: its original-lane mean fell from 13,233 to 7,435 and its messy-lane mean from 258,668 to 152,425, alongside 218 model-initiated calls against 305 and three tool schemas in the model's view instead of five. No dollar figure is available — `--vertex-spend` defaulted to `not visible in the run output` and the harness exposes no cost value — but the band is unchanged: low single dollars, well inside the $50 authorization. That limit is already a board row.
+
+### Board movement
+
+| Row | Was | Now |
+| --- | --- | --- |
+| 7c, `full_text` registers the write tools | OPEN, restated | CLOSED — applied at `8900a76`, parity pinned by test, and the campaign's receipts record zero write-tool calls in either mode. |
+| 7d, a CLI campaign persists no tool-call receipt | OPEN (recorded inside the row above) | CLOSED — `b57c35a` writes `EVAL-RECEIPTS.jsonl`, `d98e813` commits it, and the published tool-call figures recompute from it. Added to the README board as its own row, which it never had. |
+| 7d, the informational ship gate | new | CLOSED — 2026-08-25. The gate passed, the default held by the pre-commitment, and the handling is now in the generator as a `DecidedDefault` value with the decision date, pinned by tests. |
+
+### Local quality-gate receipts
+
+All commands run in `C:\Users\mcspd\dev\specguard-7d` on arya. Exit codes are unpiped.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `657 passed, 2 warnings`. 648 at `d98e813`; the nine new generator and receipts-note tests are the difference. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `55 files already formatted` |
+| `git diff --check` | 0 | No whitespace errors. |
+| `git status --porcelain` | 0 | Empty. |
+
+### Local commits
+
+- `b57c35a` — the per-run tool-call receipts writer and its tests.
+- `8900a76` — the `full_text` model-facing surface narrowed to read-only. This is the revision the campaign measured.
+- `d98e813` — the campaign output as produced: `EVAL.md`, the README block, and the committed receipts.
+- `d6804d4` — the ship gate rendered as informational against a `DecidedDefault`, the receipts-backed lane notes, and `EVAL.md` and the README block re-rendered offline from the campaign's own data.
+- `bf1fb35` — the README reordered to lead with the core, every number labelled by campaign, and three board rows moved.
+- `0c63243` — the Devpost draft reordered and its mode and campaign statements corrected.
+- `6c7ed84` — the video script brought to this campaign, with the receipts file staged as a provenance beat.
+- This section, and the test count recorded from its own run.
+
+### What this phase leaves for Mason
+
+1. **The deploy is still outstanding.** `deploy-specguard.ps1` pins `SPECGUARD_AGENT_MODE=full_text` and the live revision still runs `navigate`. Nothing in this phase changed that; the read-only registration at `8900a76` makes the deploy more worth doing, because until it runs the deployed service registers the two write tools to the model in whichever mode it is running.
+2. **`EVAL.md` and the README block were re-rendered offline, not re-measured.** Both are byte-exact generator output for this campaign's data under the corrected renderer, and the next campaign regenerates them from a live run in the ordinary way. No model call was made in this phase.
