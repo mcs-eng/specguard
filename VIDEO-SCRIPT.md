@@ -13,12 +13,13 @@ Drafted 2026-08-21 from the Video section of PLAN.md. Shot times are targets. Th
 
 ## Honesty boundary for the whole video
 
-- The agent proposes; the runtime disposes. The deployed default is full-text mode: the model receives every page of both documents up front. The run page still lists every tool call the model chose to make. Say the model "proposed the claim"; do not say it owns the pipeline or performs the verification, because the runtime re-verifies every claim and owns every write. Navigate mode is built, measured, and selectable, and it is the mode to describe if a judge asks what happens when a specification is too large to send in one prompt. Do not describe the live demo as navigating by tool.
+- The agent proposes; the runtime disposes. The deployed default is full-text mode: the model receives every page of both documents up front. Both modes register the same three read-only tools and neither of the two that write, so the model reads in either mode and writes in neither. The run page still lists every tool call the model chose to make. Say the model "proposed the claim"; do not say it owns the pipeline or performs the verification, because the runtime re-verifies every claim and owns every write. Navigate mode is built, measured, and selectable, and it is the mode to describe if a judge asks what happens when a specification is too large to send in one prompt. Do not describe the live demo as navigating by tool.
+- If a judge asks which mode is better on the numbers, the answer is that the two 2026-08-25 campaigns disagree by a few case-runs in seventy and neither margin is a capability gap. Full text is the default because the mode question closed with the first campaign, and the handling of the second was recorded before it ran: its ship-gate output is informational, not a decision input. Do not present either campaign as settling the comparison, and do not average them.
 - "VERIFIED" means the quoted characters were found on the cited page. Do not say "verified as correct" or "confirmed accurate".
-- The rejection-and-retry loop does not fire live: across the 80 model-reaching runs in the 2026-08-25 measurement (EVAL.md) the gate rejected nothing, because the model cited every quote correctly on the first turn. It is proven by the test suite and shown from pytest on camera. Never imply it fires in the live demo. The live "blocked before the model" beat is the integrity quarantine, which is deterministic.
+- The rejection-and-retry loop does not fire live: across the 80 model-reaching runs of the 2026-08-25 campaign at code revision `8900a76` (EVAL.md) the gate rejected nothing, because the model cited every quote correctly on the first turn. It is proven by the test suite and shown from pytest on camera. Never imply it fires in the live demo. The live "blocked before the model" beat is the integrity quarantine, which is deterministic.
 - SHA-256 is chain-of-custody metadata. Do not call it proof of accuracy.
 - The Gemma label is advisory and falls back to UNCLASSIFIED with a recorded reason when the endpoint is down. Say "advisory" on camera. The endpoint is up only for the shoot; a judge auditing later sees the fallback state.
-- The eval numbers are seven fictional fixtures, 100 runs across both agent modes. Do not call them accuracy on real submittals.
+- The eval numbers are seven fictional fixtures, 100 runs across both agent modes and both lanes. Do not call them accuracy on real submittals. Every model-initiated tool call behind them is committed to `EVAL-RECEIPTS.jsonl`, so "receipted" is a claim the file backs; do not use the word for anything that file does not carry.
 - Do not read the hidden sentence from the altered fixture into this script or any other prose file. It may appear on screen in the integrity record table; reading it aloud from the screen is allowed.
 
 ## Pacing receipts
@@ -32,9 +33,9 @@ Use these to size narration over waits. No receipt exists in HANDOFF.md for end-
 | Web audit, same delta, warm revision, Gemma endpoint up | 12.2 s | run `1c94812c…` |
 | Gemma endpoint worst case when it returns 502 | up to 3 attempts x 15 s timeout plus 2 s sleeps, about 50 s, then fallback | `specguard/severity.py` |
 | Quarantine of the altered fixture | no model call; seconds | EVAL.md E-04, 0 model calls in 10 runs per mode |
-| `uv run pytest -q tests/test_gate.py` | 59 passed in 0.79 s | local, 2026-08-21 |
-| `uv run pytest -q tests/test_gate.py tests/test_agent.py` | 66 passed in 9.35 s | local, 2026-08-21 |
-| `uv run pytest -q` (whole suite) | 254 passed in 43.03 s | local, 2026-08-21 |
+| `uv run pytest -q tests/test_gate.py` | 59 passed in 0.96 s | local, 2026-08-25 |
+| `uv run pytest -q tests/test_gate.py tests/test_agent.py` | 68 passed in 9.15 s | local, 2026-08-25 |
+| `uv run pytest -q` (whole suite) | see the count README records from its own run; about 70 s locally on 2026-08-25 | local, 2026-08-25 |
 | Gemma 3 1B endpoint deploy | 1 min 48 s | SETUP.md, HANDOFF.md |
 
 Plan the continuous segment for two model runs of 10 to 15 s each on a warm revision. Budget 50 s for each if the first take is cold. The prior-day timed dry run (checklist, T-1) replaces these estimates with a fresh number.
@@ -113,7 +114,7 @@ End of the continuous segment. If 3f pushed past 3:30, shoot 3f as a separate cu
 uv run pytest tests/test_gate.py tests/test_agent.py -v
 ```
 
-  About 9 to 10 s. The last lines on screen are the `tests/test_agent.py` names: `test_rejected_claim_gets_exactly_one_retry_then_rejection PASSED`, `test_one_retry_can_correct_the_quote_and_persist PASSED`, `test_retry_must_return_exactly_one_corrected_claim PASSED`, then `66 passed`.
+  About 9 to 10 s. The last lines on screen are the `tests/test_agent.py` names: `test_rejected_claim_gets_exactly_one_retry_then_rejection PASSED`, `test_one_retry_can_correct_the_quote_and_persist PASSED`, `test_retry_must_return_exactly_one_corrected_claim PASSED`, then the pass count — 68 on 2026-08-25. Read the count off the screen rather than saying it; the suite grows.
 - Narration over the run [45]: "The rejection-and-retry loop is proven here, not by live luck. These tests drive a rejected quote through the runtime: the claim goes back to the model once with the machine-readable reason, a corrected quote is verified again before it persists, and a second miss is recorded as a rejection."
 - Pre-staged: the command typed and ready; `uv sync` done; one dry run so the cache is warm.
 - Honesty boundary: "proven here, not by live luck" is the mandatory framing.
@@ -125,11 +126,12 @@ uv run pytest tests/test_gate.py tests/test_agent.py -v
 - Pre-staged: the `/gate` tab loaded and scrolled so the verdict card and the near-miss links are both visible.
 - Honesty boundary: "the same gate function" is accurate and is the claim to make. Do not say the page proves the ledger; it proves the gate verdict only.
 
-### Shot 5, 3:50 to 3:57. The eval table. Separate cut.
+### Shot 5, 3:50 to 3:57. The eval table and its receipts. Separate cut.
 
-- On screen: EVAL.md, the results table, the "Change from the previous published run" line, and the "What this run did not exercise" section.
-- Narration [30]: "A hundred real runs on the fixtures, against a named code revision. And in print: what these numbers do not exercise, and which of them moved since the last published run."
-- Honesty boundary: "on the fixtures", never "accuracy". Read the current table before recording; the numbers below the table are regenerated by the harness, not typed here.
+- On screen: EVAL.md, the header naming the code revision and the deployed default, one results table, and the "Cases that did not match the manifest" section. Then a two-second flick to `EVAL-RECEIPTS.jsonl` scrolled anywhere in its middle: dense JSON lines, one per model-initiated tool call. Do not zoom in far enough to read one; the point is that the file exists and is committed.
+- Narration [40]: "A hundred real runs on the fixtures, against a named code revision. Both planted discrepancies on the original lane caught in every run of both modes, no false positive on the compliant cut sheet, no decoy hit anywhere. On the hard lane, ninety percent in navigate against eighty-six in full text — four case-runs in seventy, which is noise, not a winner. And every tool call behind those numbers is committed, one line each."
+- If the timing will not carry the receipts flick, cut it and end on "which of them moved since the last published run" instead; the fallback keeps the beat inside 30 words.
+- Honesty boundary: "on the fixtures", never "accuracy". Read the current table before recording; the numbers below the table are regenerated by the harness, not typed here. Do not say navigate is better: name both numbers and call the gap noise.
 
 ### Shot 6, 3:57 to 4:00. Close on the RFI. Separate cut.
 
@@ -199,7 +201,7 @@ uv run python scripts/reset_demo_ledger.py --confirm
 ```
 
 7. Reload the landing page and confirm "No audit runs are stored yet."
-8. Tabs, in order: landing page; `/gate` with the prefilled example loaded and the verdict card visible (shot 4b); Cloud Run console service page; Vertex AI endpoints page; Firestore console on `findings`; README at the architecture diagram; EVAL.md. Close every other tab and window. The RFI tab for shot 6 opens during shot 3d and stays open.
+8. Tabs, in order: landing page; `/gate` with the prefilled example loaded and the verdict card visible (shot 4b); Cloud Run console service page; Vertex AI endpoints page; Firestore console on `findings`; README at the architecture diagram; EVAL.md; `EVAL-RECEIPTS.jsonl` scrolled to its middle for the shot 5 flick. Close every other tab and window. The RFI tab for shot 6 opens during shot 3d and stays open.
 9. File explorer open on `fixtures\` showing the seven PDFs.
 10. Terminal ready with `uv run pytest tests/test_gate.py tests/test_agent.py -v` typed and a warm cache (run it once before the take).
 11. Fallback narration line for UNCLASSIFIED printed beside the keyboard (shot 3c).
