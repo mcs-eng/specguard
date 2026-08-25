@@ -54,13 +54,20 @@ from typing import Any
 
 from specguard.agent import MODEL_ID
 from specguard.gate import contains_on_boundaries, normalize
-from specguard.models import AgentMode, AuditRunSummary
+from specguard.models import AgentMode, AuditRunSummary, ModelToolCall
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIRECTORY = REPOSITORY_ROOT / "fixtures"
 MANIFEST_PATH = FIXTURE_DIRECTORY / "MANIFEST.md"
 EVAL_PATH = REPOSITORY_ROOT / "EVAL.md"
 README_PATH = REPOSITORY_ROOT / "README.md"
+
+#: Where this harness writes the per-run tool-call receipts of one campaign.
+#: A CLI eval run persists no ``runs`` document, so without this file the
+#: receipts the runtime recorded live only in harness memory and are gone when
+#: the process exits, leaving the published tool-call columns uncheckable.
+RECEIPTS_FILE_NAME = "EVAL-RECEIPTS.jsonl"
+DEFAULT_RECEIPTS_PATH = REPOSITORY_ROOT / RECEIPTS_FILE_NAME
 DEFAULT_PROJECT = "specguard-hack"
 DEFAULT_ITERATIONS = 5
 DEFAULT_OUTPUT_DIRECTORY = REPOSITORY_ROOT / "artifacts" / "eval"
@@ -70,10 +77,12 @@ MEASURED_ON_PATTERN = re.compile(r"Measured on (\d{4}-\d{2}-\d{2}) by")
 TABLE_ROW_PATTERN = re.compile(r"^\| `(E-\d+)` \|(.*)\|\s*$", re.MULTILINE)
 UNRECORDED_REVISION = "not recorded for this run"
 
-#: The two files this harness rewrites. Edits to them cannot change what the
+#: The files this harness rewrites. Edits to them cannot change what the
 #: runtime did, and they are always dirty on a second run, so they are excluded
-#: from the working-tree check that names the measured code.
-HARNESS_OUTPUTS = frozenset({"EVAL.md", "README.md"})
+#: from the working-tree check that names the measured code. The receipts file
+#: is written while the campaign is still running, so counting it would make
+#: every campaign publish itself as measured on an uncommitted tree.
+HARNESS_OUTPUTS = frozenset({"EVAL.md", "README.md", RECEIPTS_FILE_NAME})
 
 #: How long to wait before retrying one audit the model provider rate-limited,
 #: and how many times. A rate limit is an infrastructure condition, not a model
@@ -174,6 +183,11 @@ class CasePair:
     def key(self) -> tuple[str, str]:
         return (self.spec_pdf, self.cut_sheet_pdf)
 
+    @property
+    def identifier(self) -> str:
+        """Name this document pair in one field of a receipt line."""
+        return f"{self.spec_pdf}::{self.cut_sheet_pdf}"
+
 
 @dataclass(frozen=True)
 class RunOutcome:
@@ -195,9 +209,18 @@ class RunOutcome:
     model_output_invalid: bool = False
     severity_model_ids: tuple[str, ...] = ()
     prompt_tokens: int | None = None
-    model_tool_calls: int = 0
+    tool_calls: tuple[ModelToolCall, ...] = ()
     self_check_rejections: int = 0
     self_check_rejected_quote_returned: bool = False
+
+    @property
+    def model_tool_calls(self) -> int:
+        """How many calls the model itself initiated during this run.
+
+        Derived from the recorded calls rather than stored beside them, so the
+        published count and the receipt file can never disagree.
+        """
+        return len(self.tool_calls)
 
 
 @dataclass
@@ -640,10 +663,112 @@ def build_run_outcome(
         model_output_invalid=model_output_invalid,
         severity_model_ids=severity_model_ids,
         prompt_tokens=usage.prompt_tokens if usage is not None else None,
-        model_tool_calls=len(summary.model_tool_calls),
+        tool_calls=tuple(summary.model_tool_calls),
         self_check_rejections=summary.self_check_rejections,
         self_check_rejected_quote_returned=summary.self_check_rejected_quote_returned,
     )
+
+
+# --- Per-run tool-call receipts ------------------------------------------
+
+
+#: The two kinds of line this harness writes to the receipts file.
+RECEIPT_TOOL_CALL = "tool_call"
+RECEIPT_RUN = "run"
+
+
+def receipt_records(
+    outcome: RunOutcome,
+    *,
+    mode: AgentMode,
+    lane: str,
+    pair: CasePair,
+    iteration: int,
+) -> list[dict[str, Any]]:
+    """Build the receipt lines one completed audit contributes.
+
+    One record per model-initiated tool call, in the order the model made
+    them, then one record for the run itself. The per-call records carry the
+    bounded arguments the runtime already recorded on
+    :class:`specguard.models.ModelToolCall` and nothing more: the quote a model
+    sent appears only as the digest that record holds, so the receipts file
+    cannot grow into a second copy of the documents.
+
+    A run that initiated no call still contributes its run record. A campaign
+    that wrote nothing for a run and a campaign that never executed that run
+    would otherwise read the same on disk, and only one of them is true.
+    """
+    context: dict[str, Any] = {
+        "mode": mode.value,
+        "lane": lane,
+        "pair": pair.identifier,
+        "iteration": iteration,
+        "run_id": outcome.run_id,
+    }
+    records: list[dict[str, Any]] = [
+        {
+            "record": RECEIPT_TOOL_CALL,
+            **context,
+            "call_index": index,
+            **call.model_dump(mode="json"),
+        }
+        for index, call in enumerate(outcome.tool_calls)
+    ]
+    tool_name_counts = Counter(call.tool_name for call in outcome.tool_calls)
+    records.append(
+        {
+            "record": RECEIPT_RUN,
+            **context,
+            "model_tool_calls": outcome.model_tool_calls,
+            "tool_name_counts": dict(sorted(tool_name_counts.items())),
+            "self_check_rejections": outcome.self_check_rejections,
+            "self_check_rejected_quote_returned": outcome.self_check_rejected_quote_returned,
+        }
+    )
+    return records
+
+
+class ReceiptLog:
+    """Write one campaign's per-run tool-call receipts to one JSONL file.
+
+    A CLI eval run persists no ``runs`` document, so the receipts the runtime
+    recorded on every ``AuditRunSummary`` lived only in harness memory and left
+    with the process. This writes them beside the published tables, appended as
+    each audit completes rather than held until the end, so a campaign that
+    stops halfway still leaves the receipts of the audits it did run.
+
+    The file is truncated when the campaign starts. Appending to an earlier
+    campaign's file would publish a mixture of runs that no single table
+    describes.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = Path(path)
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def start_campaign(self) -> None:
+        """Truncate the file so it describes this invocation and no other."""
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.write_text("", encoding="utf-8")
+
+    def record_run(
+        self,
+        outcome: RunOutcome,
+        *,
+        mode: AgentMode,
+        lane: str,
+        pair: CasePair,
+        iteration: int,
+    ) -> None:
+        """Append this run's call lines and its summary line."""
+        records = receipt_records(outcome, mode=mode, lane=lane, pair=pair, iteration=iteration)
+        with self._path.open("a", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True))
+                handle.write("\n")
 
 
 def aggregate(
@@ -1110,6 +1235,7 @@ def render_eval_markdown(
     vertex_spend: str,
     verdict: ShipGateVerdict,
     code_revision: str = UNRECORDED_REVISION,
+    receipts_path: str = RECEIPTS_FILE_NAME,
 ) -> str:
     """Render the whole of EVAL.md, including what each number means."""
     ordered = sorted(lane_results.items(), key=lambda item: _section_order(item[0]))
@@ -1149,6 +1275,13 @@ def render_eval_markdown(
         "a deterministic page index of the specification, and registers three "
         "read-only tools. The verification gate runs on every claim in both modes, "
         "and the runtime owns every write in both modes.",
+        "",
+        f"Every model-initiated tool call behind the numbers below is committed to "
+        f"`{receipts_path}`: one JSON line per call, carrying the mode, lane, document "
+        "pair, iteration, run identifier, turn index, tool name and the bounded "
+        "arguments the runtime recorded, followed by one summary line per run. The "
+        "tool-call columns can therefore be checked call by call rather than taken "
+        "on this file's word.",
         "",
         "## What each column means",
         "",
@@ -1554,6 +1687,16 @@ def _parser() -> argparse.ArgumentParser:
         help="Directory for the RFI drafts these runs generate.",
     )
     parser.add_argument(
+        "--receipts-path",
+        type=Path,
+        default=DEFAULT_RECEIPTS_PATH,
+        help=(
+            "JSONL file for this campaign's per-run tool-call receipts "
+            f"(default {RECEIPTS_FILE_NAME} at the repository root). It is "
+            "truncated at the start of every invocation."
+        ),
+    )
+    parser.add_argument(
         "--pause-seconds",
         type=float,
         default=0.0,
@@ -1683,6 +1826,14 @@ def eval_summary_line(lane_result: LaneResult, *, run_date: str, code_revision: 
     )
 
 
+def _published_receipts_path(path: Path) -> str:
+    """Name the receipts file as a reader of the repository would find it."""
+    try:
+        return path.resolve().relative_to(REPOSITORY_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     import os
 
@@ -1702,6 +1853,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     manifest_text = _manifest_text()
     lane_results: dict[tuple[str, str], LaneResult] = {}
     audits_run = 0
+    receipts = ReceiptLog(args.receipts_path)
+    receipts.start_campaign()
 
     for mode in modes:
         for lane in lanes:
@@ -1722,6 +1875,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                     audits_run += 1
                     outcomes[pair.key].append(outcome)
+                    receipts.record_run(
+                        outcome,
+                        mode=mode,
+                        lane=lane.name,
+                        pair=pair,
+                        iteration=iteration,
+                    )
                     print(
                         f"{mode.value}/{lane.name} iteration {iteration}/{args.iterations} "
                         f"{pair.cut_sheet_pdf}: run {outcome.run_id} "
@@ -1753,6 +1913,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             vertex_spend=args.vertex_spend,
             verdict=verdict,
             code_revision=code_revision,
+            receipts_path=_published_receipts_path(receipts.path),
         ),
         encoding="utf-8",
     )

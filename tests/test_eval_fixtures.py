@@ -8,17 +8,22 @@ real model path is never called.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
 
 from scripts.eval_fixtures import (
+    DEFAULT_RECEIPTS_PATH,
     LANE_MESSY,
     LANE_ORIGINAL,
     LANES,
     RATE_LIMIT_BACKOFF_SECONDS,
     README_TABLE_END,
     README_TABLE_START,
+    RECEIPT_RUN,
+    RECEIPT_TOOL_CALL,
+    RECEIPTS_FILE_NAME,
     UNRECORDED_REVISION,
     CasePair,
     CaseResult,
@@ -26,8 +31,10 @@ from scripts.eval_fixtures import (
     EvidencePair,
     LaneResult,
     PairResult,
+    ReceiptLog,
     RunOutcome,
     ShipGateVerdict,
+    _parser,
     aggregate,
     build_run_outcome,
     compare_to_previous,
@@ -42,6 +49,7 @@ from scripts.eval_fixtures import (
     load_evidence_pairs,
     overall_catch_rate,
     read_previous_readme_section,
+    receipt_records,
     render_case_table,
     render_eval_markdown,
     render_pair_table,
@@ -58,6 +66,7 @@ from specguard.models import (
     AuditModelUsage,
     AuditRunSummary,
     DocumentRole,
+    ModelToolCall,
     QuarantinedDocument,
     RunQuarantine,
 )
@@ -1705,3 +1714,182 @@ def test_a_failure_that_is_not_a_rate_limit_is_raised_at_once() -> None:
 
     assert waits == []
     assert len(attempts) == 1
+
+
+# --- 12. The committed per-run tool-call receipts -------------------------
+
+
+def _call(**overrides: object) -> ModelToolCall:
+    values: dict[str, object] = {
+        "turn_index": 0,
+        "tool_name": "extract_pdf_text",
+        "document_role": DocumentRole.SPECIFICATION,
+        "page_number": 17,
+    }
+    values.update(overrides)
+    return ModelToolCall(**values)  # type: ignore[arg-type]
+
+
+def _outcome_with_calls(*calls: ModelToolCall, **overrides: object) -> RunOutcome:
+    """Score one fake summary carrying these recorded calls, as the harness does."""
+    summary = _summary(model_tool_calls=list(calls), **overrides)
+    return build_run_outcome(_pair(FINDING_CASE), summary, [_finding(D01)], model_turns=1)
+
+
+def _written_lines(path: Path) -> list[dict[str, object]]:
+    """Read the receipts file back as the JSONL it claims to be."""
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+def _write(log: ReceiptLog, outcome: RunOutcome, *, iteration: int = 1) -> None:
+    log.record_run(
+        outcome,
+        mode=AgentMode.NAVIGATE,
+        lane=LANE_ORIGINAL,
+        pair=_pair(FINDING_CASE),
+        iteration=iteration,
+    )
+
+
+def test_the_receipts_flag_defaults_to_the_repository_root_file() -> None:
+    """The receipts are committed provenance, so their home is not a temp path."""
+    args = _parser().parse_args([])
+
+    assert args.receipts_path == DEFAULT_RECEIPTS_PATH
+    assert DEFAULT_RECEIPTS_PATH.name == RECEIPTS_FILE_NAME
+    assert _parser().parse_args(["--receipts-path", "elsewhere.jsonl"]).receipts_path == Path(
+        "elsewhere.jsonl"
+    )
+
+
+def test_every_recorded_tool_call_becomes_one_receipt_line(tmp_path: Path) -> None:
+    outcome = _outcome_with_calls(
+        _call(page_number=17),
+        _call(turn_index=1, tool_name="verify_quote", page_number=9, response_verified=False),
+    )
+    log = ReceiptLog(tmp_path / RECEIPTS_FILE_NAME)
+    log.start_campaign()
+
+    _write(log, outcome, iteration=3)
+
+    calls = [line for line in _written_lines(log.path) if line["record"] == RECEIPT_TOOL_CALL]
+    assert [line["call_index"] for line in calls] == [0, 1]
+    assert [line["turn_index"] for line in calls] == [0, 1]
+    assert [line["tool_name"] for line in calls] == ["extract_pdf_text", "verify_quote"]
+    assert [line["page_number"] for line in calls] == [17, 9]
+    assert calls[1]["response_verified"] is False
+    assert all(line["mode"] == "navigate" for line in calls)
+    assert all(line["lane"] == LANE_ORIGINAL for line in calls)
+    assert all(line["pair"] == "spec.pdf::veylan.pdf" for line in calls)
+    assert all(line["iteration"] == 3 for line in calls)
+    assert all(line["run_id"] == "run-1" for line in calls)
+
+
+def test_the_receipt_reuses_the_runtime_bounding_and_adds_no_quote_text(tmp_path: Path) -> None:
+    """The receipt says which quote was checked, never what the quote said."""
+    digest = "a" * 64
+    outcome = _outcome_with_calls(_call(tool_name="verify_quote", quote_sha256=digest))
+    log = ReceiptLog(tmp_path / RECEIPTS_FILE_NAME)
+    log.start_campaign()
+
+    _write(log, outcome)
+
+    call = _written_lines(log.path)[0]
+    assert call["quote_sha256"] == digest
+    assert call["document_role"] == "specification"
+    assert "quote" not in call
+    assert "text" not in call
+
+
+def test_the_per_tool_counts_sum_to_the_total_the_run_line_reports(tmp_path: Path) -> None:
+    outcome = _outcome_with_calls(
+        _call(),
+        _call(turn_index=1),
+        _call(turn_index=1, tool_name="verify_quote"),
+        self_check_rejections=2,
+        self_check_rejected_quote_returned=True,
+    )
+    log = ReceiptLog(tmp_path / RECEIPTS_FILE_NAME)
+    log.start_campaign()
+
+    _write(log, outcome)
+
+    run_line = _written_lines(log.path)[-1]
+    counts: dict[str, int] = run_line["tool_name_counts"]  # type: ignore[assignment]
+    assert run_line["record"] == RECEIPT_RUN
+    assert counts == {"extract_pdf_text": 2, "verify_quote": 1}
+    assert sum(counts.values()) == run_line["model_tool_calls"] == 3
+    assert run_line["self_check_rejections"] == 2
+    assert run_line["self_check_rejected_quote_returned"] is True
+
+
+def test_a_run_that_called_nothing_still_writes_its_summary_line(tmp_path: Path) -> None:
+    """A run absent from the file and a run that called nothing must not read alike."""
+    log = ReceiptLog(tmp_path / RECEIPTS_FILE_NAME)
+    log.start_campaign()
+
+    _write(log, _outcome_with_calls())
+
+    lines = _written_lines(log.path)
+    assert [line["record"] for line in lines] == [RECEIPT_RUN]
+    assert lines[0]["model_tool_calls"] == 0
+    assert lines[0]["tool_name_counts"] == {}
+
+
+def test_each_run_appends_to_what_the_run_before_it_wrote(tmp_path: Path) -> None:
+    log = ReceiptLog(tmp_path / RECEIPTS_FILE_NAME)
+    log.start_campaign()
+
+    _write(log, _outcome_with_calls(_call()), iteration=1)
+    _write(log, _outcome_with_calls(), iteration=2)
+
+    lines = _written_lines(log.path)
+    assert [line["record"] for line in lines] == [
+        RECEIPT_TOOL_CALL,
+        RECEIPT_RUN,
+        RECEIPT_RUN,
+    ]
+    assert [line["iteration"] for line in lines] == [1, 1, 2]
+
+
+def test_a_new_campaign_truncates_the_file_rather_than_appending(tmp_path: Path) -> None:
+    """One file describes one invocation, or the tables above it describe nothing."""
+    log = ReceiptLog(tmp_path / RECEIPTS_FILE_NAME)
+    log.start_campaign()
+    _write(log, _outcome_with_calls(_call()))
+
+    log.start_campaign()
+
+    assert _written_lines(log.path) == []
+    _write(log, _outcome_with_calls())
+    assert len(_written_lines(log.path)) == 1
+
+
+def test_the_run_identifier_on_every_line_is_the_one_the_runtime_assigned() -> None:
+    outcome = _outcome_with_calls(_call(), run_id="run-from-the-runtime")
+
+    records = receipt_records(
+        outcome,
+        mode=AgentMode.FULL_TEXT,
+        lane=LANE_MESSY,
+        pair=_pair(FINDING_CASE),
+        iteration=5,
+    )
+
+    assert [record["run_id"] for record in records] == ["run-from-the-runtime"] * 2
+    assert [record["mode"] for record in records] == ["full_text", "full_text"]
+    assert [record["lane"] for record in records] == [LANE_MESSY, LANE_MESSY]
+
+
+def test_the_eval_method_text_names_the_committed_receipts_file() -> None:
+    assert f"committed to `{RECEIPTS_FILE_NAME}`" in _document()
+    assert "one JSON line per call" in _document()
+    assert "checked call by call" in _document()
+
+
+def test_the_receipts_file_this_harness_writes_does_not_make_the_tree_dirty() -> None:
+    """It is rewritten mid-campaign, so counting it would dirty every measurement."""
+    status = f" M EVAL.md\n M README.md\n M {RECEIPTS_FILE_NAME}\n"
+
+    assert uncommitted_source_paths(status) == []
+    assert format_code_revision("abc1234", status) == "abc1234"
