@@ -347,6 +347,96 @@ def test_a_decoy_match_is_counted_as_a_decoy_and_never_as_an_invention() -> None
     assert outcome.caught_case_ids == frozenset()
 
 
+def test_a_contiguous_tail_of_the_planted_quote_carries_the_same_evidence() -> None:
+    """Evidence equality, not string equality: a shorter span of the same passage."""
+    variant = _finding(D01)
+    variant["cut_sheet_quote"] = {"text": "208V, 3-phase, 4-wire.", "page_number": 1}
+
+    outcome = build_run_outcome(_pair(FINDING_CASE), _summary(), [variant], model_turns=1)
+
+    assert outcome.caught_case_ids == frozenset({"E-02"})
+    assert outcome.unattributed_false_positives == 0
+
+
+def test_a_longer_span_that_contains_the_planted_quote_is_a_catch() -> None:
+    """Containment runs in either direction: a table row label joined to its value."""
+    variant = _finding(D01)
+    variant["cut_sheet_quote"] = {
+        "text": "Rating summary Nominal system: 208V, 3-phase, 4-wire. Main lugs only.",
+        "page_number": 1,
+    }
+
+    outcome = build_run_outcome(_pair(FINDING_CASE), _summary(), [variant], model_turns=1)
+
+    assert outcome.caught_case_ids == frozenset({"E-02"})
+    assert outcome.unattributed_false_positives == 0
+
+
+def test_the_planted_text_on_the_wrong_page_is_not_a_catch() -> None:
+    """The cited page is half of the evidence. The same words elsewhere are not it."""
+    wrong_page = _finding(D01)
+    wrong_page["cut_sheet_quote"] = {"text": D01.cut_sheet_quote, "page_number": 2}
+
+    outcome = build_run_outcome(_pair(FINDING_CASE), _summary(), [wrong_page], model_turns=1)
+
+    assert outcome.caught_case_ids == frozenset()
+    assert outcome.unattributed_false_positives == 1
+
+
+def test_a_quote_that_only_overlaps_the_planted_span_is_not_a_catch() -> None:
+    """Overlap is not containment. Neither string contains the other."""
+    overlap = _finding(D01)
+    overlap["cut_sheet_quote"] = {
+        "text": "3-phase, 4-wire. Main lugs only.",
+        "page_number": 1,
+    }
+
+    outcome = build_run_outcome(_pair(FINDING_CASE), _summary(), [overlap], model_turns=1)
+
+    assert outcome.caught_case_ids == frozenset()
+    assert outcome.unattributed_false_positives == 1
+
+
+def test_an_empty_quote_matches_nothing() -> None:
+    """The empty string is contained by everything under a naive rule. Not here."""
+    empty = _finding(D01)
+    empty["cut_sheet_quote"] = {"text": "", "page_number": 1}
+
+    outcome = build_run_outcome(_pair(FINDING_CASE), _summary(), [empty], model_turns=1)
+
+    assert outcome.caught_case_ids == frozenset()
+    assert outcome.unattributed_false_positives == 1
+
+
+def test_a_span_variant_riding_inside_a_larger_number_is_not_a_catch() -> None:
+    """Containment is checked on the gate's own token boundaries."""
+    riding = _finding(D02)
+    riding["cut_sheet_quote"] = {"text": "Termination rating: 158 deg F.", "page_number": 1}
+    riding["spec_quote"] = {"text": "rated 90 deg C minimum.", "page_number": 5}
+    caught = build_run_outcome(_pair(SECOND_FINDING_CASE), _summary(), [riding], model_turns=1)
+    assert caught.caught_case_ids == frozenset({"E-03"})
+
+    riding["spec_quote"] = {"text": "rated 190 deg C minimum.", "page_number": 5}
+
+    outcome = build_run_outcome(_pair(SECOND_FINDING_CASE), _summary(), [riding], model_turns=1)
+
+    assert outcome.caught_case_ids == frozenset()
+    assert outcome.unattributed_false_positives == 1
+
+
+def test_a_span_variant_of_a_decoy_is_still_counted_as_a_decoy() -> None:
+    """The same rule governs both sides of the ledger, so a variant decoy is no invention."""
+    pair = _pair(FINDING_CASE, DECOY_CASE)
+    variant = _finding(DECOY)
+    variant["cut_sheet_quote"] = {"text": "baked coating", "page_number": 9}
+
+    outcome = build_run_outcome(pair, _summary(), [variant], model_turns=1)
+
+    assert outcome.decoy_hit_case_ids == ("E-18",)
+    assert outcome.unattributed_false_positives == 0
+    assert outcome.caught_case_ids == frozenset()
+
+
 def test_every_persisted_finding_on_a_compliant_case_is_a_false_positive() -> None:
     outcome = build_run_outcome(
         _pair(COMPLIANT_CASE), _summary(), [_finding(D01), _finding(D02)], model_turns=1

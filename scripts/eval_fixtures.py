@@ -7,9 +7,15 @@ written as measured, never rounded up and never dropped.
 
 Definitions used in every number below:
 
-- A run **catches** a planted discrepancy when it persists a finding whose two
-  quotes and two page numbers equal the evidence pair the manifest records for
-  that case. A near miss is not a catch.
+- A run **catches** a planted discrepancy when it persists a finding that
+  carries the same evidence as the pair the manifest records for that case:
+  each side cites the page the manifest records, and the persisted quote and
+  the manifest quote contain one another in either direction once both are
+  normalized by the verification gate's own rule. A longer or shorter span of
+  the same passage on the cited page is the same evidence. A quote that only
+  overlaps the planted passage is not, and the planted words on another page
+  are not. The same rule decides a decoy match, so a span variant of a decoy
+  still counts as a decoy hit rather than as an invention.
 - A **decoy false positive** is a persisted finding that reproduces one of the
   compliant near-match pairs the manifest records as decoys. It is counted
   separately from an invented finding because the two errors are different: one
@@ -47,6 +53,7 @@ from pathlib import Path
 from typing import Any
 
 from specguard.agent import MODEL_ID
+from specguard.gate import contains_on_boundaries, normalize
 from specguard.models import AgentMode, AuditRunSummary
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -502,14 +509,30 @@ def group_cases_into_pairs(cases: Sequence[EvalCase]) -> list[CasePair]:
     ]
 
 
+def _matches_quote(quote: Mapping[str, Any], page: int, manifest_quote: str) -> bool:
+    """True when one persisted quote carries the manifest evidence on its page.
+
+    This is evidence equality, not string equality. The cited page must be the
+    page the manifest records, and the two quotes must contain one another in
+    either direction after ``specguard.gate.normalize``, on the token
+    boundaries the verification gate itself uses. A shorter span of the planted
+    passage is the same evidence; a span that merely overlaps it is not, and
+    neither is the planted text on a page the manifest does not name. An empty
+    quote contains nothing and is contained by nothing, so it matches nothing.
+    """
+    if int(quote.get("page_number", -1)) != page:
+        return False
+    persisted = normalize(str(quote.get("text", "")))
+    planted = normalize(manifest_quote)
+    return contains_on_boundaries(persisted, planted) or contains_on_boundaries(planted, persisted)
+
+
 def _matches_pair(finding: Mapping[str, Any], evidence: EvidencePair) -> bool:
-    spec_quote = finding.get("spec_quote") or {}
-    cut_sheet_quote = finding.get("cut_sheet_quote") or {}
-    return (
-        str(spec_quote.get("text", "")) == evidence.spec_quote
-        and int(spec_quote.get("page_number", -1)) == evidence.spec_page
-        and str(cut_sheet_quote.get("text", "")) == evidence.cut_sheet_quote
-        and int(cut_sheet_quote.get("page_number", -1)) == evidence.cut_sheet_page
+    """True when a persisted finding carries the manifest pair on both sides."""
+    return _matches_quote(
+        finding.get("spec_quote") or {}, evidence.spec_page, evidence.spec_quote
+    ) and _matches_quote(
+        finding.get("cut_sheet_quote") or {}, evidence.cut_sheet_page, evidence.cut_sheet_quote
     )
 
 
