@@ -2286,3 +2286,49 @@ What the persisted records do establish is narrower than the guard asked for, an
 | 7c, self-check totals under the digest rule | ACCEPTED | CLOSED — this is the first measurement taken under the corrected rule, and `EVAL.md` says so. |
 | 7c, `E-13` and `E-15` published misses | ACCEPTED, explained | CLOSED — both causes corrected and both cases re-measured. |
 | 7c, `full_text` registers the write tools | ACCEPTED | OPEN, restated — `full_text` is now the default, and the receipt needed to narrow its registration does not exist. |
+
+### The Codex review, and correction iteration 1
+
+One authorized read-only Codex review ran over `56854f5..b05fc21`, the whole phase diff. Thread `01a03ab0-407b-7d42-834e-19699daf7329`, exit 0. It modified nothing: `git status --short --branch` printed `## phase-7d...origin/phase-7d [ahead 5]` with no file line, and `git diff --exit-code` exited 0 both before and after. The plugin's subagent route was refused by Mason's own agent gate, so the review was invoked directly through the Codex companion in this session, which is what that gate instructs.
+
+It reported no finding against the `M-05` fixture change: `verify_quote` succeeds for both quotes, the manifest SHA-256 matches the committed bytes, and only that one PDF moved. Six findings landed elsewhere. Every one was reproduced before it was acted on, and each fix was checked against the campaign's own persisted records before it was allowed to land.
+
+| Finding | Verified how | Action |
+| --- | --- | --- |
+| High: a page-wide quote matches several pairs that share pages, and first-match ordering credits one case while hiding the others. | `M-04`, `M-07`, and `N-01` all sit on spec page 17 and package page 9; `M-02` and `N-02` share pages 13 and 7. Containment in either direction means a quote containing two planted quotes matches both. | FIXED — a finding matching more than one declared pair is now unattributed, because it names the pages and no single discrepancy. Pinned by two tests, one for two planted pairs and one for a planted pair and a decoy together. |
+| High: malformed persisted input is not fail-closed. | `int(None)` raises TypeError, `int("1")` accepts a string page, `int(1.9)` silently yields page 1, `str(None)` yields the text `"None"`, and a non-mapping quote raises AttributeError on `.get`. | FIXED — `_matches_quote` refuses anything that is not a mapping carrying an integer page and a string text. Pinned by six parametrized cases. |
+| Medium: the numeric-boundary test did not pin boundaries; a plain-`in` matcher passed all seven new tests. | `"rated 90 deg C minimum."` is not a raw substring of `"rated 190 deg C minimum."` either, so the test excluded nothing the weaker rule would have allowed. | FIXED — the test now uses a quote raw containment accepts (`5 A` inside `0.5 A`) that only the gate's token boundaries refuse. A normalization test was added beside it. |
+| Medium: the three provenance tests only exercised the published run's own values, so a renderer hardcoded to them would pass. | Both tests passed `iterations=10` and revision `31ef186` and asserted literal prose. | FIXED — both are parametrized across other iteration counts and revisions, including the unrecorded-revision sentinel. |
+| Low: the manifest-mismatch block listed `E-15` twice without naming the mode. | The generated block flattened `lane_results.values()`, dropping the mode. | FIXED — every line names its mode. Applied to `EVAL.md` by hand; no measured number changed. |
+| High and Medium: stale counts in published docs, all predating this phase. | Seven PDFs in `fixtures/`, and `DETECTORS` holds six names. | FIXED — seven fixtures, six detectors, five detectors added after render mode 3, and the video's eval line corrected from twenty runs to a hundred. README now states that the false-positive parametrization covers the five original-lane fixtures rather than implying it covers every committed fixture. |
+
+**The two scorer fixes were proven neutral before they landed, not assumed to be.** All 173 findings the 100 campaign runs persisted were re-scored offline against the manifest under both the shipped rule and the hardened one. The result: zero quote records that are not a well-formed mapping with an integer page and string text, zero findings matching more than one case, and zero differing tallies between the two rules. Every per-case count reproduces `EVAL.md` exactly, `full_text` `E-13` at 9 of 10 and `E-15` at 8 of 10, `navigate` `E-13` at 10 of 10 and `E-15` at 6 of 10, with decoy and unattributed columns at zero throughout. No re-measurement was needed and none was run.
+
+**The strengthened tests were shown to bite.** Each of the three weakenings the suite exists to exclude — plain-substring containment, coercing malformed records, and first-match attribution — was reintroduced one at a time in a scratch copy of `scripts/eval_fixtures.py`, and each produced exactly one test failure. The file was restored byte-identically afterwards, checked by string comparison.
+
+One correction iteration was used; the second was not needed and no second review ran.
+
+### R3 quality-gate receipts
+
+All commands run in `C:\Users\mcspd\dev\specguard-7d` on arya. Exit codes are unpiped.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `636 passed, 2 warnings`. 620 after R1; the review corrections added 16. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `55 files already formatted` |
+| `git diff --check` | 0 | No whitespace errors. |
+
+### Local commits
+
+- `177716b` — the evidence-equality scorer and its seven tests.
+- `c339e69` — the `M-05` re-specification, the rebuilt package, and the manifest.
+- `31ef186` — the generated column definitions brought to the new rule. This is the revision the campaign measured.
+- `3fb5718` — the campaign output, the default flip, the deploy pin, the generated provenance section, and the README, DEVPOST, and VIDEO-SCRIPT rework.
+- `b05fc21` — this section.
+- `0277526` — the Codex review corrections.
+
+### What this phase leaves for Mason
+
+1. **One deploy from the final tip.** `deploy-specguard.ps1` now pins `SPECGUARD_AGENT_MODE=full_text`. The live revision runs `navigate`, so the deployed service does not match the published default until that deploy runs.
+2. **One decision on the read-only registration.** The receipt the guard asks for does not exist and cannot be recovered for those runs. The options are unchanged from the R2 decision: re-measure `full_text` after making the change, keep the five-tool registration and leave the board row open, or accept the narrower receipt above in place of the one the guard named. Nothing in the ledger guarantee turns on it.
