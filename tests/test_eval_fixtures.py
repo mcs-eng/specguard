@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from scripts.eval_fixtures import (
+    DECIDED_DEFAULT,
     DEFAULT_RECEIPTS_PATH,
     LANE_MESSY,
     LANE_ORIGINAL,
@@ -27,6 +28,7 @@ from scripts.eval_fixtures import (
     UNRECORDED_REVISION,
     CasePair,
     CaseResult,
+    DecidedDefault,
     EvalCase,
     EvidencePair,
     LaneResult,
@@ -1099,6 +1101,42 @@ def test_the_eval_document_carries_the_gate_verdict_verbatim() -> None:
     assert "No condition was relaxed" in document
 
 
+def test_the_eval_document_publishes_a_passing_gate_as_informational() -> None:
+    """The gate's own lines stay unedited; the decision beside them is stated."""
+    verdict = evaluate_ship_gate(_gate_results())
+
+    document = _document(verdict=verdict)
+
+    assert "## Ship gate (informational)" in document
+    assert "SHIP GATE navigate SHIPS as default" in verdict.render()
+    assert verdict.render() in document
+    assert "That verdict is recorded, not acted on." in document
+    assert "The mode-selection question closed with the 2026-08-25 campaign" in document
+    assert "the deployed default is `full_text`" in document
+    assert "not a decision input" in document
+    assert "`navigate` stays selectable" in document
+
+
+def test_the_eval_header_names_the_deployed_default_and_its_decision_date() -> None:
+    document = _document(verdict=evaluate_ship_gate(_gate_results()))
+
+    assert "- Deployed default mode: `full_text`, decided 2026-08-25." in document
+    assert "informational for this campaign" in document
+
+
+def test_the_eval_document_follows_the_decided_default_it_is_given() -> None:
+    """A renderer that hardcoded the mode or the date would pass nothing here."""
+    document = _document(
+        verdict=evaluate_ship_gate(_gate_results()),
+        decided_default=DecidedDefault(mode=AgentMode.NAVIGATE, decided_on="2027-01-02"),
+    )
+
+    assert "- Deployed default mode: `navigate`, decided 2027-01-02." in document
+    assert "closed with the 2027-01-02 campaign" in document
+    assert "the deployed default is `navigate`" in document
+    assert "`full_text` stays selectable" in document
+
+
 @pytest.mark.parametrize(
     ("iterations", "revision"),
     [(10, "31ef186"), (3, "deadbee"), (1, UNRECORDED_REVISION)],
@@ -1207,6 +1245,83 @@ def test_the_eval_document_reports_a_self_check_the_model_ignored() -> None:
 
     assert "self-check rejected 3 quotes, and 1 runs still returned" in document
     assert "The runtime never trusted that check" in document
+
+
+def _named_call(tool_name: str, *, verified: bool | None = None) -> ModelToolCall:
+    return ModelToolCall(turn_index=0, tool_name=tool_name, response_verified=verified)
+
+
+def _lane_with_calls(
+    *calls: ModelToolCall, **overrides: object
+) -> dict[tuple[str, str], LaneResult]:
+    return {
+        (LANE_ORIGINAL, AgentMode.NAVIGATE.value): _lane(
+            pairs=[
+                (
+                    _pair(FINDING_CASE),
+                    [
+                        _outcome(
+                            caught_case_ids=frozenset({"E-02"}),
+                            tool_calls=tuple(calls),
+                            **overrides,
+                        )
+                    ],
+                )
+            ]
+        )
+    }
+
+
+def test_the_eval_document_breaks_down_the_tool_calls_the_receipts_recorded() -> None:
+    """The tool-call column is a total; the receipts say which tools it counted."""
+    document = _document(
+        _lane_with_calls(
+            _named_call("extract_pdf_text"),
+            _named_call("extract_pdf_text"),
+            _named_call("verify_quote", verified=True),
+            _named_call("set_model_response"),
+        )
+    )
+
+    assert (
+        "- The model initiated 4 tool calls in this lane, one receipt line each: "
+        "`extract_pdf_text` 2, `set_model_response` 1, `verify_quote` 1." in document
+    )
+
+
+def test_a_zero_self_check_count_is_explained_by_the_answers_the_receipts_carry() -> None:
+    """Zero rejections has two readings, and only the receipts separate them."""
+    document = _document(
+        _lane_with_calls(
+            _named_call("verify_quote", verified=True),
+            _named_call("verify_quote", verified=True),
+        )
+    )
+
+    assert (
+        "All 2 `verify_quote` calls answered that the quote was on the cited page, "
+        "which is what the self-check rejection column reads zero from: the receipts "
+        "record an answer per call, and no answer was a rejection." in document
+    )
+
+
+def test_the_tool_call_note_reports_the_checks_that_did_reject() -> None:
+    document = _document(
+        _lane_with_calls(
+            _named_call("verify_quote", verified=True),
+            _named_call("verify_quote", verified=False),
+            self_check_rejections=1,
+        )
+    )
+
+    assert "1 of the 2 `verify_quote` calls answered that the quote was not" in document
+    assert "no answer was a rejection" not in document
+
+
+def test_a_lane_whose_model_called_nothing_carries_no_tool_call_note() -> None:
+    document = _document()
+
+    assert "tool calls in this lane, one receipt line each" not in document
 
 
 def test_the_eval_document_says_full_text_registers_tools_and_records_calls() -> None:
@@ -1381,25 +1496,62 @@ def test_the_readme_block_refuses_a_run_that_never_measured_the_shipping_mode() 
         _readme_section(results)
 
 
-def test_the_readme_publishes_the_mode_that_ships() -> None:
+def test_the_readme_publishes_the_decided_default_when_the_gate_passes() -> None:
+    """A passing gate is reported. It does not move the published default.
+
+    The mode-selection question closed before this campaign ran, so the gate
+    output is informational and the README must say so rather than announce a
+    new default on one campaign's numbers.
+    """
     section = _readme_section(verdict=evaluate_ship_gate(_gate_results()))
 
-    assert "in `navigate` mode" in section
-    assert "met every condition of the ship gate and is the deployed default" in section
+    assert "in `full_text` mode" in section
+    assert "This run's ship gate met every condition, and that output is informational" in section
+    assert "the mode-selection question closed with the 2026-08-25 campaign" in section
+    assert "`full_text` is the deployed default" in section
+    assert "no single campaign's gate output changes it" in section
+    assert "`navigate` stays selectable and receipted" in section
+    assert "is the deployed default. EVAL.md publishes both modes." not in section
+    assert "in `navigate` mode" not in section
 
 
-def test_the_readme_says_navigate_did_not_ship_when_the_gate_failed() -> None:
+def test_the_readme_reports_a_gate_that_did_not_meet_every_condition() -> None:
     section = _readme_section(verdict=evaluate_ship_gate(_gate_results(e02_catches=1)))
 
     assert "in `full_text` mode" in section
-    assert "did not meet the ship gate" in section
+    assert "This run's ship gate did not meet every condition" in section
+    assert "the deployed default" in section
 
 
 def test_the_readme_says_the_gate_was_not_evaluated_when_it_could_not_be() -> None:
     section = _readme_section()
 
-    assert "The ship gate was not evaluated for this run" in section
+    assert "This run's ship gate could not be evaluated" in section
     assert "in `full_text` mode" in section
+
+
+def test_the_readme_block_follows_the_decided_default_rather_than_a_hardcoded_mode() -> None:
+    """The default is a value with a date, so a renderer that hardcodes it fails."""
+    section = _readme_section(
+        {
+            (LANE_ORIGINAL, AgentMode.NAVIGATE.value): _one_case_lane(mode=AgentMode.NAVIGATE),
+            (LANE_ORIGINAL, AgentMode.FULL_TEXT.value): _one_case_lane(mode=AgentMode.FULL_TEXT),
+        },
+        decided_default=DecidedDefault(mode=AgentMode.NAVIGATE, decided_on="2027-01-02"),
+    )
+
+    assert "in `navigate` mode" in section
+    assert "closed with the 2027-01-02 campaign" in section
+    assert "`navigate` is the deployed default" in section
+    assert "`full_text` stays selectable and receipted" in section
+
+
+def test_the_decided_default_is_full_text_as_of_the_2026_08_25_campaign() -> None:
+    """The deployed default is a recorded decision, not a per-campaign outcome."""
+    assert DECIDED_DEFAULT.mode is AgentMode.FULL_TEXT
+    assert DECIDED_DEFAULT.decided_on == "2026-08-25"
+    assert DECIDED_DEFAULT.alternate is AgentMode.NAVIGATE
+    assert DecidedDefault(mode=AgentMode.NAVIGATE, decided_on="x").alternate is AgentMode.FULL_TEXT
 
 
 def test_the_readme_section_says_so_when_the_catch_rate_is_short() -> None:

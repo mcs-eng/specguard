@@ -906,6 +906,46 @@ def _run_identifier_lines(results: Sequence[PairResult]) -> list[str]:
     return lines
 
 
+#: The model-facing quote check. Its answers are what the self-check columns
+#: count, so the note that explains those columns reads this tool by name.
+SELF_CHECK_TOOL = "verify_quote"
+
+
+def _tool_call_note(lane_result: LaneResult) -> str | None:
+    """Say what the model actually called, from the receipts rather than prose.
+
+    A self-check rejection count of zero has two readings: nothing rejected, or
+    nothing counted. The receipts separate them, because every call carries the
+    ``verified`` field of the answer it received. The per-tool breakdown is
+    written for the same reason: how much of a document a mode reads is a
+    measured behaviour of that mode, not a claim about it.
+    """
+    calls = [call for pair in lane_result.pairs for run in pair.runs for call in run.tool_calls]
+    if not calls:
+        return None
+    counts = Counter(call.tool_name for call in calls)
+    breakdown = ", ".join(f"`{name}` {count}" for name, count in sorted(counts.items()))
+    note = (
+        f"- The model initiated {len(calls)} tool calls in this lane, one receipt "
+        f"line each: {breakdown}."
+    )
+    checks = [call for call in calls if call.tool_name == SELF_CHECK_TOOL]
+    if not checks:
+        return note
+    verified = sum(1 for call in checks if call.response_verified is True)
+    if verified == len(checks):
+        return (
+            f"{note} All {len(checks)} `{SELF_CHECK_TOOL}` calls answered that the "
+            "quote was on the cited page, which is what the self-check rejection "
+            "column reads zero from: the receipts record an answer per call, and "
+            "no answer was a rejection."
+        )
+    return (
+        f"{note} {len(checks) - verified} of the {len(checks)} `{SELF_CHECK_TOOL}` "
+        "calls answered that the quote was not on the cited page."
+    )
+
+
 def _unexercised_notes(lane_result: LaneResult) -> list[str]:
     """State what these numbers do not cover, so the table is not over-read.
 
@@ -949,6 +989,10 @@ def _unexercised_notes(lane_result: LaneResult) -> list[str]:
             "calls the model chose to make, including the structured-output call ADK "
             "adds for this model."
         )
+    tool_note = _tool_call_note(lane_result)
+    if tool_note is not None:
+        notes.append(tool_note)
+
     rejected = lane_result.self_check_rejections
     kept = lane_result.runs_that_kept_a_rejected_quote
     if rejected == 0:
@@ -997,6 +1041,33 @@ def overall_catch_rate(results: Sequence[CaseResult]) -> float | None:
 
 
 @dataclass(frozen=True)
+class DecidedDefault:
+    """The agent mode the deployed service runs, and when that closed.
+
+    The ship gate below is still evaluated and still printed line by line, but
+    the mode question is no longer open, so the gate no longer selects the
+    published mode. This value does. Recording the decision as data, with the
+    date it closed, keeps the gate's own output unedited: a campaign publishes
+    what the conditions measured and states separately what ships.
+    """
+
+    mode: AgentMode
+    decided_on: str
+
+    @property
+    def alternate(self) -> AgentMode:
+        """The mode that stays selectable but is not the deployed default."""
+        return AgentMode.NAVIGATE if self.mode is AgentMode.FULL_TEXT else AgentMode.FULL_TEXT
+
+
+#: The mode-selection question closed with the 2026-08-25 campaign. The default
+#: remains ``full_text`` regardless of one-run noise in either direction, so a
+#: later campaign's gate output is recorded as informational, not as a decision
+#: input. Changing the deployed default is a decision, taken here in one place.
+DECIDED_DEFAULT = DecidedDefault(mode=AgentMode.FULL_TEXT, decided_on="2026-08-25")
+
+
+@dataclass(frozen=True)
 class ShipGateLine:
     """One fixed condition of the ship gate, and whether this run met it."""
 
@@ -1020,6 +1091,12 @@ class ShipGateVerdict:
 
     @property
     def shipping_mode(self) -> AgentMode:
+        """The mode this gate on its own would select.
+
+        The mode the deployed service actually runs is ``DECIDED_DEFAULT``.
+        This property is the gate's own answer, published beside that decision
+        and never in place of it.
+        """
         return AgentMode.NAVIGATE if self.navigate_ships else AgentMode.FULL_TEXT
 
     def render(self) -> str:
@@ -1237,6 +1314,7 @@ def render_eval_markdown(
     verdict: ShipGateVerdict,
     code_revision: str = UNRECORDED_REVISION,
     receipts_path: str = RECEIPTS_FILE_NAME,
+    decided_default: DecidedDefault = DECIDED_DEFAULT,
 ) -> str:
     """Render the whole of EVAL.md, including what each number means."""
     ordered = sorted(lane_results.items(), key=lambda item: _section_order(item[0]))
@@ -1254,6 +1332,9 @@ def render_eval_markdown(
         f"- Total Vertex spend: {vertex_spend}",
         f"- Sections measured: {len(lane_results)} (one per agent mode and lane)",
         f"- Total real audits: {total_runs}",
+        f"- Deployed default mode: `{decided_default.mode.value}`, decided "
+        f"{decided_default.decided_on}. The ship gate below is published as it "
+        "evaluated and is informational for this campaign.",
         "",
         "Every number below comes from one receipted execution of "
         "`scripts/eval_fixtures.py` against the deployed model path. "
@@ -1347,12 +1428,24 @@ def render_eval_markdown(
     for _, lane_result in ordered:
         lines.extend([render_lane_section(lane_result), ""])
 
-    lines.extend(["## Ship gate", "", "```", verdict.render(), "```", ""])
+    lines.extend(["## Ship gate (informational)", "", "```", verdict.render(), "```", ""])
     lines.append(
         "The conditions above were fixed in the phase work order before any run. A "
         "pure function evaluates them over these results, and the test suite "
         "exercises that same function against known-good and known-bad inputs. No "
         "condition was relaxed and no run was repeated to reach this verdict."
+    )
+    lines.append("")
+    lines.append(
+        "That verdict is recorded, not acted on. The mode-selection question closed "
+        f"with the {decided_default.decided_on} campaign, before this measurement "
+        f"ran: the deployed default is `{decided_default.mode.value}` and it stays "
+        f"`{decided_default.mode.value}` whatever this campaign's gate output says. "
+        "The gate output is an informational reading here, not a decision input, "
+        f"and `{decided_default.alternate.value}` stays selectable with every run "
+        "of it published above and receipted call by call. Publishing a verdict "
+        "that changes nothing is the point: the gate is reported as it evaluated, "
+        "rather than re-run until it agrees with the decision."
     )
 
     failures = [
@@ -1466,14 +1559,16 @@ def render_readme_section(
     verdict: ShipGateVerdict,
     code_revision: str = UNRECORDED_REVISION,
     previous: PreviousRun | None = None,
+    decided_default: DecidedDefault = DECIDED_DEFAULT,
 ) -> str:
     """Render the README block between the eval-table markers.
 
-    The README publishes the mode the deployed service runs. Both modes stay in
-    EVAL.md, so a reader who wants the comparison has it here and the whole
-    comparison there.
+    The README publishes the mode the deployed service runs, which is the
+    decided default rather than whichever mode this campaign's ship gate would
+    have selected. Both modes stay in EVAL.md, with the gate verdict line by
+    line, so a reader who wants the comparison has it there in full.
     """
-    mode = verdict.shipping_mode
+    mode = decided_default.mode
     shipping = [
         lane_results[(lane, mode.value)]
         for lane in (LANE_ORIGINAL, LANE_MESSY)
@@ -1503,21 +1598,19 @@ def render_readme_section(
         else f"{_percent(catch_rate)} across every planted discrepancy"
     )
     if not verdict.evaluable:
-        gate_sentence = (
-            "The ship gate was not evaluated for this run, so the deployed default "
-            "remains full-text mode. EVAL.md records why."
-        )
+        gate_outcome = "This run's ship gate could not be evaluated"
     elif verdict.navigate_ships:
-        gate_sentence = (
-            "Navigation mode met every condition of the ship gate and is the deployed "
-            "default. EVAL.md publishes both modes."
-        )
+        gate_outcome = "This run's ship gate met every condition"
     else:
-        gate_sentence = (
-            "Navigation mode was built and measured and did not meet the ship gate, so "
-            "the deployed default remains full-text mode. EVAL.md publishes both modes "
-            "and the gate verdict line by line."
-        )
+        gate_outcome = "This run's ship gate did not meet every condition"
+    gate_sentence = (
+        f"{gate_outcome}, and that output is informational: the mode-selection "
+        f"question closed with the {decided_default.decided_on} campaign, so "
+        f"`{mode.value}` is the deployed default and no single campaign's gate "
+        f"output changes it. `{decided_default.alternate.value}` stays selectable "
+        "and receipted. EVAL.md publishes both modes and the gate verdict line by "
+        "line."
+    )
     case_table = render_case_table(cases)
     return "\n".join(
         [

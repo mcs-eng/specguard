@@ -9,6 +9,7 @@
 - Total Vertex spend: not visible in the run output
 - Sections measured: 4 (one per agent mode and lane)
 - Total real audits: 100
+- Deployed default mode: `full_text`, decided 2026-08-25. The ship gate below is published as it evaluated and is informational for this campaign.
 
 Every number below comes from one receipted execution of `scripts/eval_fixtures.py` against the deployed model path. The expected outcome of each case is read from the machine-readable blocks in `fixtures/MANIFEST.md`, not from this file.
 
@@ -61,6 +62,7 @@ The self-check columns count calls and their anchor match, which is the correcte
 
 - The verification gate rejected nothing and the runtime retried nothing in this lane. The model cited every quote correctly on the first turn, so the rejection-and-retry loop did not fire. These numbers are therefore not evidence that the loop works. The loop is covered by the test suite, which drives rejections deterministically.
 - This lane ran in `full_text` mode, which sends every page of both documents up front, so the model needs no tool call to read them. The mode registers the same three read-only tools `navigate` registers and neither of the two that write, and the tool-call column records the calls the model chose to make, including the structured-output call ADK adds for this model.
+- The model initiated 70 tool calls in this lane, one receipt line each: `set_model_response` 30, `verify_quote` 40. All 40 `verify_quote` calls answered that the quote was on the cited page, which is what the self-check rejection column reads zero from: the receipts record an answer per call, and no answer was a rejection.
 - The model's own quote self-check rejected nothing in this lane. The self-check therefore changed no answer here, and these numbers are not evidence that it would. The runtime gate ran on every claim regardless.
 - 20 of 20 persisted findings carry `unclassified` severity. Severity classification fell back for those findings and the reason is recorded on each one. A fallback never blocks an audit and never changes verification status.
 
@@ -93,6 +95,7 @@ Run identifiers behind this section:
 
 - The verification gate rejected nothing and the runtime retried nothing in this lane. The model cited every quote correctly on the first turn, so the rejection-and-retry loop did not fire. These numbers are therefore not evidence that the loop works. The loop is covered by the test suite, which drives rejections deterministically.
 - This lane ran in `full_text` mode, which sends every page of both documents up front, so the model needs no tool call to read them. The mode registers the same three read-only tools `navigate` registers and neither of the two that write, and the tool-call column records the calls the model chose to make, including the structured-output call ADK adds for this model.
+- The model initiated 148 tool calls in this lane, one receipt line each: `set_model_response` 10, `verify_quote` 138. All 138 `verify_quote` calls answered that the quote was on the cited page, which is what the self-check rejection column reads zero from: the receipts record an answer per call, and no answer was a rejection.
 - The model's own quote self-check rejected nothing in this lane. The self-check therefore changed no answer here, and these numbers are not evidence that it would. The runtime gate ran on every claim regardless.
 - 60 of 60 persisted findings carry `unclassified` severity. Severity classification fell back for those findings and the reason is recorded on each one. A fallback never blocks an audit and never changes verification status.
 
@@ -119,6 +122,7 @@ Run identifiers behind this section:
 | `asterquay_learning_workshop_specification.pdf` | `veylan_arcworks_208v_altered.pdf` | 10 | 0 | 0 | 0 | 0 | n/a | 0.0 | 0 | 0 |
 
 - The verification gate rejected nothing and the runtime retried nothing in this lane. The model cited every quote correctly on the first turn, so the rejection-and-retry loop did not fire. These numbers are therefore not evidence that the loop works. The loop is covered by the test suite, which drives rejections deterministically.
+- The model initiated 258 tool calls in this lane, one receipt line each: `check_text_integrity` 1, `extract_pdf_text` 187, `set_model_response` 30, `verify_quote` 40. All 40 `verify_quote` calls answered that the quote was on the cited page, which is what the self-check rejection column reads zero from: the receipts record an answer per call, and no answer was a rejection.
 - The model's own quote self-check rejected nothing in this lane. The self-check therefore changed no answer here, and these numbers are not evidence that it would. The runtime gate ran on every claim regardless.
 - 20 of 20 persisted findings carry `unclassified` severity. Severity classification fell back for those findings and the reason is recorded on each one. A fallback never blocks an audit and never changes verification status.
 
@@ -150,6 +154,7 @@ Run identifiers behind this section:
 | `nimbrin_thermal_annex_specification.pdf` | `zarqelune_vantrel_package.pdf` | 10 | 0 | 0 | 0 | 10 | 274534.9 | 27.2 | 0 | 0 |
 
 - The verification gate rejected nothing and the runtime retried nothing in this lane. The model cited every quote correctly on the first turn, so the rejection-and-retry loop did not fire. These numbers are therefore not evidence that the loop works. The loop is covered by the test suite, which drives rejections deterministically.
+- The model initiated 272 tool calls in this lane, one receipt line each: `extract_pdf_text` 108, `set_model_response` 10, `verify_quote` 154. All 154 `verify_quote` calls answered that the quote was on the cited page, which is what the self-check rejection column reads zero from: the receipts record an answer per call, and no answer was a rejection.
 - The model's own quote self-check rejected nothing in this lane. The self-check therefore changed no answer here, and these numbers are not evidence that it would. The runtime gate ran on every claim regardless.
 - 63 of 63 persisted findings carry `unclassified` severity. Severity classification fell back for those findings and the reason is recorded on each one. A fallback never blocks an audit and never changes verification status.
 
@@ -157,7 +162,7 @@ Run identifiers behind this section:
 
 - `zarqelune_vantrel_package.pdf`: `83b6a153ec974234ba84a863a9528e65`, `3c4180ccf8974286b89c0ee1b20f5e21`, `d4ec0737a57f419db579593c22f4d06c`, `a6beed5a9b0c40b7a58fc7fc44b43d96`, `95807c6c72754b648a3c3704144ab044`, `09c5cd0ed2ea4298b669c53dfb7a80bb`, `d98205489a854234ae66059c23ad60bd`, `9f8fefc3586a40b19d6aee9cf64791c6`, `ad8fc3147e0a476e8d182163950526c5`, `4345769231b14904b5a762fd5de9f708`
 
-## Ship gate
+## Ship gate (informational)
 
 ```
 SHIP GATE navigate SHIPS as default
@@ -172,6 +177,8 @@ SHIP GATE navigate SHIPS as default
 ```
 
 The conditions above were fixed in the phase work order before any run. A pure function evaluates them over these results, and the test suite exercises that same function against known-good and known-bad inputs. No condition was relaxed and no run was repeated to reach this verdict.
+
+That verdict is recorded, not acted on. The mode-selection question closed with the 2026-08-25 campaign, before this measurement ran: the deployed default is `full_text` and it stays `full_text` whatever this campaign's gate output says. The gate output is an informational reading here, not a decision input, and `navigate` stays selectable with every run of it published above and receipted call by call. Publishing a verdict that changes nothing is the point: the gate is reported as it evaluated, rather than re-run until it agrees with the decision.
 
 ## Cases that did not match the manifest
 
