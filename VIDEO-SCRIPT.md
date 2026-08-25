@@ -188,7 +188,7 @@ gcloud run services update specguard --region us-central1 --project specguard-ha
 gcloud run services describe specguard --region us-central1 --project specguard-hack --format=yaml | Select-String -Pattern "minScale|SPECGUARD_GEMMA_ENDPOINT|latestReadyRevisionName" -Context 0,1
 ```
 
-5. Endpoint warm-up calls. Confirm the model is attached, then run one warm-up audit through the web UI with the Veylan 208V fixture. The warm-up audit exercises Cloud Run, Vertex Gemini, and the Gemma endpoint in one pass. Check the run page: COMPLETED, one finding, HIGH (or another label) with `google-gemma3-gemma-3-1b-it` under it. If it reads UNCLASSIFIED, read the `severity_reason` in the Firestore console and wait one minute before a second warm-up; the endpoint returned HTTP 502 on 3 of 10 classification calls during the measured eval (EVAL.md, HANDOFF.md Phase 6a).
+5. Endpoint warm-up calls — only if the 08-29 Gemma decision deploys the endpoint; with the sentinel disabled, skip this step. Confirm the model is attached, then run one warm-up audit through the web UI with the Veylan 208V fixture. The warm-up audit exercises Cloud Run, Vertex Gemini, and the Gemma endpoint in one pass. Check the run page: COMPLETED, one finding, HIGH (or another label) with `google-gemma3-gemma-3-1b-it` under it. If it reads UNCLASSIFIED, read the `severity_reason` in the Firestore console and wait one minute before a second warm-up; the endpoint returned HTTP 502 on 3 of 10 classification calls during the Phase 6a measurement (HANDOFF.md, Phase 6a — the current EVAL.md ran sentinel-disabled and makes no classification calls).
 
 ```powershell
 gcloud ai endpoints describe $endpoint --region=us-central1 --project=specguard-hack --format="value(deployedModels[0].id)"
