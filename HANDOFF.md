@@ -2180,7 +2180,7 @@ One correction iteration was used; the second was not needed and no second revie
 
 ### Local quality-gate receipts
 
-All commands ran in `C:\Users\mcspd\dev\specguard-7d` on arya at `d767bc0`. Every exit code is from the unpiped command shown.
+All commands ran in `C:\Users\mcspd\dev\specguard-7d` on arya against a clean tree at `2d1f0ca`. Every exit code is from the unpiped command shown.
 
 | Command | Exit | Result |
 | --- | ---: | --- |
@@ -2188,10 +2188,13 @@ All commands ran in `C:\Users\mcspd\dev\specguard-7d` on arya at `d767bc0`. Ever
 | `uv run ruff check .` | 0 | `All checks passed!` |
 | `uv run ruff format --check .` | 0 | `55 files already formatted` |
 | `git diff --check` | 0 | No whitespace errors. |
+| `uv run python scripts/record_test_count.py` | 0 | README count rewritten from the run's own summary line, at the clean revision `b3c47b1`. |
 
 ### Local commits
 
 - `c0edbdd` — C1: the inspection of both misses, classified with receipts (`REVIEW-7D-MISSES.md`).
 - `1dab5b7` — C2: the miss narrative, the reworded default justification, and the false-positive correction across `README.md`, `EVAL.md`, and `DEVPOST.md`.
 - `d767bc0` — C3: six confirmed Codex findings closed in `specguard/integrity.py`, with ten tests, five fixture builders, the screen-identity bump, and the matching README and board updates.
+- `b3c47b1` — this section.
+- `2d1f0ca` — the recorded test count, regenerated from its own run.
 
