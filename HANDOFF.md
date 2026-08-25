@@ -2121,3 +2121,77 @@ All committed fixtures stay clean on the new detector; the altered fixture still
 | `uv run ruff check .` | 0 | `All checks passed!` |
 | `uv run ruff format --check .` | 0 | `51 files already formatted` |
 | `git diff --check` | 0 | No whitespace errors. |
+
+## Phase 7d-eval — the two published misses inspected, and the redteam review closed
+
+Date: 2026-08-25. Scope: the Phase 7d-eval work order (claude-memory `reference/specguard-work-order-7d-eval-2026-08.md`), built in the worktree `C:\Users\mcspd\dev\specguard-7d` on branch `phase-7d` from the folded tip `fa8e093`. Baseline at that tip: `uv sync` exit 0, `uv run pytest -q` exit 0, `603 passed, 2 warnings`. The gate contract, `specguard/gate.py`, every committed fixture PDF, `fixtures/build_fixtures.py`, every prompt, the page-index constant, and the harness scoring rule are unchanged in this phase. Nothing is pushed, merged, or opened as a PR.
+
+### C1 — what was inspected, and the verdict
+
+The two published messy-lane misses were reconstructed from the persisted Firestore findings of the ten runs `EVAL.md` names for that lane, from deterministic local extraction of the committed fixtures, from the page-18 index line at 240 characters, and from the prompt and harness source. No model run was executed, so the work order's allowance of two diagnostic audits went unused and Vertex spend for the inspection was zero. The full record, with a receipt for every claim, is `REVIEW-7D-MISSES.md`.
+
+The ten runs persisted 60 findings, six per run in every run in both modes. 44 matched a planted pair exactly and were scored as catches. 16 cited the same two pages with an overlapping quote span and were scored as unattributed false positives. None matched a decoy and none matched nothing planted. The 13-and-3 split of those 16 reproduces the `EVAL.md` unattributed counts exactly, which is how the offline classification was checked against the harness.
+
+- **`E-13` is harness mis-scoring.** All ten runs persisted a verified finding for the missing listing on the correct two pages. Four returned the full planted package quote; six returned a contiguous tail of it. `scripts/eval_fixtures.py::_matches_pair` compares the persisted quote text to the planted text with `==`, so those six scored as misses. The runtime found the discrepancy in 10 of 10 runs.
+- **`E-15` is mis-specified against the deployed prompt contract.** No finding cites the governing package page, no finding returns a specification quote about clearance or working space, and the `rejections` collection holds no record for any of the ten runs, so the pair was never attempted rather than attempted and refused. Both governing pages were in front of the model in every navigate run: the package is sent in full in both modes, and the `M-03` and `M-06` specification quotes came back verbatim from page 18 while that page's 240-character index line contains neither, which proves the page was opened through the read-only tool. The package states its clearance as a recommendation, under a heading calling its dimensions nominal and above a line directing that set-out dimensions be coordinated with the project room. Both prompts exclude statements that can both be true.
+
+### Mason's C1 decisions
+
+Recorded in the work order's "C1 decisions" section, which governs C2.
+
+- **`E-13`: action 13-A plus a required rewording.** Keep the measured 40 percent published; disclose the 10-of-10 detection and the exact-span rule beside it. Reword the README sentence justifying the navigate default so it no longer rests on catch rate alone.
+- **`E-15`: action 15-A.** Keep the measured 0 percent published; explain it as a fixture-design finding.
+- **The false-positive wording correction is required** in `EVAL.md` and the `DEVPOST.md` messy-lane line.
+- **13-B is deferred, not rejected.** The metric-definition question is a post-submission decision; `_matches_pair` is untouched here and the deferral is a board row.
+
+### C2 — docs only
+
+No fixture, prompt, scorer, or runtime change, no model run, so no published number changed and no run was repeated. Every new figure is labelled as offline classification of the persisted runs, receipted in `REVIEW-7D-MISSES.md`, and never as a harness measurement. The offline containment projections in that file are explicitly not published as measured numbers.
+
+- `README.md`: the navigate-default sentence now names the strict-rule margin and the quote discipline behind it, 27 exact spans of 30 against 17 of 30 and 3 span variants against 13. A miss narrative and a false-positive paragraph sit after the generated eval block, outside the harness markers, so a regeneration does not overwrite them. The `7c` board row moves from ACCEPTED to ACCEPTED-and-explained, and two rows are added.
+- `EVAL.md`: two hand-written sections after the manifest-mismatch block.
+- `DEVPOST.md`: two bullets after the messy-lane line.
+- `VIDEO-SCRIPT.md`: unchanged. It quotes no miss number and no default justification; checked by grep for `82%`, `77%`, `49%`, `40%`, `0 of 5`, `2 of 5`, `higher catch rate`, and every `E-1x` identifier, which matched nothing.
+
+**One residue is recorded rather than fixed.** `scripts/eval_fixtures.py` rewrites `EVAL.md` in full, so the two hand-written sections are dropped by the next regeneration. No regeneration ran in this phase, so the text stands. The board carries this as an open row; the README disclosure is outside the generated markers and survives.
+
+### C3 — the Codex review, and correction iteration 1
+
+One authorized read-only Codex review ran over `c132585..HEAD`, which is `af3c347` and `1d0728a` — the unreviewed redteam sweep and the `soft_mask_hidden` detector — together with this phase's diff. Session `01a039a5-9a80-75d0-b301-0c308a17b134`, exit 0. It modified nothing: `git status --short --branch` printed `## phase-7d` alone and `git diff --exit-code` exited 0 both before and after, and the review removed its own temporary directories. It reported nothing against the redteam tests or the documentation, and six findings against `specguard/integrity.py`: three P1, three P2.
+
+Every finding was reproduced against the code before it was acted on. Each probe page was screened, and its rendered ink was measured against a baseline page carrying the visible line alone, so a claimed concealment had to be a real one. All six were confirmed.
+
+| Finding | Verified how | Action |
+| --- | --- | --- |
+| P1 `/SMask` written as an indirect reference is not resolved. | `xref_get_key` reported `('xref', '8 0 R')`, so the `dict`-only guard returned clean. The page rendered at baseline ink while extraction still carried the line. | FIXED — both forms resolved. Pinned by `test_a_soft_mask_reached_through_an_indirect_reference_is_flagged`. |
+| P1 An ExtGState with no `/SMask` entry clears the active mask. | A page applying a hiding state then an unrelated one screened clean at baseline ink. | FIXED — an absent entry leaves the mask in force; only `/SMask /None` or a replacement clears it. Pinned with the near-miss `test_an_explicit_smask_none_still_clears_the_active_mask`. |
+| P1 Page resources inherited from a `/Pages` node are not read. | With `/Resources` moved to the parent and cleared on the page, `xref_get_key(page.xref, "Resources/ExtGState")` returned null and the page screened clean at baseline ink. | FIXED — the walk goes up the `/Parent` chain under `MAXIMUM_PAGE_TREE_DEPTH`. Pinned by `test_an_extgstate_inherited_from_the_page_tree_is_resolved`. |
+| P2 An empty mask group is read as black, so a white `/BC` backdrop false-quarantines. | The probe page rendered at three times baseline ink, so its text is visible, and the screen flagged it. | FIXED — an unpainted group takes its `/BC`, falling back to black where `/BC` is absent or unconvertible, so no way past the rule opens. Pinned in both directions. |
+| P2 A soft-mask flag leaves the masked line in `visible_text`. | The committed known-bad page flagged and still carried the concealed line in its readable text, which every other detector removes. | FIXED — masked operands are matched back to spans and excluded; the match can under-exclude and cannot over-exclude, stated in the screening contract. **No model ever read that field:** `AuditTools.check_text_integrity` returns the flag summary and no text, so this was a record-contract defect, not a disclosure to the model. |
+| P2 `SCREEN_ID` still names the five-detector set. | `DETECTORS` holds six names while the constant and its comment read `v2`. | FIXED — `text_layer_integrity_v3`, and the test now ties the version to the detector count. The two `test_web.py` references to `v2` are hand-built export fixtures, deliberately left as historical records the export must carry unchanged. |
+
+One correction iteration was used; the second was not needed and no second review ran. Ten tests and five fixture builders were added, each known-bad paired with the near-miss it must leave alone. One added test was rewritten after it failed: a cyclic `/Parent` chain is refused by PyMuPDF before the screen's own depth bound can fire, so the test now pins which guard actually stops that case rather than claiming the bound does.
+
+### What this phase leaves for Mason
+
+- **The deployed revision no longer matches this branch.** `specguard-00028-wn5` was built from `fa8e093` and carries the pre-correction detector. A deploy is Mason's, and none ran here.
+- **The metric-definition question is open** and deferred past submission, on the board.
+- **The hand-written `EVAL.md` sections do not survive a regeneration**, on the board.
+
+### Local quality-gate receipts
+
+All commands ran in `C:\Users\mcspd\dev\specguard-7d` on arya at `d767bc0`. Every exit code is from the unpiped command shown.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `613 passed, 2 warnings`. The suite was 603 at the baseline tip `fa8e093`. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `55 files already formatted` |
+| `git diff --check` | 0 | No whitespace errors. |
+
+### Local commits
+
+- `c0edbdd` — C1: the inspection of both misses, classified with receipts (`REVIEW-7D-MISSES.md`).
+- `1dab5b7` — C2: the miss narrative, the reworded default justification, and the false-positive correction across `README.md`, `EVAL.md`, and `DEVPOST.md`.
+- `d767bc0` — C3: six confirmed Codex findings closed in `specguard/integrity.py`, with ten tests, five fixture builders, the screen-identity bump, and the matching README and board updates.
+
