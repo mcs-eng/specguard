@@ -23,6 +23,7 @@ from specguard.integrity import check_text_layer
 from tests.fixtures_pdf import (
     write_alpha_pdf,
     write_alpha_soft_mask_pdf,
+    write_black_backdrop_soft_mask_pdf,
     write_cropped_pdf,
     write_edge_cropped_pdf,
     write_fanned_out_xobject_pdf,
@@ -30,6 +31,8 @@ from tests.fixtures_pdf import (
     write_glyph_size_pdf,
     write_image_only_pdf,
     write_image_soft_mask_pdf,
+    write_indirect_soft_mask_pdf,
+    write_inherited_extgstate_soft_mask_pdf,
     write_inline_image_pdf,
     write_invalid_render_mode_pdf,
     write_matrix_scaled_pdf,
@@ -39,8 +42,10 @@ from tests.fixtures_pdf import (
     write_saved_render_mode_pdf,
     write_soft_mask_none_pdf,
     write_soft_mask_pdf,
+    write_soft_mask_then_unrelated_extgstate_pdf,
     write_transparent_fill_stroked_pdf,
     write_transparent_stroke_pdf,
+    write_white_backdrop_soft_mask_pdf,
     write_xobject_render_mode_pdf,
 )
 
@@ -647,8 +652,16 @@ def test_a_report_from_every_detector_is_deterministic(tmp_path: Path) -> None:
 
 
 def test_the_screen_identity_names_the_widened_rule_set() -> None:
-    """The stored screen identity must change when the rule set changes."""
-    assert integrity.SCREEN_ID == "text_layer_integrity_v2"
+    """The stored screen identity must change when the rule set changes.
+
+    The identity went stale once already: the sixth detector landed while the
+    constant still read ``v2``, so a record written with soft-mask coverage was
+    indistinguishable from one written without it. The second assertion ties
+    the version to the number of rules, so a seventh detector fails here rather
+    than shipping under an identity that no longer describes the screen.
+    """
+    assert integrity.SCREEN_ID == "text_layer_integrity_v3"
+    assert integrity.SCREEN_ID.endswith(f"v{len(integrity.DETECTORS) - 3}")
 
 
 # ---------------------------------------------------------------------------
@@ -763,3 +776,180 @@ def test_an_out_of_range_render_mode_operand_is_ignored(tmp_path: Path) -> None:
     path = write_invalid_render_mode_pdf(tmp_path / "badmode.pdf", "Ordinary painted line.")
 
     assert check_text_layer(path).clean is True
+
+
+# ---------------------------------------------------------------------------
+# Corrections from the Phase 7d-eval Codex review
+#
+# Each page below hides its second line from a reader while the text layer
+# still carries it, and each was clean against the first version of the
+# soft-mask rule. The two backdrop pages are the pair that pins the /BC read
+# in both directions.
+# ---------------------------------------------------------------------------
+
+
+def _masked_span(report: integrity.DocumentIntegrityReport) -> integrity.HiddenSpan:
+    """Return the one soft-mask flag on a report, failing if there is none."""
+    return next(
+        span for span in report.hidden_spans if span.detector == integrity.DETECTOR_SOFT_MASK_HIDDEN
+    )
+
+
+def test_a_soft_mask_reached_through_an_indirect_reference_is_flagged(tmp_path: Path) -> None:
+    """``/SMask 9 0 R`` hides text exactly as an inline mask dictionary does.
+
+    PyMuPDF reports the indirect form as an ``xref`` rather than a ``dict``, so
+    a rule that accepted only the inline form returned clean on this page.
+    """
+    path = write_indirect_soft_mask_pdf(tmp_path / "indirect.pdf", "Visible line.", "Masked line.")
+
+    report = check_text_layer(path)
+
+    assert report.detectors == [integrity.DETECTOR_SOFT_MASK_HIDDEN]
+    assert "Masked line." in _masked_span(report).text
+    assert "Masked line." not in report.pages[0].visible_text
+
+
+def test_an_extgstate_without_an_smask_leaves_the_active_mask_in_force(tmp_path: Path) -> None:
+    """A second ``gs`` that names no ``/SMask`` does not clear the first one.
+
+    PDF changes only the parameters an ExtGState carries. Treating a missing
+    ``/SMask`` entry as a cleared mask let ``/GShide gs /GSother gs`` show text
+    under a black mask with nothing flagged.
+    """
+    path = write_soft_mask_then_unrelated_extgstate_pdf(
+        tmp_path / "partial.pdf", "Visible line.", "Masked line."
+    )
+
+    report = check_text_layer(path)
+
+    assert report.detectors == [integrity.DETECTOR_SOFT_MASK_HIDDEN]
+    assert "Masked line." in _masked_span(report).text
+    assert "Masked line." not in report.pages[0].visible_text
+
+
+def test_an_explicit_smask_none_still_clears_the_active_mask(tmp_path: Path) -> None:
+    """The near-miss for the rule above: ``/SMask /None`` does clear the mask.
+
+    Without this page, a rule could pass the test above by never clearing the
+    state at all, which would flag every page that ever applied a mask.
+    """
+    path = write_soft_mask_none_pdf(tmp_path / "none.pdf", "Visible line.", "Ordinary line.")
+
+    assert check_text_layer(path).clean is True
+
+
+def test_an_extgstate_inherited_from_the_page_tree_is_resolved(tmp_path: Path) -> None:
+    """A page may carry no ``/Resources`` of its own and inherit them.
+
+    A viewer walks the ``/Parent`` chain before it draws. A screen that read
+    the page object alone found no ExtGState map, resolved no ``gs`` name, and
+    returned clean on a page whose text a reader cannot see.
+    """
+    path = write_inherited_extgstate_soft_mask_pdf(
+        tmp_path / "inherited.pdf", "Visible line.", "Masked line."
+    )
+
+    report = check_text_layer(path)
+
+    assert report.detectors == [integrity.DETECTOR_SOFT_MASK_HIDDEN]
+    assert "Masked line." in _masked_span(report).text
+    assert "Masked line." not in report.pages[0].visible_text
+
+
+def test_a_white_backdrop_over_an_empty_mask_group_is_not_flagged(tmp_path: Path) -> None:
+    """An empty luminosity group takes its ``/BC`` backdrop, not black.
+
+    At ``/BC[1]`` the mask is fully opaque and the text is visible on the page,
+    so flagging it would quarantine an honest document.
+    """
+    path = write_white_backdrop_soft_mask_pdf(
+        tmp_path / "white.pdf", "Visible line.", "Shown line."
+    )
+
+    report = check_text_layer(path)
+
+    assert report.clean is True
+    assert "Shown line." in report.pages[0].visible_text
+
+
+def test_a_black_backdrop_over_an_empty_mask_group_is_flagged(tmp_path: Path) -> None:
+    """The companion to the white backdrop: ``/BC[0]`` hides what it masks.
+
+    Reading ``/BC`` must not become a way past the rule, so the same empty
+    group over a black backdrop still flags.
+    """
+    path = write_black_backdrop_soft_mask_pdf(
+        tmp_path / "black.pdf", "Visible line.", "Masked line."
+    )
+
+    report = check_text_layer(path)
+
+    assert report.detectors == [integrity.DETECTOR_SOFT_MASK_HIDDEN]
+    assert "backdrop" in _masked_span(report).evidence.lower()
+
+
+def test_an_absent_backdrop_over_an_empty_mask_group_is_flagged(tmp_path: Path) -> None:
+    """With no ``/BC`` at all the backdrop is the black the specification names.
+
+    The rule falls back to black rather than to visible, so an unreadable or
+    missing backdrop cannot be used to escape it.
+    """
+    path = write_soft_mask_pdf(tmp_path / "nobc.pdf", "Visible line.", "Masked line.", 0.0)
+
+    assert check_text_layer(path).detectors == [integrity.DETECTOR_SOFT_MASK_HIDDEN]
+
+
+def test_soft_masked_text_is_kept_out_of_the_readable_text(tmp_path: Path) -> None:
+    """Every detector owes the same contract: a flagged span is not readable text.
+
+    The soft-mask rule raised its flag but contributed no span identity, so the
+    masked line stayed in ``visible_text`` where every other detector removes
+    it.
+    """
+    path = write_soft_mask_pdf(tmp_path / "leak.pdf", "Visible line.", "Masked line.", 0.0)
+
+    page = check_text_layer(path).pages[0]
+
+    assert "Visible line." in page.visible_text
+    assert "Masked line." not in page.visible_text
+
+
+def test_a_visible_soft_masked_page_keeps_its_text_readable(tmp_path: Path) -> None:
+    """The near-miss for the rule above: an unflagged page loses no text.
+
+    Excluding a flagged span must not become excluding any span that a soft
+    mask touched, or a page carrying an honest mask would lose readable text.
+    """
+    path = write_soft_mask_pdf(tmp_path / "bright.pdf", "Visible line.", "Bright line.", 1.0)
+
+    page = check_text_layer(path).pages[0]
+
+    assert page.flagged is False
+    assert "Visible line." in page.visible_text
+    assert "Bright line." in page.visible_text
+
+
+def test_a_cyclic_page_parent_chain_is_refused_rather_than_walked(tmp_path: Path) -> None:
+    """A page tree that points at itself never reaches the resource walk.
+
+    The walk up the ``/Parent`` chain is bounded by
+    ``MAXIMUM_PAGE_TREE_DEPTH``, but the bound is not what stops this case:
+    PyMuPDF refuses a cyclic resource chain while the screen is still reading
+    the page. The screen raises rather than looping, and the model-facing tool
+    reports that as ``document_unreadable``. This pins which of the two guards
+    actually fires.
+    """
+    path = write_inherited_extgstate_soft_mask_pdf(
+        tmp_path / "cycle.pdf", "Visible line.", "Masked line."
+    )
+    document = pymupdf.open(str(path))
+    page_xref = document[0].xref
+    _, parent = document.xref_get_key(page_xref, "Parent")
+    document.xref_set_key(int(parent.split()[0]), "Parent", f"{page_xref} 0 R")
+    looped = tmp_path / "looped.pdf"
+    document.save(str(looped))
+    document.close()
+
+    with pytest.raises(RuntimeError, match="cycle"):
+        check_text_layer(looped)

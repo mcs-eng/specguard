@@ -75,19 +75,39 @@ read.
        mere presence: the mask's group content stream is read, and the rule
        flags only a mask whose painted luminosity is near zero, so a soft mask
        that fades text partly, a lighter mask, and a soft mask applied to an
-       image rather than to text are all left alone. Two limits are disclosed
-       and deliberate: only luminosity masks are evaluated, not alpha masks;
-       and a mask whose backdrop is a shading or an image, whose luminosity this
-       rule cannot bound from constant fills, is not flagged, so an all-dark
-       shading mask is a known gap rather than a false quarantine of the honest
-       gradient and image masks that share that construct.
+       image rather than to text are all left alone.
+
+       The construct has several valid spellings, and the rule reads them all.
+       ``/SMask`` may be an inline dictionary or an indirect reference. An
+       ``ExtGState`` that carries no ``/SMask`` entry changes other parameters
+       and leaves the active mask in force; only ``/SMask /None`` or a
+       replacement mask changes it. A page's ``/ExtGState`` may be inherited
+       from a ``/Pages`` ancestor rather than written on the page, and the
+       walk up that chain is bounded by ``MAXIMUM_PAGE_TREE_DEPTH``. A mask
+       group that paints nothing does not imply a black backdrop: the
+       uncovered area takes the mask's ``/BC``, and the rule reads it, falling
+       back to the black default the specification names where ``/BC`` is
+       absent or written in a form this rule cannot convert. The fallback runs
+       toward flagging, so an unreadable backdrop is not a way past the rule.
+
+       Two limits are disclosed and deliberate: only luminosity masks are
+       evaluated, not alpha masks; and a mask whose backdrop is a shading or an
+       image, whose luminosity this rule cannot bound from constant fills, is
+       not flagged, so an all-dark shading mask is a known gap rather than a
+       false quarantine of the honest gradient and image masks that share that
+       construct.
 
 3. Any flag quarantines. The runtime treats one flag from any detector exactly
    as it treats a render-mode-3 flag: the run stops before any model call.
 4. Visible text. Each page report also carries the text of the spans that no
    detector flagged. On a page with no flag that string is byte-identical to
    ``page.get_text()``, so a clean page is reported exactly as the verification
-   gate reads it.
+   gate reads it. Every detector owes this: a span it flagged is not readable
+   text. The three span rules and the crop-box rule identify their spans
+   directly. The clip-only and soft-mask rules work from the content stream,
+   which carries operands rather than spans, so they match their operands back
+   to spans; a masked operand that matches no span leaves that span readable,
+   which under-excludes rather than removing text no rule flagged.
 5. A flagged page is a disclosure, not a verdict. The screen states that the
    text layer disagrees with the visible page and shows the disagreeing
    evidence. It does not decide why it is there.
@@ -129,6 +149,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
 
 import pymupdf
@@ -138,8 +159,11 @@ from specguard.models import DocumentRole
 
 #: Versioned identity of this screen, stored beside every integrity record so a
 #: later reader knows which rule set produced the evidence. ``v1`` was the
-#: render-mode-3 rule alone; ``v2`` is the five-detector set described above.
-SCREEN_ID = "text_layer_integrity_v2"
+#: render-mode-3 rule alone; ``v2`` was the five-detector set; ``v3`` adds
+#: ``soft_mask_hidden`` and is the six-detector set described above. The
+#: identity moves whenever the rule set does, so a record written under an
+#: earlier screen is never mistaken for one that ran the current rules.
+SCREEN_ID = "text_layer_integrity_v3"
 
 #: Machine-readable reason a run stops before the model reads any text.
 QUARANTINE_REASON = "text_layer_integrity_screen"
@@ -187,6 +211,11 @@ HIDING_RENDER_MODES = (3, 7)
 
 #: How deep the content-stream scan follows ``Do`` into nested Form XObjects.
 MAXIMUM_XOBJECT_DEPTH = 8
+
+#: How far the screen walks a page's ``/Parent`` chain looking for inherited
+#: resources. A page tree deeper than this is pathological, and the bound keeps
+#: a cyclic chain from looping.
+MAXIMUM_PAGE_TREE_DEPTH = 32
 
 #: A luminosity soft mask whose backdrop paints a maximum luminosity below this
 #: value drives the opacity of what it masks to near zero. Text shown under such
@@ -573,33 +602,37 @@ def _clamp01(value: float) -> float:
     return 0.0 if value < 0.0 else 1.0 if value > 1.0 else value
 
 
-def _group_max_luminosity(document: pymupdf.Document, group_xref: int) -> float | None:
-    """Return the maximum luminosity a soft-mask group's constant fills paint.
+def _group_max_luminosity(document: pymupdf.Document, group_xref: int) -> tuple[float | None, bool]:
+    """Return a soft-mask group's maximum painted luminosity, and whether it is bounded.
 
     The mask's opacity at a point is the luminosity of its transparency group's
     backdrop there. This reads the group's content stream and tracks the
-    maximum luminosity of the constant fill colours it actually paints. A group
-    that paints nothing leaves the default black backdrop, luminosity 0.
+    maximum luminosity of the constant fill colours it actually paints.
 
-    Return ``None`` when the luminosity cannot be bounded from constant fills:
-    the group draws a shading or an image, or sets a colour in a colour space
-    this rule does not convert. The caller treats an unbounded group as not a
-    definite hide, so an honest gradient or image mask is never flagged, at the
-    cost of not catching an all-dark shading mask.
+    The first value is that maximum, or ``None`` when the stream paints
+    nothing. A group that paints nothing does not imply a black backdrop: the
+    uncovered area takes the mask's ``/BC`` backdrop colour, which the caller
+    reads, so the two cases are reported apart rather than collapsed.
+
+    The second value is ``False`` when the luminosity cannot be bounded from
+    constant fills: the group draws a shading or an image, or sets a colour in
+    a colour space this rule does not convert. The caller treats an unbounded
+    group as not a definite hide, so an honest gradient or image mask is never
+    flagged, at the cost of not catching an all-dark shading mask.
     """
     try:
         stream = document.xref_stream(group_xref)
     except (RuntimeError, ValueError):
-        return None
+        return (None, False)
     if stream is None:
-        return None
+        return (None, False)
     current = 0.0
     max_luminosity: float | None = None
     unknown_colour = False
     operands: list[object] = []
     for kind, value in _tokenize(stream):
         if kind == "inline_image":
-            return None
+            return (None, False)
         if kind == "name":
             operands.append(f"/{value}")
             continue
@@ -621,38 +654,84 @@ def _group_max_luminosity(document: pymupdf.Document, group_xref: int) -> float 
         elif operator in ("sc", "scn", "cs"):
             unknown_colour = True
         elif operator in ("sh", "Do"):
-            return None
+            return (None, False)
         elif operator in ("f", "F", "f*", "b", "b*", "B", "B*", "s", "S"):
             if unknown_colour:
-                return None
+                return (None, False)
             max_luminosity = current if max_luminosity is None else max(max_luminosity, current)
         operands = []
-    return max_luminosity if max_luminosity is not None else 0.0
+    return (max_luminosity, True)
 
 
-def _soft_mask_hides(document: pymupdf.Document, extgstate_xref: int) -> tuple[bool, str]:
+def _backdrop_luminosity(backdrop: str) -> float | None:
+    """Return the luminosity of a soft mask's ``/BC`` backdrop array, if readable.
+
+    ``/BC`` gives the backdrop colour in the mask group's own colour space, and
+    it fills every area the group does not paint. One component is read as
+    DeviceGray and three as RGB, which are the spaces this rule already
+    converts for a painted fill. Any other form returns ``None``, and the
+    caller then falls back to the black default the specification names, so an
+    unreadable backdrop cannot be used to escape the rule.
+    """
+    components = [token for token in backdrop.strip("[] ").split() if _is_number(token)]
+    if len(components) == 1:
+        return _clamp01(float(components[0]))
+    if len(components) == 3:
+        r, g, b = (_clamp01(float(token)) for token in components)
+        return 0.299 * r + 0.587 * g + 0.114 * b
+    return None
+
+
+def _soft_mask_hides(document: pymupdf.Document, extgstate_xref: int) -> tuple[bool, str] | None:
     """Return whether one ExtGState's soft mask hides what it masks, and why.
 
-    Only a luminosity mask is evaluated. Its group's maximum painted luminosity
-    is read; below the threshold the mask drives opacity to near zero, so text
-    drawn under it is invisible. Alpha masks, ``/None``, and unbounded groups
-    return ``(False, "")``.
+    Return ``None`` when the ExtGState carries no ``/SMask`` entry at all. That
+    is not the same as clearing the mask: an ExtGState that names other
+    parameters leaves the current soft mask in force, so the caller keeps the
+    state it already had rather than treating the state as cleared.
+
+    Only a luminosity mask is evaluated. The mask may be written inline or as
+    an indirect reference, and both forms are resolved. The group's maximum
+    painted luminosity is read; below the threshold the mask drives opacity to
+    near zero, so text drawn under it is invisible. A group that paints nothing
+    takes the mask's ``/BC`` backdrop, defaulting to black where ``/BC`` is
+    absent or unreadable. Alpha masks, ``/None``, and unbounded groups return
+    ``(False, "")``.
     """
-    kind_mask, _ = document.xref_get_key(extgstate_xref, "SMask")
-    if kind_mask != "dict":
+    kind_mask, mask = document.xref_get_key(extgstate_xref, "SMask")
+    if kind_mask == "null":
+        return None
+    # A mask written as an indirect reference is read through its own object;
+    # xref_get_key reports the reference rather than following it.
+    if kind_mask == "xref":
+        mask_xref = int(mask.split()[0])
+        read = partial(document.xref_get_key, mask_xref)
+        subtype, group_key, backdrop_key = "S", "G", "BC"
+    elif kind_mask == "dict":
+        read = partial(document.xref_get_key, extgstate_xref)
+        subtype, group_key, backdrop_key = "SMask/S", "SMask/G", "SMask/BC"
+    else:
         return (False, "")
-    _, subtype = document.xref_get_key(extgstate_xref, "SMask/S")
-    if subtype != "/Luminosity":
+    if read(subtype)[1] != "/Luminosity":
         return (False, "")
-    kind_group, group = document.xref_get_key(extgstate_xref, "SMask/G")
+    kind_group, group = read(group_key)
     if kind_group != "xref":
         return (False, "")
-    max_luminosity = _group_max_luminosity(document, int(group.split()[0]))
-    if max_luminosity is not None and max_luminosity < SOFT_MASK_LUMINOSITY_HIDES_BELOW:
+    painted, bounded = _group_max_luminosity(document, int(group.split()[0]))
+    if not bounded:
+        return (False, "")
+    if painted is not None:
+        effective, source = painted, "paints a maximum backdrop luminosity"
+    else:
+        kind_backdrop, backdrop = read(backdrop_key)
+        from_backdrop = _backdrop_luminosity(backdrop) if kind_backdrop == "array" else None
+        effective = from_backdrop if from_backdrop is not None else 0.0
+        source = "paints nothing, so its /BC backdrop gives a luminosity"
+    if effective < SOFT_MASK_LUMINOSITY_HIDES_BELOW:
         return (
             True,
-            "A luminosity soft mask (ExtGState /SMask) paints a maximum backdrop luminosity of "
-            f"{round(max_luminosity, 3)} of 1.0, below the {SOFT_MASK_LUMINOSITY_HIDES_BELOW} "
+            f"A luminosity soft mask (ExtGState /SMask) {source} of "
+            f"{round(effective, 3)} of 1.0, below the {SOFT_MASK_LUMINOSITY_HIDES_BELOW} "
             "threshold, so text drawn under it is masked to near-zero opacity while the text "
             "layer still carries the characters.",
         )
@@ -699,8 +778,38 @@ class _RenderModeScan:
         return self._named_references(xref, "Resources/XObject")
 
     def _extgstate_resources(self, xref: int) -> dict[str, int]:
-        """Map every ExtGState name a stream can name in ``gs`` to its xref."""
-        return self._named_references(xref, "Resources/ExtGState")
+        """Map every ExtGState name a stream can name in ``gs`` to its xref.
+
+        A page may omit ``/Resources`` and inherit it from a ``/Pages`` node,
+        and a viewer resolves that chain before it draws. Reading the page
+        object alone would return an empty map for such a page, so every
+        ``gs`` on it would go unresolved and a mask on it would go unseen.
+        """
+        return self._named_references(xref, "Resources/ExtGState") or self._inherited_references(
+            xref, "Resources/ExtGState"
+        )
+
+    def _inherited_references(self, xref: int, key: str) -> dict[str, int]:
+        """Read one resource sub-dictionary from the nearest ancestor that has it.
+
+        The walk is bounded by :data:`MAXIMUM_PAGE_TREE_DEPTH` and stops on the
+        first ancestor that yields names, so a cyclic or deep ``/Parent`` chain
+        cannot make this loop.
+        """
+        seen: set[int] = set()
+        current = xref
+        for _ in range(MAXIMUM_PAGE_TREE_DEPTH):
+            kind, parent = self._document.xref_get_key(current, "Parent")
+            if kind != "xref":
+                return {}
+            current = int(parent.split()[0])
+            if current in seen:
+                return {}
+            seen.add(current)
+            names = self._named_references(current, key)
+            if names:
+                return names
+        return {}
 
     def _named_references(self, xref: int, key: str) -> dict[str, int]:
         """Map each name in one resource sub-dictionary to its indirect xref."""
@@ -781,10 +890,15 @@ class _RenderModeScan:
                 name = operands[-1]
                 xref = extgstates.get(name[1:]) if name.startswith("/") else None
                 # An ExtGState that names a soft mask sets it; one that sets
-                # /None or a non-hiding mask clears the hiding state. A `gs`
-                # this scan cannot resolve leaves the state unchanged.
+                # /None or a non-hiding mask clears the hiding state. An
+                # ExtGState carrying no /SMask entry at all changes other
+                # parameters and leaves the mask in force, so it must not clear
+                # the state either. A `gs` this scan cannot resolve is likewise
+                # left unchanged.
                 if xref is not None:
-                    soft_mask = _soft_mask_hides(self._document, xref)
+                    applied = _soft_mask_hides(self._document, xref)
+                    if applied is not None:
+                        soft_mask = applied
             elif operator in ("Tj", "TJ", "'", '"'):
                 shown = operands[-1] if operands and isinstance(operands[-1], bytes) else None
                 if shown is not None:
@@ -1002,17 +1116,32 @@ def _content_stream_flags(
     return flags, concealed
 
 
-def _soft_mask_flags(scan: _RenderModeScan, page_number: int) -> list[HiddenSpan]:
+def _soft_mask_flags(
+    scan: _RenderModeScan, page: pymupdf.Page, page_number: int
+) -> tuple[list[HiddenSpan], set[tuple[str, tuple[float, float, float, float]]]]:
     """Flag text the content stream shows under a hiding luminosity soft mask.
 
     The scan has already run for this page inside ``_content_stream_flags``, so
     this reads the text it collected under a hiding soft mask. All such text on
     the page becomes one flag, because the mask hides every operand it covers
     and the evidence is the same for each.
+
+    The second return value names the masked spans so the caller can keep them
+    out of the page's readable text, the same contract every other detector
+    holds. A soft mask leaves no mark on a span's own character flags, so the
+    spans are matched by their exact text against the operands the scan read
+    under the mask. A span whose text the scan did not show under the mask is
+    left readable, so this can under-exclude but never over-exclude.
     """
     shown = scan.soft_mask_shown
     if not shown:
-        return []
+        return [], set()
+    masked_operands = {text.strip() for text, _ in shown if text.strip()}
+    concealed = {
+        (span["text"], _rounded_bbox(span["bbox"]))
+        for span in _text_spans(page)
+        if span["text"].strip() in masked_operands
+    }
     return [
         HiddenSpan(
             page_number=page_number,
@@ -1020,7 +1149,7 @@ def _soft_mask_flags(scan: _RenderModeScan, page_number: int) -> list[HiddenSpan
             evidence=shown[0][1],
             text=" ".join(text for text, _ in shown),
         )
-    ]
+    ], concealed
 
 
 def _screen_crop_boxes(data: bytes) -> dict[int, list[HiddenSpan]]:
@@ -1093,10 +1222,11 @@ def _screen_page(
     mode_3_seen = any(flag.detector == DETECTOR_RENDER_MODE_3 for flag in ordered)
     content_flags, concealed = _content_stream_flags(scan, page, page_number, mode_3_seen)
     ordered.extend(content_flags)
-    ordered.extend(_soft_mask_flags(scan, page_number))
+    soft_mask_flags, masked = _soft_mask_flags(scan, page, page_number)
+    ordered.extend(soft_mask_flags)
     ordered.extend(crop_flags)
 
-    unreadable = hidden_by_span_rule | concealed
+    unreadable = hidden_by_span_rule | concealed | masked
     visible_lines: list[str] = []
     for block in page.get_text("dict")["blocks"]:
         if block.get("type", 0) != 0:

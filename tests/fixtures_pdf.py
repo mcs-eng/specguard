@@ -644,3 +644,182 @@ def write_image_soft_mask_pdf(path: Path, text: str) -> Path:
     document.save(str(path))
     document.close()
     return path
+
+
+# ---------------------------------------------------------------------------
+# Corrections from the Phase 7d-eval Codex review
+# ---------------------------------------------------------------------------
+
+
+def _black_luminosity_group(document: pymupdf.Document) -> int:
+    """Return a transparency group whose stream paints the whole box black."""
+    group = document.get_new_xref()
+    document.update_object(
+        group,
+        "<</Type/XObject/Subtype/Form"
+        f"/BBox[0 0 {PAGE_WIDTH} {PAGE_HEIGHT}]"
+        "/Group<</S/Transparency/CS/DeviceGray>>>>",
+    )
+    document.update_stream(group, f"0.0 g 0 0 {PAGE_WIDTH} {PAGE_HEIGHT} re f".encode())
+    return group
+
+
+def _empty_luminosity_group(document: pymupdf.Document) -> int:
+    """Return a transparency group whose stream paints nothing at all."""
+    group = document.get_new_xref()
+    document.update_object(
+        group,
+        "<</Type/XObject/Subtype/Form"
+        f"/BBox[0 0 {PAGE_WIDTH} {PAGE_HEIGHT}]"
+        "/Group<</S/Transparency/CS/DeviceGray>>>>",
+    )
+    document.update_stream(group, b"")
+    return group
+
+
+def _show_under(reference: bytes, names: bytes, text: str) -> bytes:
+    """Return operators that show ``text`` after applying each named ExtGState."""
+    payload = text.encode("latin-1").replace(b"\\", b"\\\\").replace(b"(", b"\\(")
+    return (
+        b"q "
+        + names
+        + b" BT /"
+        + reference
+        + b" 11 Tf 1 0 0 1 72 130 Tm ("
+        + payload
+        + b") Tj ET Q"
+    )
+
+
+def write_indirect_soft_mask_pdf(path: Path, visible: str, concealed: str) -> Path:
+    """Write one page whose hiding mask is reached through an indirect reference.
+
+    ``/SMask`` may be an indirect object rather than an inline dictionary. Both
+    forms are valid and both hide the text, so a rule that reads only the
+    inline form leaves this one clean.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_text((72.0, 100.0), visible, fontname=SIMPLE_FONT, fontsize=11)
+    reference = _font_reference(page).encode("latin-1")
+    group = _black_luminosity_group(document)
+    mask = document.get_new_xref()
+    document.update_object(mask, f"<</S/Luminosity/G {group} 0 R>>")
+    graphics_state = document.get_new_xref()
+    document.update_object(graphics_state, f"<</Type/ExtGState/SMask {mask} 0 R>>")
+    _wire_extgstate(document, page, f"<</GSsm {graphics_state} 0 R>>")
+    _append_operators(document, page, _show_under(reference, b"/GSsm gs", concealed))
+    document.save(str(path))
+    document.close()
+    return path
+
+
+def write_soft_mask_then_unrelated_extgstate_pdf(path: Path, visible: str, concealed: str) -> Path:
+    """Write one page that applies a hiding mask, then an ExtGState with no ``/SMask``.
+
+    An ExtGState that sets other parameters leaves the current soft mask in
+    force. Only an explicit ``/SMask /None`` or a replacement mask changes it,
+    so the text after the second ``gs`` is still hidden.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_text((72.0, 100.0), visible, fontname=SIMPLE_FONT, fontsize=11)
+    reference = _font_reference(page).encode("latin-1")
+    group = _black_luminosity_group(document)
+    hiding = document.get_new_xref()
+    document.update_object(hiding, f"<</Type/ExtGState/SMask<</S/Luminosity/G {group} 0 R>>>>")
+    unrelated = document.get_new_xref()
+    document.update_object(unrelated, "<</Type/ExtGState/LW 1>>")
+    _wire_extgstate(document, page, f"<</GShide {hiding} 0 R/GSother {unrelated} 0 R>>")
+    _append_operators(document, page, _show_under(reference, b"/GShide gs /GSother gs", concealed))
+    document.save(str(path))
+    document.close()
+    return path
+
+
+def write_inherited_extgstate_soft_mask_pdf(path: Path, visible: str, concealed: str) -> Path:
+    """Write one page that inherits its ``/ExtGState`` from the ``/Pages`` node.
+
+    A page may omit ``/Resources`` entirely; a viewer then reads it from the
+    nearest ancestor before it draws. A screen that reads the page object alone
+    resolves no ``gs`` name on such a page.
+    """
+    staged = path.with_name(f"{path.stem}-staged.pdf")
+    document = pymupdf.open()
+    page = document.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_text((72.0, 100.0), visible, fontname=SIMPLE_FONT, fontsize=11)
+    reference = _font_reference(page).encode("latin-1")
+    group = _black_luminosity_group(document)
+    graphics_state = document.get_new_xref()
+    document.update_object(
+        graphics_state, f"<</Type/ExtGState/SMask<</S/Luminosity/G {group} 0 R>>>>"
+    )
+    _wire_extgstate(document, page, f"<</GSsm {graphics_state} 0 R>>")
+    _append_operators(document, page, _show_under(reference, b"/GSsm gs", concealed))
+    document.save(str(staged))
+    document.close()
+
+    # Move the page's own /Resources on to its /Pages parent, then clear it, so
+    # the resources reach the page only through inheritance.
+    document = pymupdf.open(str(staged))
+    page = document[0]
+    kind, raw = document.xref_get_key(page.xref, "Resources")
+    resources = raw if kind != "xref" else document.xref_object(int(raw.split()[0]))
+    parent_kind, parent = document.xref_get_key(page.xref, "Parent")
+    if parent_kind != "xref":  # pragma: no cover - PyMuPDF always writes a /Pages parent
+        raise RuntimeError("the staged page has no /Pages parent to inherit from")
+    document.xref_set_key(int(parent.split()[0]), "Resources", resources)
+    document.xref_set_key(page.xref, "Resources", "null")
+    document.save(str(path))
+    document.close()
+    staged.unlink()
+    return path
+
+
+def write_white_backdrop_soft_mask_pdf(path: Path, visible: str, shown: str) -> Path:
+    """Write one page whose luminosity mask paints nothing over a white ``/BC``.
+
+    The group's stream is empty, so every point takes the mask's ``/BC``
+    backdrop. At ``[1]`` that backdrop is white, the mask is fully opaque, and
+    ``shown`` is visible on the page. It is the near-miss that a rule reading
+    an empty group as black would quarantine.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_text((72.0, 100.0), visible, fontname=SIMPLE_FONT, fontsize=11)
+    reference = _font_reference(page).encode("latin-1")
+    group = _empty_luminosity_group(document)
+    graphics_state = document.get_new_xref()
+    document.update_object(
+        graphics_state,
+        f"<</Type/ExtGState/SMask<</S/Luminosity/G {group} 0 R/BC[1]>>>>",
+    )
+    _wire_extgstate(document, page, f"<</GSsm {graphics_state} 0 R>>")
+    _append_operators(document, page, _show_under(reference, b"/GSsm gs", shown))
+    document.save(str(path))
+    document.close()
+    return path
+
+
+def write_black_backdrop_soft_mask_pdf(path: Path, visible: str, concealed: str) -> Path:
+    """Write one page whose empty luminosity mask carries a black ``/BC``.
+
+    The companion to the white-backdrop page: an empty group over ``[0]`` is
+    black everywhere, so the text under it is hidden and must still flag. It
+    pins that reading ``/BC`` did not open a way past the rule.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_text((72.0, 100.0), visible, fontname=SIMPLE_FONT, fontsize=11)
+    reference = _font_reference(page).encode("latin-1")
+    group = _empty_luminosity_group(document)
+    graphics_state = document.get_new_xref()
+    document.update_object(
+        graphics_state,
+        f"<</Type/ExtGState/SMask<</S/Luminosity/G {group} 0 R/BC[0]>>>>",
+    )
+    _wire_extgstate(document, page, f"<</GSsm {graphics_state} 0 R>>")
+    _append_operators(document, page, _show_under(reference, b"/GSsm gs", concealed))
+    document.save(str(path))
+    document.close()
+    return path
