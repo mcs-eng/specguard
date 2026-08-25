@@ -1116,10 +1116,10 @@ def render_eval_markdown(
         "",
         "One audit runs per document pair per iteration, and every case declared "
         "against that pair is scored from that one run. The messy package lane "
-        "declares nine cases against one document pair, so five iterations are five "
-        "audits, not forty-five. Auditing the same pair once per case would measure "
-        "a workflow no reviewer performs and would multiply the spend by the number "
-        "of planted discrepancies.",
+        f"declares nine cases against one document pair, so {iterations} iterations "
+        f"are {iterations} audits, not {iterations * 9}. Auditing the same pair once "
+        "per case would measure a workflow no reviewer performs and would multiply "
+        "the spend by the number of planted discrepancies.",
         "",
         "The two agent modes differ only in what the model is shown and which tools "
         "it may call. `full_text` sends every page of both documents up front and "
@@ -1168,6 +1168,23 @@ def render_eval_markdown(
         "it, this is the honest measure of whether the self-check changed anything.",
         "- **Severity distribution** counts the Gemma severity labels across every "
         "persisted finding of that case.",
+        "",
+        "## What these numbers supersede",
+        "",
+        "This file is written in full by `scripts/eval_fixtures.py` on every run. "
+        "Nothing in it is carried forward by hand, so a section that stood in an "
+        "earlier edition and is absent here was not preserved: it was replaced by "
+        f"this measurement. These numbers were measured at {iterations} audits per "
+        f"document pair on code revision `{code_revision}`. Any earlier published "
+        "measurement taken at a different iteration count, a different code "
+        "revision, or under a different scoring rule is superseded by this one, not "
+        "corrected by it. The two records describe different runs and are not "
+        "comparable cell by cell.",
+        "",
+        "The self-check columns count calls and their anchor match, which is the "
+        "corrected counting rule. An earlier edition counted distinct quote digests, "
+        "so a model that checked the same quote twice was counted once. Every "
+        "self-check number in this edition was measured under the corrected rule.",
         "",
     ]
 

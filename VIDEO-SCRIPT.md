@@ -13,9 +13,9 @@ Drafted 2026-08-21 from the Video section of PLAN.md. Shot times are targets. Th
 
 ## Honesty boundary for the whole video
 
-- The agent proposes; the runtime disposes. In navigate mode the model reads specification pages and checks quotes through read-only tools, and the run page lists every call it made. Say the model "read the pages through tools"; do not say it owns the pipeline or performs the verification, because the runtime re-verifies every claim and owns every write.
+- The agent proposes; the runtime disposes. The deployed default is full-text mode: the model receives every page of both documents up front. The run page still lists every tool call the model chose to make. Say the model "proposed the claim"; do not say it owns the pipeline or performs the verification, because the runtime re-verifies every claim and owns every write. Navigate mode is built, measured, and selectable, and it is the mode to describe if a judge asks what happens when a specification is too large to send in one prompt. Do not describe the live demo as navigating by tool.
 - "VERIFIED" means the quoted characters were found on the cited page. Do not say "verified as correct" or "confirmed accurate".
-- The rejection-and-retry loop almost never fires live: across the 40 model-reaching runs in the 2026-08-23 measurement (EVAL.md) the gate rejected one claim. It is proven by the test suite and shown from pytest on camera. Never imply it fires in the live demo. The live "blocked before the model" beat is the integrity quarantine, which is deterministic.
+- The rejection-and-retry loop does not fire live: across the 80 model-reaching runs in the 2026-08-25 measurement (EVAL.md) the gate rejected nothing, because the model cited every quote correctly on the first turn. It is proven by the test suite and shown from pytest on camera. Never imply it fires in the live demo. The live "blocked before the model" beat is the integrity quarantine, which is deterministic.
 - SHA-256 is chain-of-custody metadata. Do not call it proof of accuracy.
 - The Gemma label is advisory and falls back to UNCLASSIFIED with a recorded reason when the endpoint is down. Say "advisory" on camera. The endpoint is up only for the shoot; a judge auditing later sees the fallback state.
 - The eval numbers are five fictional fixtures, 20 runs. Do not call them accuracy on real submittals.
@@ -31,7 +31,7 @@ Use these to size narration over waits. No receipt exists in HANDOFF.md for end-
 | Web audit, same delta, warm revision, Gemma endpoint up | 10.7 s | run `72e1e439…` |
 | Web audit, same delta, warm revision, Gemma endpoint up | 12.2 s | run `1c94812c…` |
 | Gemma endpoint worst case when it returns 502 | up to 3 attempts x 15 s timeout plus 2 s sleeps, about 50 s, then fallback | `specguard/severity.py` |
-| Quarantine of the altered fixture | no model call; seconds | EVAL.md E-04, 0 model calls in 5 runs |
+| Quarantine of the altered fixture | no model call; seconds | EVAL.md E-04, 0 model calls in 10 runs per mode |
 | `uv run pytest -q tests/test_gate.py` | 59 passed in 0.79 s | local, 2026-08-21 |
 | `uv run pytest -q tests/test_gate.py tests/test_agent.py` | 66 passed in 9.35 s | local, 2026-08-21 |
 | `uv run pytest -q` (whole suite) | 254 passed in 43.03 s | local, 2026-08-21 |
@@ -53,9 +53,9 @@ Narration is written at about 150 words per minute. Word counts are in brackets.
 ### Shot 2, 0:30 to 1:00. Architecture. Separate cut.
 
 - On screen: the README architecture diagram (rendered Mermaid) for 20 s; then 5 s on the Cloud Run console service page showing `specguard`, the live revision, and the `.run.app` URL; then 5 s on the Vertex AI endpoints page showing `specguard-gemma` deployed. These two console shots are the "backend runs on Google Cloud" proof the rules ask for.
-- Narration [80]: "One Google ADK agent on Gemini 3.7 Flash reads the submitted document, navigates the specification by tool, and proposes claims, each with a verbatim quote and a page number from each document. Everything around it is deterministic and the model cannot skip it: an integrity screen on both text layers before the model reads anything, a log of every page the model opened, a gate that must find each quote on its cited page, one bounded retry, the gate again at write time into Firestore, and the RFI draft. A Gemma endpoint adds an advisory severity label. It all runs on Cloud Run."
+- Narration [80]: "One Google ADK agent on Gemini 3.7 Flash reads both documents and proposes claims, each with a verbatim quote and a page number from each one. Everything around it is deterministic and the model cannot skip it: an integrity screen on both text layers before the model reads anything, a log of every tool call the model made, a gate that must find each quote on its cited page, one bounded retry, the gate again at write time into Firestore, and the RFI draft. A Gemma endpoint adds an advisory severity label. It all runs on Cloud Run."
 - Pre-staged: README open at the diagram; Cloud Run and Vertex console tabs signed in.
-- Honesty boundary: "proposes" and "reads by tool" for the model, "cannot skip" for the runtime. The recorded tool calls are the receipt for "navigates by tool"; do not claim the model performs the verification.
+- Honesty boundary: "proposes" for the model, "cannot skip" for the runtime. The recorded tool calls are the receipt for what the model actually did; do not claim the model performs the verification.
 
 ### Shot 3, 1:00 to about 3:00. CONTINUOUS SEGMENT. One unbroken recording.
 
@@ -71,7 +71,7 @@ The recording starts on the landing page with an empty "Recent runs" list (ledge
 #### 3b, 1:12 to about 1:40. The wait.
 
 - On screen: the running panel. Real latency, 10 to 50 s.
-- Narration over the wait [80]: "While that runs: the runtime has already screened both text layers for hidden spans. It sent the submitted document with one-based page markers plus a page index of the specification, and the model opens specification pages through a read-only tool; the run page will list every page it read. The model returns structured claims. For each claim the gate normalizes the quote and the cited page the same way and requires a contiguous match on token boundaries. No fuzzy matching, no edit distance, no other page. A miss is a rejection."
+- Narration over the wait [80]: "While that runs: the runtime has already screened both text layers for hidden spans. It sent every page of both documents with one-based page markers, and the run page will list any tool call the model chose to make. The model returns structured claims. For each claim the gate normalizes the quote and the cited page the same way and requires a contiguous match on token boundaries. No fuzzy matching, no edit distance, no other page. A miss is a rejection."
 - If the wait outlasts the narration, hold on the panel. Fallback filler line [25]: "The model step is the only part of this run whose duration the server cannot report, so the page shows the wait as a wait rather than animate a guess."
 - Honesty boundary: describe the runtime's actions, not the model's reasoning.
 

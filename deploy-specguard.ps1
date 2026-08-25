@@ -19,7 +19,7 @@ $deployArguments = @(
     "--concurrency"
     "2"
     "--set-env-vars"
-    "SPECGUARD_PROJECT=specguard-hack,SPECGUARD_RUNS_BUCKET=specguard-hack-runs,SPECGUARD_GEMMA_ENDPOINT=disabled,SPECGUARD_TRUST_FORWARDED_FOR=1,SPECGUARD_AGENT_MODE=navigate"
+    "SPECGUARD_PROJECT=specguard-hack,SPECGUARD_RUNS_BUCKET=specguard-hack-runs,SPECGUARD_GEMMA_ENDPOINT=disabled,SPECGUARD_TRUST_FORWARDED_FOR=1,SPECGUARD_AGENT_MODE=full_text"
     "--set-secrets"
     "SPECGUARD_DEMO_PASSPHRASE=specguard-demo-passphrase:latest,SPECGUARD_GEMMA_KEY=specguard-gemma-key:latest"
     "--project"

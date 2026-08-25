@@ -960,6 +960,32 @@ def test_the_eval_document_carries_the_gate_verdict_verbatim() -> None:
     assert "No condition was relaxed" in document
 
 
+def test_the_eval_document_says_what_it_supersedes_and_names_the_measurement() -> None:
+    """A regeneration replaces this file in full, so it must say so itself."""
+    document = _document(iterations=10, code_revision="31ef186")
+
+    assert "## What these numbers supersede" in document
+    assert "written in full by `scripts/eval_fixtures.py` on every run" in document
+    assert "measured at 10 audits per document pair on code revision `31ef186`" in document
+    assert "superseded by this one, not corrected by it" in document
+
+
+def test_the_eval_document_names_the_corrected_self_check_counting_rule() -> None:
+    """The earlier edition counted digests. The reader must be told which rule ran."""
+    document = _document()
+
+    assert "corrected counting rule" in document
+    assert "counted distinct quote digests" in document
+
+
+def test_the_method_section_states_the_audit_arithmetic_of_the_run_it_describes() -> None:
+    """The nine-case pair claim is arithmetic, so it must follow the iteration count."""
+    document = _document(iterations=10)
+
+    assert "so 10 iterations are 10 audits, not 90" in document
+    assert "not forty-five" not in document
+
+
 def test_the_eval_document_publishes_a_short_catch_rate_as_measured() -> None:
     results = {(LANE_ORIGINAL, AgentMode.NAVIGATE.value): _one_case_lane(catches=3, iterations=4)}
 
