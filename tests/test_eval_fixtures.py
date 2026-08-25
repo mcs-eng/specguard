@@ -1214,10 +1214,23 @@ def test_the_eval_document_says_full_text_registers_tools_and_records_calls() ->
         {(LANE_ORIGINAL, AgentMode.FULL_TEXT.value): _one_case_lane(mode=AgentMode.FULL_TEXT)}
     )
 
-    assert "The mode still registers all five tools" in document
+    assert "the same three read-only tools `navigate` registers" in document
+    assert "neither of the two that write" in document
+    assert "all five tools" not in document
     assert "the calls the model chose to make" in document
     assert "zero by construction" not in document
     assert "self-check rejected nothing in this lane" in document
+
+
+def test_the_method_text_says_both_modes_register_the_same_read_only_tools() -> None:
+    """The method section stated the old five-tool registration; it must not now."""
+    document = _document()
+
+    assert (
+        "Both modes register the same three read-only tools and neither of the two "
+        "that write" in document
+    )
+    assert "five tools" not in document
 
 
 def test_the_eval_document_names_every_severity_fallback() -> None:

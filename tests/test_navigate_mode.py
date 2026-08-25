@@ -261,7 +261,8 @@ def test_navigate_registers_no_tool_that_writes(tmp_path: Path) -> None:
     assert "persist_integrity_finding" not in names
 
 
-def test_full_text_still_registers_all_five_tools(tmp_path: Path) -> None:
+def test_full_text_registers_the_same_three_read_only_tools(tmp_path: Path) -> None:
+    """full_text registered the two write tools until this surface was narrowed."""
     spec, cut_sheet = _documents(tmp_path)
     tools = _tools(tmp_path, spec, cut_sheet)
 
@@ -271,9 +272,38 @@ def test_full_text_still_registers_all_five_tools(tmp_path: Path) -> None:
         "check_text_integrity",
         "extract_pdf_text",
         "verify_quote",
-        "persist_finding",
-        "draft_rfi",
     ]
+    assert all(isinstance(tool.__self__, ModelFacingAuditTools) for tool in agent.tools)
+
+
+def test_both_modes_expose_one_identical_read_only_model_facing_surface(
+    tmp_path: Path,
+) -> None:
+    """The model-facing surface is a property of the runtime, not of the mode.
+
+    A write tool registered in one mode and not the other would mean the
+    guarantee that the runtime owns every write depended on a deployment
+    setting. It does not: neither mode registers either write tool.
+    """
+    spec, cut_sheet = _documents(tmp_path)
+    tools = _tools(tmp_path, spec, cut_sheet)
+
+    surfaces = {
+        mode: registered_tools(tools, mode) for mode in (AgentMode.FULL_TEXT, AgentMode.NAVIGATE)
+    }
+    names = {mode: [tool.__name__ for tool in surface] for mode, surface in surfaces.items()}
+
+    assert names[AgentMode.FULL_TEXT] == names[AgentMode.NAVIGATE]
+    assert names[AgentMode.FULL_TEXT] == [
+        "check_text_integrity",
+        "extract_pdf_text",
+        "verify_quote",
+    ]
+    for surface in surfaces.values():
+        assert all(isinstance(tool.__self__, ModelFacingAuditTools) for tool in surface)
+        assert {"persist_finding", "draft_rfi", "persist_integrity_finding"}.isdisjoint(
+            tool.__name__ for tool in surface
+        )
 
 
 def test_the_model_facing_surface_exposes_only_the_read_only_tools(tmp_path: Path) -> None:

@@ -944,9 +944,10 @@ def _unexercised_notes(lane_result: LaneResult) -> list[str]:
         notes.append(
             "- This lane ran in `full_text` mode, which sends every page of both "
             "documents up front, so the model needs no tool call to read them. The "
-            "mode still registers all five tools, and the tool-call column records "
-            "the calls the model chose to make, including the structured-output "
-            "call ADK adds for this model."
+            "mode registers the same three read-only tools `navigate` registers and "
+            "neither of the two that write, and the tool-call column records the "
+            "calls the model chose to make, including the structured-output call ADK "
+            "adds for this model."
         )
     rejected = lane_result.self_check_rejections
     kept = lane_result.runs_that_kept_a_rejected_quote
@@ -1268,13 +1269,12 @@ def render_eval_markdown(
         "per case would measure a workflow no reviewer performs and would multiply "
         "the spend by the number of planted discrepancies.",
         "",
-        "The two agent modes differ only in what the model is shown and which tools "
-        "it may call. `full_text` sends every page of both documents up front and "
-        "needs no tool call, though all five tools stay registered. `navigate` "
-        "sends the submitted document in full plus "
-        "a deterministic page index of the specification, and registers three "
-        "read-only tools. The verification gate runs on every claim in both modes, "
-        "and the runtime owns every write in both modes.",
+        "The two agent modes differ only in what the model is shown. `full_text` "
+        "sends every page of both documents up front and needs no tool call. "
+        "`navigate` sends the submitted document in full plus a deterministic page "
+        "index of the specification. Both modes register the same three read-only "
+        "tools and neither of the two that write. The verification gate runs on "
+        "every claim in both modes, and the runtime owns every write in both modes.",
         "",
         f"Every model-initiated tool call behind the numbers below is committed to "
         f"`{receipts_path}`: one JSON line per call, carrying the mode, lane, document "

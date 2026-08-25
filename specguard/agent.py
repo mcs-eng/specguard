@@ -1,4 +1,4 @@
-"""One ADK agent and the bounded audit loop around its five tools."""
+"""One ADK agent and the bounded audit loop around its read-only tools."""
 
 from __future__ import annotations
 
@@ -100,27 +100,28 @@ def load_audit_prompt(agent_mode: AgentMode = AgentMode.FULL_TEXT) -> str:
 def registered_tools(tools: AuditTools, agent_mode: AgentMode) -> list[Any]:
     """Return the tool list one mode registers to the model.
 
-    ``full_text`` registers all five tools, unchanged. ``navigate`` registers
-    the three read-only tools on
+    Both modes register the same three read-only tools on
     :class:`specguard.tools.ModelFacingAuditTools` and neither of the two that
     write. A tool-using model that can reach ``persist_finding`` or
     ``draft_rfi`` can write before the runtime has verified anything, and no
     runtime path wants a model-initiated write or RFI. The agent reads; the
     runtime writes.
+
+    ``full_text`` registered all five until this surface was narrowed. Nothing
+    about the write path changed with it: the runtime called those two methods
+    directly then and calls them directly now, and the verification gate still
+    runs at write time inside each. What changed is that a model turn can no
+    longer reach either one.
+
+    ``agent_mode`` no longer selects between two lists. It stays in the
+    signature because the caller names the mode it is building, and because a
+    mode that needs a different read-only surface would select it here.
     """
-    if agent_mode is AgentMode.NAVIGATE:
-        model_facing = tools.model_facing_tools()
-        return [
-            model_facing.check_text_integrity,
-            model_facing.extract_pdf_text,
-            model_facing.verify_quote,
-        ]
+    model_facing = tools.model_facing_tools()
     return [
-        tools.check_text_integrity,
-        tools.extract_pdf_text,
-        tools.verify_quote,
-        tools.persist_finding,
-        tools.draft_rfi,
+        model_facing.check_text_integrity,
+        model_facing.extract_pdf_text,
+        model_facing.verify_quote,
     ]
 
 
@@ -447,10 +448,9 @@ class AuditRuntime:
     2. The verification gate runs on every quoted anchor, and again at write
        time inside the persistence tool.
 
-    ``agent_mode`` changes only what the model is shown and which tools it may
-    call. Both controls above run identically in either mode, and in
-    ``navigate`` mode the runtime still owns every write: the model is
-    registered no tool that can write.
+    ``agent_mode`` changes only what the model is shown. Both controls above
+    run identically in either mode, and in both modes the runtime owns every
+    write: the model is registered no tool that can write.
     """
 
     def __init__(

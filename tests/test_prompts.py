@@ -305,4 +305,4 @@ def test_no_registered_tool_description_names_a_fixture(tmp_path: Path) -> None:
     }
 
     assert leaks == {name: [] for name in leaks}
-    assert len(leaks) == 8
+    assert len(leaks) == 6

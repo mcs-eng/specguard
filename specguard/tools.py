@@ -138,7 +138,7 @@ class AuditTools:
         return self._model_integrity_checks
 
     def model_facing_tools(self) -> ModelFacingAuditTools:
-        """Return the read-only surface that navigate mode registers to the model."""
+        """Return the read-only surface both agent modes register to the model."""
         return ModelFacingAuditTools(self)
 
     def extract_pdf_text_for_model(self, document_role: str, page_number: int) -> dict[str, Any]:
@@ -170,7 +170,7 @@ class AuditTools:
         """Resolve one drafted RFI's filesystem path for the deterministic runtime.
 
         This is the second channel for the RFI path, and it is not one of the
-        five registered agent tools, so no model turn can reach it. The model
+        registered agent tools, so no model turn can reach it. The model
         receives the opaque identifier from :meth:`draft_rfi` and nothing else;
         the runtime exchanges that identifier for the ephemeral path here.
         Return ``None`` for an identifier this tool set did not issue.
@@ -676,7 +676,7 @@ class AuditTools:
 
 
 class ModelFacingAuditTools:
-    """The read-only tool surface navigate mode registers to the model.
+    """The read-only tool surface both agent modes register to the model.
 
     Three of :class:`AuditTools` methods are here and three are not. The three
     that are missing are the ones that write: ``persist_finding``,

@@ -253,7 +253,8 @@ def test_verify_quote_tool_refuses_a_path_or_unknown_role(tmp_path: Path) -> Non
     }
 
 
-def test_agent_owns_exactly_the_five_required_tools(tmp_path: Path) -> None:
+def test_agent_owns_exactly_the_three_read_only_tools(tmp_path: Path) -> None:
+    """The five tools are the runtime's. Three of them are the model's."""
     client = FakeFirestoreClient()
     spec, cut_sheet = _source_pdfs(tmp_path)
     agent = create_adk_agent(_tools(tmp_path, client, spec, cut_sheet), project_id="test-project")
@@ -261,8 +262,6 @@ def test_agent_owns_exactly_the_five_required_tools(tmp_path: Path) -> None:
         "check_text_integrity",
         "extract_pdf_text",
         "verify_quote",
-        "persist_finding",
-        "draft_rfi",
     ]
 
 
@@ -558,8 +557,6 @@ def test_no_model_registered_tool_returns_hidden_span_text(tmp_path: Path) -> No
     assert scanned == [
         "check_text_integrity",
         "verify_quote",
-        "persist_finding",
-        "draft_rfi",
     ]
     assert hidden_line not in str(tools.check_text_integrity("submitted_document"))
     assert hidden_line not in str(tools.verify_quote("Requirement alpha.", 1, "specification"))
@@ -680,10 +677,9 @@ def test_no_model_registered_tool_returns_the_rfi_filesystem_path(tmp_path: Path
         "check_text_integrity",
         "extract_pdf_text",
         "verify_quote",
-        "persist_finding",
-        "draft_rfi",
     ]
     assert "rfi_path_for" not in registered
+    assert "draft_rfi" not in registered
     results = [
         str(tools.check_text_integrity("specification")),
         str(tools.extract_pdf_text("specification", 1)),
