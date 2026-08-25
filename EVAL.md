@@ -1,7 +1,7 @@
 # SpecGuard measured evaluation
 
 - Date: 2026-08-25
-- Code revision these numbers describe: `31ef186`
+- Code revision these numbers describe: `8900a76`
 - Iterations per document pair: 10
 - Audit model: `gemini-3.7-flash` via Vertex AI
 - Severity model, measured from the persisted findings: none recorded on any persisted finding
@@ -16,7 +16,9 @@ Every number below comes from one receipted execution of `scripts/eval_fixtures.
 
 One audit runs per document pair per iteration, and every case declared against that pair is scored from that one run. The messy package lane declares nine cases against one document pair, so 10 iterations are 10 audits, not 90. Auditing the same pair once per case would measure a workflow no reviewer performs and would multiply the spend by the number of planted discrepancies.
 
-The two agent modes differ only in what the model is shown and which tools it may call. `full_text` sends every page of both documents up front and needs no tool call, though all five tools stay registered. `navigate` sends the submitted document in full plus a deterministic page index of the specification, and registers three read-only tools. The verification gate runs on every claim in both modes, and the runtime owns every write in both modes.
+The two agent modes differ only in what the model is shown. `full_text` sends every page of both documents up front and needs no tool call. `navigate` sends the submitted document in full plus a deterministic page index of the specification. Both modes register the same three read-only tools and neither of the two that write. The verification gate runs on every claim in both modes, and the runtime owns every write in both modes.
+
+Every model-initiated tool call behind the numbers below is committed to `EVAL-RECEIPTS.jsonl`: one JSON line per call, carrying the mode, lane, document pair, iteration, run identifier, turn index, tool name and the bounded arguments the runtime recorded, followed by one summary line per run. The tool-call columns can therefore be checked call by call rather than taken on this file's word.
 
 ## What each column means
 
@@ -35,7 +37,7 @@ The two agent modes differ only in what the model is shown and which tools it ma
 
 ## What these numbers supersede
 
-This file is written in full by `scripts/eval_fixtures.py` on every run. Nothing in it is carried forward by hand, so a section that stood in an earlier edition and is absent here was not preserved: it was replaced by this measurement. These numbers were measured at 10 audits per document pair on code revision `31ef186`. Any earlier published measurement taken at a different iteration count, a different code revision, or under a different scoring rule is superseded by this one, not corrected by it. The two records describe different runs and are not comparable cell by cell.
+This file is written in full by `scripts/eval_fixtures.py` on every run. Nothing in it is carried forward by hand, so a section that stood in an earlier edition and is absent here was not preserved: it was replaced by this measurement. These numbers were measured at 10 audits per document pair on code revision `8900a76`. Any earlier published measurement taken at a different iteration count, a different code revision, or under a different scoring rule is superseded by this one, not corrected by it. The two records describe different runs and are not comparable cell by cell.
 
 The self-check columns count calls and their anchor match, which is the corrected counting rule. An earlier edition counted distinct quote digests, so a model that checked the same quote twice was counted once. Every self-check number in this edition was measured under the corrected rule.
 
@@ -52,22 +54,22 @@ The self-check columns count calls and their anchor match, which is the correcte
 
 | Specification | Submitted document | Runs | Unattributed false positives | Rejections | Retries | Model turns | Mean prompt tokens | Model tool calls per run | Self-check rejections | Runs that returned a rejected quote |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `asterquay_learning_workshop_specification.pdf` | `caldra_meridian_480v_switchboard.pdf` | 10 | 0 | 0 | 0 | 10 | 4544.0 | 1.0 | 0 | 0 |
-| `asterquay_learning_workshop_specification.pdf` | `veylan_arcworks_208v_switchboard.pdf` | 10 | 0 | 0 | 0 | 10 | 16831.2 | 3.8 | 11 | 0 |
-| `asterquay_learning_workshop_specification.pdf` | `torven_70c_termination_switchboard.pdf` | 10 | 0 | 0 | 0 | 10 | 18324.0 | 4.3 | 22 | 0 |
+| `asterquay_learning_workshop_specification.pdf` | `caldra_meridian_480v_switchboard.pdf` | 10 | 0 | 0 | 0 | 10 | 3562.0 | 1.0 | 0 | 0 |
+| `asterquay_learning_workshop_specification.pdf` | `veylan_arcworks_208v_switchboard.pdf` | 10 | 0 | 0 | 0 | 10 | 9768.3 | 3.0 | 0 | 0 |
+| `asterquay_learning_workshop_specification.pdf` | `torven_70c_termination_switchboard.pdf` | 10 | 0 | 0 | 0 | 10 | 8975.0 | 3.0 | 0 | 0 |
 | `asterquay_learning_workshop_specification.pdf` | `veylan_arcworks_208v_altered.pdf` | 10 | 0 | 0 | 0 | 0 | n/a | 0.0 | 0 | 0 |
 
 - The verification gate rejected nothing and the runtime retried nothing in this lane. The model cited every quote correctly on the first turn, so the rejection-and-retry loop did not fire. These numbers are therefore not evidence that the loop works. The loop is covered by the test suite, which drives rejections deterministically.
-- This lane ran in `full_text` mode, which sends every page of both documents up front, so the model needs no tool call to read them. The mode still registers all five tools, and the tool-call column records the calls the model chose to make, including the structured-output call ADK adds for this model.
-- The model's own quote self-check rejected 33 quotes, and 0 runs still returned a quote their own check had rejected. The runtime never trusted that check: its gate ran on every claim, and again before any write.
+- This lane ran in `full_text` mode, which sends every page of both documents up front, so the model needs no tool call to read them. The mode registers the same three read-only tools `navigate` registers and neither of the two that write, and the tool-call column records the calls the model chose to make, including the structured-output call ADK adds for this model.
+- The model's own quote self-check rejected nothing in this lane. The self-check therefore changed no answer here, and these numbers are not evidence that it would. The runtime gate ran on every claim regardless.
 - 20 of 20 persisted findings carry `unclassified` severity. Severity classification fell back for those findings and the reason is recorded on each one. A fallback never blocks an audit and never changes verification status.
 
 Run identifiers behind this section:
 
-- `caldra_meridian_480v_switchboard.pdf`: `380be6c7419f470897c58f1f944e12d8`, `679fa9c4c6d145af8f34158f9dff4c68`, `34152f29230043769c296d322ae09c25`, `6c0a90b31a66495fb131edf4002b9333`, `6259049d5e14425a85a70035b725b28e`, `50028dcd515c49f7a599021cea88ff26`, `cd99e9469c0445d691c51e26aa691e87`, `411c5c3426fc437d8685e5270cbaafad`, `33b4143545c445cb97b1b8b64a455b4c`, `e3b9e489e85d498ca4c6b4c8f2422c13`
-- `veylan_arcworks_208v_switchboard.pdf`: `9e6038298c044337b7087725a82c6f6c`, `a39cec5b0d4c4093bf623fdce4d692a2`, `19a971d0e5a347479bbd094ebf64068e`, `19258b0536fe47a4b0a32ce9c00d4a82`, `739aa18d024a4d76a00f081012697168`, `cdf8da1a6afa40e4acfce8e50a91b636`, `2e6f4fee900c4b379bdc9e91ddedf62a`, `e7e03cd45aa34d87a929721059c5ef7a`, `6f63a9aa5a644e5abfc4e99e68b7e259`, `8333cfe1ff9d4713b2b776ebc500aab7`
-- `torven_70c_termination_switchboard.pdf`: `978ea5bb33f64fd884336af60449c395`, `8c2f199dc27c4f2a9692de813f1a4c20`, `2a98ba4d2c0f440ebb0844535d709408`, `a6437adeba974198a4ab22ef33c84645`, `e91f57c3095f4650a17d78eb7db4a7c0`, `f8f2f968e36f4414b2a7cc649dc8a847`, `a537d88906a14207aa137e9540e08ef1`, `378352bafddc46ab87687725450c005e`, `8cc9ba0b881f4317aaee271a141dd839`, `8f2ffe50d2ae4ee484a744ad0703a9cb`
-- `veylan_arcworks_208v_altered.pdf`: `72f4861ce9ae4f408530d1fe42713183`, `6ae55adfb64e4c77805eda8cb9d8ae52`, `b587631d5dbd435e8af2baa64dd3ea5a`, `771ad8436e634d07b033ff6662283fd8`, `11072b1ff1654d9e9891b479aa8fe41c`, `1564bf5d5e86474083839e162f7c0c89`, `83b8d0bd6ce04df4bbb297f1b57cb39b`, `93dad022b6f547459e4da3080582515a`, `d641661951f24a048621632539283fb8`, `017bf516c4d348429c9e5da8507e4544`
+- `caldra_meridian_480v_switchboard.pdf`: `335a3d255d6d4326bfca2d8c13a7e217`, `30bd2d7de213469db3677b2e2988ebcd`, `90f80098d89f41668ee0ac31ccb98e88`, `f506dbabee6c40be9438bd98114e891f`, `d9bebc8e261542f5946bbe936a641118`, `dcae6e621868413884fff9de1b42731a`, `6ce5e71ae6414af6a75a1f7560bb681e`, `66dabc87e00a4197b05f41f8577be9da`, `0b539abf2a824b4eb3329b79b9e34c9b`, `0f01e8a418f841d38c887845c676a0a1`
+- `veylan_arcworks_208v_switchboard.pdf`: `def34309ac5745e692bc80b107266085`, `bcbb1f0336d24194ac90f0d2d8bb8265`, `03ba6d7665df485d995dc9c5348940e1`, `1558bf2f192e4f23a7753084ac437f74`, `031e119f91a246e2924dc8e1a9717cfa`, `2996f488e1394f46a546111dcfe4db18`, `936de3cc22454bc8b19f80288044c03e`, `92254cba71d74d5ba70adec21b77d792`, `1b9fbb1a7727436ba2c37dc3916cab58`, `5d36634e538843179eb62c3b739f5f82`
+- `torven_70c_termination_switchboard.pdf`: `3d7745da2228495da5c4af8e497f7ebf`, `aff641bd11994e28b9e3708d7ef44720`, `8a77fb7c4f414eb1a0d1204af6069de8`, `79b07ec3c5124eab83d28f1d814c7ac1`, `fe6b16ca1e66476db3088ee3d4145086`, `6a3f352af80c4e1c83b5c1c460b3b9df`, `4cd0112e7c884abcb44824f385e49a0d`, `2b327520708048599aef427f63b1b71d`, `17d412ecc8cb47e29d9f51e582246dd7`, `f407e2fce17d476ba53f567559768a63`
+- `veylan_arcworks_208v_altered.pdf`: `d786a774719e4eefb4dbcd42b7f9528c`, `4f51bcfe5e5545e581b0d5f01fd92415`, `bd647e07d8dc4650b73ed878e7ce2a5b`, `b8837cc032d44691bd07d8e1c7eeedef`, `924f7e93f8d84e4e96f2095f1356aa3e`, `03b9401d091f454fb1b14a82d5719345`, `ed90749ecdac4b49aa13bcdb98f9de4f`, `0c94e82cfb27479fb3102ad805b29990`, `b37430ba909749c4ae2d48d1f1ca048d`, `2f1e7b3b784c4448ab35be4fab81c275`
 
 ## Results — `full_text` mode, messy package lane
 
@@ -77,9 +79,9 @@ Run identifiers behind this section:
 | --- | --- | --- | ---: | ---: | ---: | --- |
 | `E-11` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 10 |
 | `E-12` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 10 |
-| `E-13` | `zarqelune_vantrel_package.pdf` | `finding` | 90% | 0 | 0% | unclassified 9 |
+| `E-13` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 10 |
 | `E-14` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 10 |
-| `E-15` | `zarqelune_vantrel_package.pdf` | `finding` | 80% | 0 | 0% | unclassified 8 |
+| `E-15` | `zarqelune_vantrel_package.pdf` | `finding` | 0% | 0 | 0% | no findings |
 | `E-16` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 10 |
 | `E-17` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 10 |
 | `E-18` | `zarqelune_vantrel_package.pdf` | `no_finding` | n/a | 0 | 0% | no findings |
@@ -87,16 +89,16 @@ Run identifiers behind this section:
 
 | Specification | Submitted document | Runs | Unattributed false positives | Rejections | Retries | Model turns | Mean prompt tokens | Model tool calls per run | Self-check rejections | Runs that returned a rejected quote |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `nimbrin_thermal_annex_specification.pdf` | `zarqelune_vantrel_package.pdf` | 10 | 0 | 0 | 0 | 10 | 258667.6 | 21.4 | 20 | 0 |
+| `nimbrin_thermal_annex_specification.pdf` | `zarqelune_vantrel_package.pdf` | 10 | 0 | 0 | 0 | 10 | 152424.8 | 14.8 | 0 | 0 |
 
 - The verification gate rejected nothing and the runtime retried nothing in this lane. The model cited every quote correctly on the first turn, so the rejection-and-retry loop did not fire. These numbers are therefore not evidence that the loop works. The loop is covered by the test suite, which drives rejections deterministically.
-- This lane ran in `full_text` mode, which sends every page of both documents up front, so the model needs no tool call to read them. The mode still registers all five tools, and the tool-call column records the calls the model chose to make, including the structured-output call ADK adds for this model.
-- The model's own quote self-check rejected 20 quotes, and 0 runs still returned a quote their own check had rejected. The runtime never trusted that check: its gate ran on every claim, and again before any write.
-- 67 of 67 persisted findings carry `unclassified` severity. Severity classification fell back for those findings and the reason is recorded on each one. A fallback never blocks an audit and never changes verification status.
+- This lane ran in `full_text` mode, which sends every page of both documents up front, so the model needs no tool call to read them. The mode registers the same three read-only tools `navigate` registers and neither of the two that write, and the tool-call column records the calls the model chose to make, including the structured-output call ADK adds for this model.
+- The model's own quote self-check rejected nothing in this lane. The self-check therefore changed no answer here, and these numbers are not evidence that it would. The runtime gate ran on every claim regardless.
+- 60 of 60 persisted findings carry `unclassified` severity. Severity classification fell back for those findings and the reason is recorded on each one. A fallback never blocks an audit and never changes verification status.
 
 Run identifiers behind this section:
 
-- `zarqelune_vantrel_package.pdf`: `07c19062352f4268b70fd5051ad9e1f7`, `1092e97bacb54baf9bff8d692e2e7186`, `0f9611e6328a4d7585461e20c777471b`, `e25070421ab046db84ef29c870b07044`, `c9d2a80996c1431a8bdc2eb12672b562`, `7d6fa72a381844ceafba3f6717fc5155`, `c224585696f94734a6a4b8f54bd6db1e`, `bc6516c4a8e44db0b9ec95bb82a5a4a2`, `2f62ff0d95d04c0aa4e014ef571b540a`, `351cf73be6194f78a39a185d4f73193a`
+- `zarqelune_vantrel_package.pdf`: `efeef01a74a84246a17e867ef72c4047`, `98da3c752edf47b8a40b56cf362e9edc`, `db0a4cc0b4af4da09b92fc5cf5d1f1d9`, `5ccff812d979417ba3bffdf54263e161`, `5713ad9f17b549f7b2b3f1c8f4f4ff80`, `ba82af1c150945c8800e217868d3f995`, `8c69c68f80ed42689b80ff8dd876263d`, `b84b1ecb113e4b60ab1c63273ec73822`, `f0fdac46a03347bb9dbf54817bab291c`, `5931684f6ae24a64a614b71bbed8a589`
 
 ## Results — `navigate` mode, original four-case lane
 
@@ -111,9 +113,9 @@ Run identifiers behind this section:
 
 | Specification | Submitted document | Runs | Unattributed false positives | Rejections | Retries | Model turns | Mean prompt tokens | Model tool calls per run | Self-check rejections | Runs that returned a rejected quote |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `asterquay_learning_workshop_specification.pdf` | `caldra_meridian_480v_switchboard.pdf` | 10 | 0 | 0 | 0 | 10 | 28686.4 | 7.9 | 0 | 0 |
-| `asterquay_learning_workshop_specification.pdf` | `veylan_arcworks_208v_switchboard.pdf` | 10 | 0 | 0 | 0 | 10 | 28617.7 | 8.8 | 0 | 0 |
-| `asterquay_learning_workshop_specification.pdf` | `torven_70c_termination_switchboard.pdf` | 10 | 0 | 0 | 0 | 10 | 32992.1 | 9.7 | 0 | 0 |
+| `asterquay_learning_workshop_specification.pdf` | `caldra_meridian_480v_switchboard.pdf` | 10 | 0 | 0 | 0 | 10 | 26025.8 | 7.3 | 0 | 0 |
+| `asterquay_learning_workshop_specification.pdf` | `veylan_arcworks_208v_switchboard.pdf` | 10 | 0 | 0 | 0 | 10 | 36246.7 | 9.0 | 0 | 0 |
+| `asterquay_learning_workshop_specification.pdf` | `torven_70c_termination_switchboard.pdf` | 10 | 0 | 0 | 0 | 10 | 32976.7 | 9.5 | 0 | 0 |
 | `asterquay_learning_workshop_specification.pdf` | `veylan_arcworks_208v_altered.pdf` | 10 | 0 | 0 | 0 | 0 | n/a | 0.0 | 0 | 0 |
 
 - The verification gate rejected nothing and the runtime retried nothing in this lane. The model cited every quote correctly on the first turn, so the rejection-and-retry loop did not fire. These numbers are therefore not evidence that the loop works. The loop is covered by the test suite, which drives rejections deterministically.
@@ -122,10 +124,10 @@ Run identifiers behind this section:
 
 Run identifiers behind this section:
 
-- `caldra_meridian_480v_switchboard.pdf`: `b42189e3efc04219abda1a08e7d8c195`, `9ed863e3b5044c83930f6365db49e450`, `11d51efb6e9a467ca70de53d2f7e961b`, `11da4cd3669b4c7cae7421abceab72e2`, `3ea38696e48444c2a5b0cff0ff86d9e2`, `6b0b05f6db074f72aa522aad9890a4b9`, `f2a6794351f94f3eaf71d0bd449ee3fe`, `4f85aebb47a340439c9ffb6d89c27bc6`, `8e478eaddae0472abf8aa33c3788cdf3`, `5b32a0b401104946b7b62555d9731dcc`
-- `veylan_arcworks_208v_switchboard.pdf`: `c47811d66d0a46f7965b7063b6ba49e1`, `0ee94a4b298741839d73b8ba4b8bac9c`, `72f72a87f93c4cf49a5a528b637f7404`, `ce25b18f8eda4242a782114ea8fcce44`, `f78a18f2de194156a1e22d602d41e729`, `3e5474e0c7484608aed0a11f97b72920`, `ef57b798fe064ac9b63efe2da6e3fdd2`, `ccf16500eb8144399496bb3e2173504a`, `d5a8aa1ffce24081bc7d250aa930c856`, `1c9e6d90360d4ac3adbfcaa815b3ecff`
-- `torven_70c_termination_switchboard.pdf`: `69c281806f7f41cf95ffc84602cf2cb1`, `b22a97eb724b488fa3cb79461279788e`, `eeb9481f20cc4699b7181caa80f4d269`, `6702e0bd5ef1416499a899a85fe26fa0`, `1385e984b0e340769777317b808399c4`, `f12054c661ad4940a6472b000d055c77`, `6c1f2a84b2a447eaaac085c98a2fbdbe`, `abc3ca7855244f2b9d292871ac3a4f8a`, `5cf30a6999a94dbe8db89612b07eccde`, `3b1796e33f4046ae8f205ce63e73af51`
-- `veylan_arcworks_208v_altered.pdf`: `f44ab2d654074b889557df8676b6fdee`, `9e6a62ad9752438289a248e4f16ccb5c`, `aa3ea8b6bbe4430ea7dc0afb836a8053`, `a5ec5365409a4b4fb229bd555aee1d33`, `08d41828029a4a9f8e38649110d2245d`, `1fa3f95a0f114d2fa7e095fe3c489624`, `ce242a913cb548f4b8d85ff9fae4dcdb`, `9e3bb7d1baa543e9b12f14e152a9c16c`, `f0a85d82e6bc4e278f4cef3624764d92`, `4912032724104ec09615c96db180bae6`
+- `caldra_meridian_480v_switchboard.pdf`: `8189f91955f7497b90f78f3629e7e83c`, `4b4ee42887a448c18f019efa918ff601`, `5d8351cf9fe642d6aed877388cec25f6`, `f731eb2ff8bc45b08ac65d507c53cfde`, `d226f9722fd24cd9ae956887fc7bd6b4`, `71e8ca0867fd4e0ab408f80935f69016`, `1dc66685c2644897b4d493dfd5da6e89`, `8864c044983b4b4083afb41b1809d6a1`, `b2904dec05294681a7576feb67cbb1d1`, `ea10ce2898964c568f077aafbee90a3e`
+- `veylan_arcworks_208v_switchboard.pdf`: `421fbeeb270b4df78ad6dc6a929ba85c`, `c88eb4fc32124f50a50200a127ec4adb`, `6471b4470fe4474bbcc9922c025347b3`, `ed90bbaad71f4df48e3c00f8b132ab17`, `f054d6d1f9274cc288970aaf31b4e0cf`, `5a5c5d0f3a12422d92b4abbb427a93ea`, `c5491b2449834eeeac49a61c2bf71e0d`, `ee7d2ba7b186438487d0a33684f020ca`, `f2e2cea20f4146a588880ce18b91d406`, `203f3d0290d3420db1fed0b69bac13af`
+- `torven_70c_termination_switchboard.pdf`: `a0f79b9242924fa7b8046af7dc992f15`, `fae8ecfc978c4e348c369da0cf73bcb0`, `19e613de942b478998dd6b2fc93da775`, `dabe0aa5032148c1a33e7ee4290093e0`, `f6f3b2dde62c4a9a81267f5b0be3030f`, `39cf02327c7746b1bffd8374b2664821`, `01ef6360a732404c82c6d488424bf8b7`, `2a5442f609b1467c8716c3f4b80999c8`, `4161be3eac3744f5b05b7fab3cf974f1`, `fe73f44aa8c847df9744e43fe8e0cbee`
+- `veylan_arcworks_208v_altered.pdf`: `881414061367475891385f2df65d9884`, `b07cee82ca6643358e6c6adc5f1202b5`, `7fb1e3dbe9a645bea9b582d292a807ef`, `3d9ef727d0624d568300c0ac0fe7b8bc`, `cc899d15bdf74b498e3748fc2f2dab86`, `c8dbafb66fb84697bea79e67e868450e`, `ce7cb65af835415a9aacd590345e2258`, `7b59fde8594c433da029dcfbbfe35aeb`, `0c36d21278b546229318fdd5d6ed8a62`, `edd7cd6e108d42ed9362de1d347df19e`
 
 ## Results — `navigate` mode, messy package lane
 
@@ -137,7 +139,7 @@ Run identifiers behind this section:
 | `E-12` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 10 |
 | `E-13` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 10 |
 | `E-14` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 10 |
-| `E-15` | `zarqelune_vantrel_package.pdf` | `finding` | 60% | 0 | 0% | unclassified 6 |
+| `E-15` | `zarqelune_vantrel_package.pdf` | `finding` | 30% | 0 | 0% | unclassified 3 |
 | `E-16` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 10 |
 | `E-17` | `zarqelune_vantrel_package.pdf` | `finding` | 100% | 0 | 0% | unclassified 10 |
 | `E-18` | `zarqelune_vantrel_package.pdf` | `no_finding` | n/a | 0 | 0% | no findings |
@@ -145,27 +147,27 @@ Run identifiers behind this section:
 
 | Specification | Submitted document | Runs | Unattributed false positives | Rejections | Retries | Model turns | Mean prompt tokens | Model tool calls per run | Self-check rejections | Runs that returned a rejected quote |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `nimbrin_thermal_annex_specification.pdf` | `zarqelune_vantrel_package.pdf` | 10 | 0 | 0 | 0 | 10 | 312349.0 | 31.9 | 0 | 0 |
+| `nimbrin_thermal_annex_specification.pdf` | `zarqelune_vantrel_package.pdf` | 10 | 0 | 0 | 0 | 10 | 274534.9 | 27.2 | 0 | 0 |
 
 - The verification gate rejected nothing and the runtime retried nothing in this lane. The model cited every quote correctly on the first turn, so the rejection-and-retry loop did not fire. These numbers are therefore not evidence that the loop works. The loop is covered by the test suite, which drives rejections deterministically.
 - The model's own quote self-check rejected nothing in this lane. The self-check therefore changed no answer here, and these numbers are not evidence that it would. The runtime gate ran on every claim regardless.
-- 66 of 66 persisted findings carry `unclassified` severity. Severity classification fell back for those findings and the reason is recorded on each one. A fallback never blocks an audit and never changes verification status.
+- 63 of 63 persisted findings carry `unclassified` severity. Severity classification fell back for those findings and the reason is recorded on each one. A fallback never blocks an audit and never changes verification status.
 
 Run identifiers behind this section:
 
-- `zarqelune_vantrel_package.pdf`: `73b855cdfc3e470ab182954a9da32093`, `d2632231c3e24e13a6ee817f055ae4f5`, `607fd3835d5c41e99fd99e9697771b41`, `d0cd96909a0545159853178feea577e7`, `9cfba60c54594dd187c032e9d647ff85`, `2ea145d7660541de95a0748011e7c2a1`, `18430e3cdede49279707d894c61996d3`, `1beee85d8fc44e188b0270a3bcb1d931`, `b1e6a463fd104079974323ebe7477639`, `30665b58e20d4b1eaa435a7f4aac2795`
+- `zarqelune_vantrel_package.pdf`: `83b6a153ec974234ba84a863a9528e65`, `3c4180ccf8974286b89c0ee1b20f5e21`, `d4ec0737a57f419db579593c22f4d06c`, `a6beed5a9b0c40b7a58fc7fc44b43d96`, `95807c6c72754b648a3c3704144ab044`, `09c5cd0ed2ea4298b669c53dfb7a80bb`, `d98205489a854234ae66059c23ad60bd`, `9f8fefc3586a40b19d6aee9cf64791c6`, `ad8fc3147e0a476e8d182163950526c5`, `4345769231b14904b5a762fd5de9f708`
 
 ## Ship gate
 
 ```
-SHIP GATE navigate does NOT ship
+SHIP GATE navigate SHIPS as default
   [PASS] E-02 catch rate is 100%: measured 100%
   [PASS] E-03 catch rate is 100%: measured 100%
   [PASS] E-01 false positives are 0: measured 0
   [PASS] E-04 quarantine rate is 100% with 0 model turns: measured 100% with 0 model turns
   [PASS] no original-lane catch-rate regression against full_text: every case held or improved
   [PASS] no original-lane false-positive regression against full_text: navigate 0, full_text 0
-  [FAIL] messy-lane catch rate is at least full_text's: navigate 94%, full_text 96%
+  [PASS] messy-lane catch rate is at least full_text's: navigate 90%, full_text 86%
   [PASS] messy-lane decoy false positives are at most full_text's: navigate 0, full_text 0
 ```
 
@@ -173,9 +175,8 @@ The conditions above were fixed in the phase work order before any run. A pure f
 
 ## Cases that did not match the manifest
 
-- `E-13` in `full_text` mode (`zarqelune_vantrel_package.pdf`), expected `finding`: 9 of 10 runs caught the expected pair, 0 decoy false positives, 0 quarantines, 10 model turns.
-- `E-15` in `full_text` mode (`zarqelune_vantrel_package.pdf`), expected `finding`: 8 of 10 runs caught the expected pair, 0 decoy false positives, 0 quarantines, 10 model turns.
-- `E-15` in `navigate` mode (`zarqelune_vantrel_package.pdf`), expected `finding`: 6 of 10 runs caught the expected pair, 0 decoy false positives, 0 quarantines, 10 model turns.
+- `E-15` in `full_text` mode (`zarqelune_vantrel_package.pdf`), expected `finding`: 0 of 10 runs caught the expected pair, 0 decoy false positives, 0 quarantines, 10 model turns.
+- `E-15` in `navigate` mode (`zarqelune_vantrel_package.pdf`), expected `finding`: 3 of 10 runs caught the expected pair, 0 decoy false positives, 0 quarantines, 10 model turns.
 
 These numbers are published as measured. The README states the same figures and does not describe the runtime as catching everything.
 
