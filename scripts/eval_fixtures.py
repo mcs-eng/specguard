@@ -519,10 +519,25 @@ def _matches_quote(quote: Mapping[str, Any], page: int, manifest_quote: str) -> 
     passage is the same evidence; a span that merely overlaps it is not, and
     neither is the planted text on a page the manifest does not name. An empty
     quote contains nothing and is contained by nothing, so it matches nothing.
+
+    The record is read strictly rather than coerced. A quote that is not a
+    mapping, a page number that is not an integer, and text that is not a
+    string are each a malformed record, and a malformed record is not evidence
+    of anything. Coercing them would let ``None`` become the text ``"None"``
+    and ``1.9`` become page 1, so a defect in the persistence path could be
+    scored as a catch. Every one of them returns False instead.
     """
-    if int(quote.get("page_number", -1)) != page:
+    if not isinstance(quote, Mapping):
         return False
-    persisted = normalize(str(quote.get("text", "")))
+    page_number = quote.get("page_number")
+    if not isinstance(page_number, int) or isinstance(page_number, bool):
+        return False
+    if page_number != page:
+        return False
+    text = quote.get("text")
+    if not isinstance(text, str):
+        return False
+    persisted = normalize(text)
     planted = normalize(manifest_quote)
     return contains_on_boundaries(persisted, planted) or contains_on_boundaries(planted, persisted)
 
@@ -549,35 +564,41 @@ def build_run_outcome(
     planted pair it reproduces, a decoy false positive for the case whose decoy
     pair it reproduces, or an unattributed false positive when it reproduces
     neither.
+
+    A finding that reproduces more than one of the pairs declared for this
+    document pair is unattributed as well. Several planted pairs and both
+    decoys share pages, so a quote wide enough to contain two of them says
+    which pages the finding cites and nothing about which discrepancy it
+    reports. Taking the first match in manifest order would credit one case and
+    silently hide the others, which reads as a catch the run did not earn.
     """
     caught: set[str] = set()
     decoy_hits: list[str] = []
     unattributed = 0
     case_severities: dict[str, list[str]] = {}
     for finding in findings:
-        matched_case = next(
-            (
-                case
-                for case in pair.cases
-                if case.evidence is not None and _matches_pair(finding, case.evidence)
-            ),
-            None,
-        )
-        if matched_case is not None:
+        planted_matches = [
+            case
+            for case in pair.cases
+            if case.evidence is not None and _matches_pair(finding, case.evidence)
+        ]
+        decoy_matches = [
+            case
+            for case in pair.cases
+            if case.decoy is not None and _matches_pair(finding, case.decoy)
+        ]
+        if len(planted_matches) + len(decoy_matches) > 1:
+            unattributed += 1
+            continue
+        if planted_matches:
+            matched_case = planted_matches[0]
             caught.add(matched_case.id)
             case_severities.setdefault(matched_case.id, []).append(
                 str(finding.get("severity", "unclassified"))
             )
             continue
-        decoy_case = next(
-            (
-                case
-                for case in pair.cases
-                if case.decoy is not None and _matches_pair(finding, case.decoy)
-            ),
-            None,
-        )
-        if decoy_case is not None:
+        if decoy_matches:
+            decoy_case = decoy_matches[0]
             decoy_hits.append(decoy_case.id)
             case_severities.setdefault(decoy_case.id, []).append(
                 str(finding.get("severity", "unclassified"))
@@ -1148,8 +1169,10 @@ def render_eval_markdown(
         "differs between the two documents but the submission complies, so a finding "
         "here is a wording difference read as a conflict.",
         "- **Unattributed false positives** counts persisted findings that carried "
-        "neither a planted pair nor a decoy pair under that rule. It belongs to the "
-        "audit, not to any one case, which is why it appears only in the per-run table.",
+        "neither a planted pair nor a decoy pair under that rule, and findings whose "
+        "quotes were wide enough to carry more than one of them, which name no single "
+        "discrepancy. It belongs to the audit, not to any one case, which is why it "
+        "appears only in the per-run table.",
         "- **Rejections** counts claims the verification gate refused. A rejection is "
         "the gate working, not a failure of the run.",
         "- **Retries** counts claims sent back to the model once after a gate rejection.",
@@ -1199,14 +1222,20 @@ def render_eval_markdown(
         "condition was relaxed and no run was repeated to reach this verdict."
     )
 
-    failures = [result for result in all_cases if not result.meets_expectation]
+    failures = [
+        (lane_result.mode, result)
+        for _, lane_result in ordered
+        for result in lane_result.cases
+        if not result.meets_expectation
+    ]
     lines.extend(["", "## Cases that did not match the manifest", ""])
     if not failures:
         lines.append("None. Every case matched its declared expected outcome in every run.")
     else:
-        for result in failures:
+        for mode, result in failures:
             lines.append(
-                f"- `{result.case.id}` (`{result.case.cut_sheet_pdf}`), expected "
+                f"- `{result.case.id}` in `{mode.value}` mode "
+                f"(`{result.case.cut_sheet_pdf}`), expected "
                 f"`{result.case.expected_outcome}`: {result.catches} of "
                 f"{result.iterations} runs caught the expected pair, "
                 f"{result.decoy_false_positives} decoy false positives, "

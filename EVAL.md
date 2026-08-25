@@ -22,7 +22,7 @@ The two agent modes differ only in what the model is shown and which tools it ma
 
 - **Catch rate** is the fraction of runs that persisted a finding carrying the same evidence as the pair the manifest records for that case. Each side must cite the page the manifest records, and the persisted quote and the manifest quote must contain one another in either direction after the verification gate's own normalization, on the token boundaries that gate uses. A longer or shorter span of the same passage on the cited page is the same evidence. A quote that only overlaps the planted passage is not, and the planted words on another page are not. A case that plants nothing has no catch rate and reads `n/a`, because reporting 100 percent for an unmeasured case would inflate the average.
 - **Decoy false positives** counts persisted findings that reproduced a compliant near-match pair the manifest records as a decoy, under the same evidence rule, so a shortened span of a decoy is counted here rather than as an invention. The wording differs between the two documents but the submission complies, so a finding here is a wording difference read as a conflict.
-- **Unattributed false positives** counts persisted findings that carried neither a planted pair nor a decoy pair under that rule. It belongs to the audit, not to any one case, which is why it appears only in the per-run table.
+- **Unattributed false positives** counts persisted findings that carried neither a planted pair nor a decoy pair under that rule, and findings whose quotes were wide enough to carry more than one of them, which name no single discrepancy. It belongs to the audit, not to any one case, which is why it appears only in the per-run table.
 - **Rejections** counts claims the verification gate refused. A rejection is the gate working, not a failure of the run.
 - **Retries** counts claims sent back to the model once after a gate rejection.
 - **Quarantine rate** is the fraction of runs the text-layer integrity screen stopped before any model call.
@@ -173,9 +173,9 @@ The conditions above were fixed in the phase work order before any run. A pure f
 
 ## Cases that did not match the manifest
 
-- `E-13` (`zarqelune_vantrel_package.pdf`), expected `finding`: 9 of 10 runs caught the expected pair, 0 decoy false positives, 0 quarantines, 10 model turns.
-- `E-15` (`zarqelune_vantrel_package.pdf`), expected `finding`: 8 of 10 runs caught the expected pair, 0 decoy false positives, 0 quarantines, 10 model turns.
-- `E-15` (`zarqelune_vantrel_package.pdf`), expected `finding`: 6 of 10 runs caught the expected pair, 0 decoy false positives, 0 quarantines, 10 model turns.
+- `E-13` in `full_text` mode (`zarqelune_vantrel_package.pdf`), expected `finding`: 9 of 10 runs caught the expected pair, 0 decoy false positives, 0 quarantines, 10 model turns.
+- `E-15` in `full_text` mode (`zarqelune_vantrel_package.pdf`), expected `finding`: 8 of 10 runs caught the expected pair, 0 decoy false positives, 0 quarantines, 10 model turns.
+- `E-15` in `navigate` mode (`zarqelune_vantrel_package.pdf`), expected `finding`: 6 of 10 runs caught the expected pair, 0 decoy false positives, 0 quarantines, 10 model turns.
 
 These numbers are published as measured. The README states the same figures and does not describe the runtime as catching everything.
 

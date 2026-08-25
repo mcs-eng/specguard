@@ -19,6 +19,7 @@ from scripts.eval_fixtures import (
     RATE_LIMIT_BACKOFF_SECONDS,
     README_TABLE_END,
     README_TABLE_START,
+    UNRECORDED_REVISION,
     CasePair,
     CaseResult,
     EvalCase,
@@ -51,6 +52,7 @@ from scripts.eval_fixtures import (
     uncommitted_source_paths,
     write_readme_section,
 )
+from specguard.gate import normalize
 from specguard.models import (
     AgentMode,
     AuditModelUsage,
@@ -408,19 +410,147 @@ def test_an_empty_quote_matches_nothing() -> None:
     assert outcome.unattributed_false_positives == 1
 
 
-def test_a_span_variant_riding_inside_a_larger_number_is_not_a_catch() -> None:
-    """Containment is checked on the gate's own token boundaries."""
-    riding = _finding(D02)
-    riding["cut_sheet_quote"] = {"text": "Termination rating: 158 deg F.", "page_number": 1}
-    riding["spec_quote"] = {"text": "rated 90 deg C minimum.", "page_number": 5}
-    caught = build_run_outcome(_pair(SECOND_FINDING_CASE), _summary(), [riding], model_turns=1)
-    assert caught.caught_case_ids == frozenset({"E-03"})
+def test_a_quote_riding_inside_a_larger_number_is_not_a_catch() -> None:
+    """Raw containment succeeds here. Only the gate's token boundaries refuse it.
 
-    riding["spec_quote"] = {"text": "rated 190 deg C minimum.", "page_number": 5}
+    A matcher using plain ``in`` would score this as a catch, so this test is
+    what separates the shipped rule from that weaker one.
+    """
+    rating = EvidencePair(
+        id="D-90",
+        spec_page=1,
+        spec_quote="Rated 5 A continuous.",
+        cut_sheet_page=1,
+        cut_sheet_quote="5 A",
+    )
+    case = EvalCase(
+        id="E-90",
+        spec_pdf="spec.pdf",
+        cut_sheet_pdf="veylan.pdf",
+        expected_outcome="finding",
+        evidence=rating,
+    )
+    riding = _finding(rating)
+    riding["cut_sheet_quote"] = {"text": "0.5 A", "page_number": 1}
+    assert "5 a" in normalize("0.5 A")
 
-    outcome = build_run_outcome(_pair(SECOND_FINDING_CASE), _summary(), [riding], model_turns=1)
+    outcome = build_run_outcome(_pair(case), _summary(), [riding], model_turns=1)
 
     assert outcome.caught_case_ids == frozenset()
+    assert outcome.unattributed_false_positives == 1
+
+
+def test_the_gates_own_normalization_decides_the_match() -> None:
+    """Case, whitespace runs, and a soft hyphen are the gate's business, not the scorer's."""
+    variant = _finding(D01)
+    variant["cut_sheet_quote"] = {
+        "text": "NOMINAL   SYSTEM:\n208V, 3-PHASE, 4-WI\u00adRE.",
+        "page_number": 1,
+    }
+
+    outcome = build_run_outcome(_pair(FINDING_CASE), _summary(), [variant], model_turns=1)
+
+    assert outcome.caught_case_ids == frozenset({"E-02"})
+    assert outcome.unattributed_false_positives == 0
+
+
+@pytest.mark.parametrize(
+    "quote",
+    [
+        {"text": "Nominal system: 208V, 3-phase, 4-wire.", "page_number": None},
+        {"text": "Nominal system: 208V, 3-phase, 4-wire.", "page_number": "1"},
+        {"text": "Nominal system: 208V, 3-phase, 4-wire.", "page_number": 1.9},
+        {"text": None, "page_number": 1},
+        {"text": 208, "page_number": 1},
+        "Nominal system: 208V, 3-phase, 4-wire.",
+    ],
+    ids=["page-none", "page-string", "page-float", "text-none", "text-int", "quote-not-a-mapping"],
+)
+def test_a_malformed_quote_record_is_never_a_catch(quote: object) -> None:
+    """A malformed record is not evidence, and coercing one could invent a catch."""
+    malformed = _finding(D01)
+    malformed["cut_sheet_quote"] = quote
+
+    outcome = build_run_outcome(_pair(FINDING_CASE), _summary(), [malformed], model_turns=1)
+
+    assert outcome.caught_case_ids == frozenset()
+    assert outcome.unattributed_false_positives == 1
+
+
+def test_a_quote_wide_enough_to_carry_two_pairs_is_attributed_to_neither() -> None:
+    """Several planted pairs share pages, so a page-wide quote names no discrepancy."""
+    wide = {
+        "spec_quote": {
+            "text": (
+                "Provide a 480V, 3-phase distribution switchboard for service distribution. "
+                "Terminations shall be rated 90 deg C minimum."
+            ),
+            "page_number": 3,
+        },
+        "cut_sheet_quote": {
+            "text": "Nominal system: 208V, 3-phase, 4-wire. Termination rating: 158 deg F.",
+            "page_number": 1,
+        },
+        "severity": "high",
+    }
+    same_page = EvidencePair(
+        id="D-02b",
+        spec_page=3,
+        spec_quote="Terminations shall be rated 90 deg C minimum.",
+        cut_sheet_page=1,
+        cut_sheet_quote="Termination rating: 158 deg F.",
+    )
+    second = EvalCase(
+        id="E-03",
+        spec_pdf="spec.pdf",
+        cut_sheet_pdf="veylan.pdf",
+        expected_outcome="finding",
+        evidence=same_page,
+    )
+
+    outcome = build_run_outcome(_pair(FINDING_CASE, second), _summary(), [wide], model_turns=1)
+
+    assert outcome.caught_case_ids == frozenset()
+    assert outcome.decoy_hit_case_ids == ()
+    assert outcome.unattributed_false_positives == 1
+
+
+def test_a_quote_carrying_a_planted_pair_and_a_decoy_credits_neither() -> None:
+    """A finding that is both a catch and a decoy hit is evidence for no case."""
+    both = {
+        "spec_quote": {
+            "text": (
+                "Provide a 480V, 3-phase distribution switchboard for service distribution. "
+                "The cabinet finish shall be graphite gray."
+            ),
+            "page_number": 3,
+        },
+        "cut_sheet_quote": {
+            "text": "Nominal system: 208V, 3-phase, 4-wire. Finish: graphite-grey baked coating.",
+            "page_number": 1,
+        },
+        "severity": "high",
+    }
+    overlapping_decoy = EvidencePair(
+        id="N-01b",
+        spec_page=3,
+        spec_quote="The cabinet finish shall be graphite gray.",
+        cut_sheet_page=1,
+        cut_sheet_quote="graphite-grey baked coating",
+    )
+    decoy_case = EvalCase(
+        id="E-18",
+        spec_pdf="spec.pdf",
+        cut_sheet_pdf="veylan.pdf",
+        expected_outcome="no_finding",
+        evidence=None,
+        decoy=overlapping_decoy,
+    )
+
+    outcome = build_run_outcome(_pair(FINDING_CASE, decoy_case), _summary(), [both], model_turns=1)
+
+    assert outcome.caught_case_ids == frozenset()
+    assert outcome.decoy_hit_case_ids == ()
     assert outcome.unattributed_false_positives == 1
 
 
@@ -960,13 +1090,25 @@ def test_the_eval_document_carries_the_gate_verdict_verbatim() -> None:
     assert "No condition was relaxed" in document
 
 
-def test_the_eval_document_says_what_it_supersedes_and_names_the_measurement() -> None:
-    """A regeneration replaces this file in full, so it must say so itself."""
-    document = _document(iterations=10, code_revision="31ef186")
+@pytest.mark.parametrize(
+    ("iterations", "revision"),
+    [(10, "31ef186"), (3, "deadbee"), (1, UNRECORDED_REVISION)],
+)
+def test_the_eval_document_says_what_it_supersedes_and_names_the_measurement(
+    iterations: int, revision: str
+) -> None:
+    """A regeneration replaces this file in full, so it must say so itself.
+
+    The values vary so a renderer hardcoded to the published run cannot pass.
+    """
+    document = _document(iterations=iterations, code_revision=revision)
 
     assert "## What these numbers supersede" in document
     assert "written in full by `scripts/eval_fixtures.py` on every run" in document
-    assert "measured at 10 audits per document pair on code revision `31ef186`" in document
+    assert (
+        f"measured at {iterations} audits per document pair on code revision `{revision}`"
+        in document
+    )
     assert "superseded by this one, not corrected by it" in document
 
 
@@ -978,11 +1120,14 @@ def test_the_eval_document_names_the_corrected_self_check_counting_rule() -> Non
     assert "counted distinct quote digests" in document
 
 
-def test_the_method_section_states_the_audit_arithmetic_of_the_run_it_describes() -> None:
+@pytest.mark.parametrize(("iterations", "inflated"), [(10, 90), (5, 45), (1, 9)])
+def test_the_method_section_states_the_audit_arithmetic_of_the_run_it_describes(
+    iterations: int, inflated: int
+) -> None:
     """The nine-case pair claim is arithmetic, so it must follow the iteration count."""
-    document = _document(iterations=10)
+    document = _document(iterations=iterations)
 
-    assert "so 10 iterations are 10 audits, not 90" in document
+    assert f"so {iterations} iterations are {iterations} audits, not {inflated}" in document
     assert "not forty-five" not in document
 
 
@@ -993,7 +1138,7 @@ def test_the_eval_document_publishes_a_short_catch_rate_as_measured() -> None:
 
     assert "75%" in document
     assert "did not match the manifest" in document
-    assert "`E-02`" in document
+    assert "`E-02` in `navigate` mode" in document
 
 
 def test_the_eval_document_states_plainly_when_every_case_matched() -> None:
