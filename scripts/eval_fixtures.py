@@ -1131,18 +1131,25 @@ def render_eval_markdown(
         "",
         "## What each column means",
         "",
-        "- **Catch rate** is the fraction of runs that persisted a finding whose two "
-        "quotes and two page numbers equal the evidence pair the manifest records "
-        "for that case. A near miss is not a catch. A case that plants nothing has "
+        "- **Catch rate** is the fraction of runs that persisted a finding carrying "
+        "the same evidence as the pair the manifest records for that case. Each side "
+        "must cite the page the manifest records, and the persisted quote and the "
+        "manifest quote must contain one another in either direction after the "
+        "verification gate's own normalization, on the token boundaries that gate "
+        "uses. A longer or shorter span of the same passage on the cited page is the "
+        "same evidence. A quote that only overlaps the planted passage is not, and "
+        "the planted words on another page are not. A case that plants nothing has "
         f"no catch rate and reads `{NOT_APPLICABLE}`, because reporting 100 percent "
         "for an unmeasured case would inflate the average.",
         "- **Decoy false positives** counts persisted findings that reproduced a "
-        "compliant near-match pair the manifest records as a decoy. The wording "
+        "compliant near-match pair the manifest records as a decoy, under the same "
+        "evidence rule, so a shortened span of a decoy is counted here rather than "
+        "as an invention. The wording "
         "differs between the two documents but the submission complies, so a finding "
         "here is a wording difference read as a conflict.",
-        "- **Unattributed false positives** counts persisted findings that matched no "
-        "planted pair and no decoy pair. It belongs to the audit, not to any one "
-        "case, which is why it appears only in the per-run table.",
+        "- **Unattributed false positives** counts persisted findings that carried "
+        "neither a planted pair nor a decoy pair under that rule. It belongs to the "
+        "audit, not to any one case, which is why it appears only in the per-run table.",
         "- **Rejections** counts claims the verification gate refused. A rejection is "
         "the gate working, not a failure of the run.",
         "- **Retries** counts claims sent back to the model once after a gate rejection.",
