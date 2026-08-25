@@ -185,6 +185,20 @@ The conditions above were fixed in the phase work order before any run. A pure f
 
 These numbers are published as measured. The README states the same figures and does not describe the runtime as catching everything.
 
+## What the two messy-lane misses are
+
+This section and the one after it were written by hand in Phase 7d-eval, on 2026-08-25, from an inspection of the persisted Firestore findings of the ten messy-lane runs listed above. Nothing here is a harness measurement, no number above changed, and no run was repeated. The inspection and every receipt behind it are in `REVIEW-7D-MISSES.md`. A regeneration of this file rewrites it in full and drops these two sections, which is recorded on the board in the README and in `HANDOFF.md`.
+
+`E-13` is a scoring artefact rather than a detection failure. All ten messy-lane runs, five per mode, persisted a verified finding for that discrepancy, citing the correct specification page and the correct package page. Four returned the full planted package quote and scored as catches. Six returned a shorter contiguous span of that same quote, on the same page, and scored as misses, because the catch rule in `scripts/eval_fixtures.py` compares the persisted quote text to the planted quote text for raw equality. The runtime found the discrepancy in 10 of 10 runs. Whether evidence equality rather than span equality is the honest definition of a catch is a question about this metric, and it is recorded as an open follow-up rather than settled here.
+
+`E-15` is a fixture-design finding. No run in either mode raised the pair. No persisted finding cites the governing package page, no persisted finding returns a specification quote about clearance or working space, and the rejections collection holds no record for any of the ten runs, so the pair was never attempted rather than attempted and refused by the gate. Both governing pages were in front of the model in every navigate run: the package is sent in full in both modes, and two other quotes came back verbatim from the same specification page while that page's index line is too short to contain either, so the page was opened through the read-only page-reading tool. The package states its clearance figure as a recommendation, under a heading calling the selected product's dimensions nominal package values and above a closing line directing that set-out dimensions be coordinated with the project room rather than inferred from the package. Both prompts instruct the model not to report statements that can both be true, and a disclaimed recommendation beside a project requirement is such a pair. The model followed the instruction it was given.
+
+## What the unattributed false positives contain
+
+The unattributed column counts a persisted finding that matched no planted pair and no decoy pair under the exact-span rule. It does not distinguish an invention from a finding that reproduces a planted pair with a different quote span, and a reader takes the phrase to mean the first.
+
+All 16 unattributed findings across the messy lane, 13 in `full_text` and 3 in `navigate`, reproduce a planted pair on the correct two pages with a different quote span. Across all 60 persisted messy-lane findings there are zero inventions and zero decoy hits. Thirteen of the 16 are `full_text` findings that joined a table row label to its value cell; the other three are the shortened `E-13` package quote described above. The column definition and every count above are unchanged. This section states what the counted findings hold.
+
 ## Scope of these numbers
 
 This evaluation measures seven committed fictional fixtures, not a corpus of real submittals. It reports how the runtime behaved on documents built to carry known discrepancies. It is not evidence of accuracy on documents outside this set, and it is not a compliance determination.
