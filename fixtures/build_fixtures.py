@@ -2765,7 +2765,7 @@ def _build_messy_package_pdf(path: Path) -> None:
             ("Overall height", "1980 mm", "outline"),
             ("Overall width", "920 mm", "outline"),
             ("Overall depth", "280 mm", "outline"),
-            ("Front service clearance", "760 mm recommended", "installation note"),
+            ("Front service clearance", "760 mm provided", "as furnished"),
             ("Side access", "150 mm minimum", "barrier path"),
         ],
         (165.0, 210.0, 147.0),
