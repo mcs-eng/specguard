@@ -2198,3 +2198,91 @@ All commands ran in `C:\Users\mcspd\dev\specguard-7d` on arya against a clean tr
 - `b3c47b1` — this section.
 - `2d1f0ca` — the recorded test count, regenerated from its own run.
 
+
+## Phase 7d-remeasure — evidence-equality scoring, a fair E-15, and the N=10 campaign that moved the default
+
+Date: 2026-08-25. Scope: the Phase 7d-remeasure work order (claude-memory `reference/specguard-work-order-7d-remeasure-2026-08.md`), built in the worktree `C:\Users\mcspd\dev\specguard-7d` on branch `phase-7d` from the tip `56854f5`. Baseline at that tip: `uv run pytest -q` exit 0, `613 passed, 2 warnings`, clean tree. `specguard/gate.py`, `specguard/integrity.py`, every prompt file, and the page-index constant are unchanged in this phase. Nothing is pushed, merged, or opened as a PR.
+
+The phase reopened two decisions taken earlier the same day. 13-A and 15-A were both "publish it and explain it"; the changed input was Mason's budget statement and his selection of the full campaign, which made 13-B and 15-B affordable.
+
+### R1 — the scorer and the fixture, before any model call
+
+**The scorer.** `scripts/eval_fixtures.py::_matches_pair` compared the persisted quote to the manifest quote with `==`. A finding that cited the right two pages and carried the same passage in a shorter span scored as a miss, and the same record was then re-counted as an unattributed false positive. `_matches_pair` now delegates each side to `_matches_quote`: the cited page must equal the page the manifest records, and the two normalized quotes must contain one another in either direction. The containment is `specguard.gate.contains_on_boundaries` over `specguard.gate.normalize`, so the eval scorer's notion of "the same evidence" is the verification gate's own, on the gate's own token boundaries. Neither gate file was touched to do this.
+
+Seven tests pin the rule at both ends. Known-good: a contiguous tail matches, and a longer span that contains the planted quote matches. Known-bad: the planted text on another page does not match, an overlap without containment does not, the empty string matches nothing, and a numeric span riding inside a larger number does not. The seventh covers the decoy side, where a shortened decoy quote must still count as a decoy rather than as an invention.
+
+**The fixture.** Package page 8's front-clearance row read `760 mm recommended` against an `installation note` reference cell. The row now reads `760 mm provided` against `as furnished`, which is the shape of the six pairs that already caught: a rating, a temperature, a listing declaration, a classification, a quantity, and a material. Everything else on page 8 is as designed, including the line calling the dimensions nominal package values and the closing sentence directing that set-out dimensions be coordinated with the project room, so the page is no easier to read than it was. Nothing else in any fixture changed: the other six PDFs rebuild byte-identical, and only `zarqelune_vantrel_package.pdf` moved, to SHA-256 `8A32DE63C1BBD4E531B1D87E97711AACCCD2859C274262F27180DE8EF6D7C4D7`. `fixtures/MANIFEST.md` carries the new quote, the restated `M-05` purpose, and that hash. The prompt-denylist tests pass unchanged: `760 mm` was already denied, and the whole new quote is denied as well.
+
+**One defect found while doing this.** `render_eval_markdown` still published the old definition of a catch in its "What each column means" section. The next regeneration would have printed a rule the code no longer implements, which is the one failure a generated file exists to prevent. The catch, decoy, and unattributed definitions now describe evidence equality.
+
+### R1 quality-gate receipts
+
+All commands run in `C:\Users\mcspd\dev\specguard-7d` on arya, at the clean tip `31ef186`. Exit codes are unpiped.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `620 passed, 2 warnings`. 613 before; the seven new scorer tests are the difference. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `55 files already formatted` |
+| `git diff --check` | 0 | No whitespace errors. |
+| `git status --porcelain` | 0 | Empty. |
+| fixture rebuild determinism (the `build_fixtures` one-liner used since Phase 2) | 0 | `files=7`, `byte-identical=True`. |
+
+### R2 — the campaign, and the verdict
+
+```
+SPECGUARD_GEMMA_ENDPOINT=disabled uv run python scripts/eval_fixtures.py --mode both --lane all -n 10 --pause-seconds 5
+```
+
+Exit code 0. 100 real audits at code revision `31ef186`, 15:23 to 16:29 local, zero rate-limit retries. `--pause-seconds 5` is the harness's own pacing flag, which the work order's "pacing as built" allows; it changes no measured number and cost about eight minutes against the risk of a rate-limit stop after the built-in `(90, 300)` backoff.
+
+| Mode and lane | Catch rate | Decoy FP | Unattributed FP | Rejections | Retries |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `full_text` original | 100% | 0 | 0 | 0 | 0 |
+| `full_text` messy | 96% | 0 | 0 | 0 | 0 |
+| `navigate` original | 100% | 0 | 0 | 0 | 0 |
+| `navigate` messy | 94% | 0 | 0 | 0 | 0 |
+
+The ship gate passed seven of its eight conditions. It failed "messy-lane catch rate is at least full_text's" at navigate 94 percent against full_text 96 percent, which is 66 of 70 case-runs against 67 of 70: one case-run in seventy. No condition was relaxed, no run was repeated, and the verdict was reported to Mason verbatim before any document was written.
+
+Both pre-campaign corrections did what they were built to do, and both moved numbers upward without any model change.
+
+- `E-13` went from 40 percent in both modes to 100 percent in `navigate` and 90 percent in `full_text`. The unattributed false-positive column went from 16 on the messy lane to zero in all four sections, which confirms the 7d-eval finding that all 16 were span variants rather than inventions — and turns that finding from an offline classification into a harness measurement.
+- `E-15` went from 0 percent in both modes to 80 percent in `full_text` and 60 percent in `navigate`. It is now the lowest case on the board and publishes as an honest miss on a test the model can fairly be asked to pass.
+
+`navigate` lost its margin because `full_text` was never losing on detection. It was losing on quote spans, and the strict rule counted that as a miss. Removing the artefact removed the gap.
+
+**Spend.** 7,010,120 prompt tokens across the 80 model-reaching audits; the other 20 quarantined before any model call. The work order budgeted roughly 6M, so the campaign ran about 17 percent over that basis and stays in the same low-single-dollar band, well inside the $50 authorization. No dollar figure is available: `--vertex-spend` defaulted to `not visible in the run output`, and the harness exposes no cost value. That limit is already a board row.
+
+### Mason's R2 decisions
+
+Recorded in the work order's "R2 decisions" section, which governs R3.
+
+- **Follow the gate.** `full_text` is the deployed default. Navigate stays selectable and fully receipted, EVAL publishes both modes, and the docs state the tie plainly rather than arguing it. No re-run to break the tie: that is optional stopping and stays forbidden.
+- **Narrow `full_text`'s registration to the three read-only tools**, gated on a mandatory receipts check.
+- **Rework the docs around the flip.**
+
+### R3 — the flip, the docs, and one item that stopped
+
+`deploy-specguard.ps1` pins `SPECGUARD_AGENT_MODE=full_text`. `README.md`, `DEVPOST.md`, and `VIDEO-SCRIPT.md` follow. The video no longer describes the live demo as navigating by tool, because the deployed service will not; navigate is now the answer to "what happens when a specification is too large to send in one prompt", which is a case these fixtures never created.
+
+`EVAL.md` gained a generated section, "What these numbers supersede", stating that the harness rewrites the file in full, that these numbers were measured at ten audits per pair on `31ef186`, and that any earlier measurement at another iteration count, revision, or scoring rule is superseded rather than corrected. A second paragraph states that the self-check columns were measured under the corrected call-and-anchor rule rather than the digest rule. Three tests pin both, and the Method section's audit arithmetic now follows the iteration count instead of a hardcoded five. The same wording was applied to the generated file by hand this once, as in Phase 7c; no measured number changed. `EVAL.md` now carries no hand-written section at all, which is what closes the regeneration-fragility row.
+
+**The registration change did not land, and this is the one item this phase leaves open.** The receipts-guard Mason made mandatory asks for the campaign's persisted `model_tool_calls` receipts across all 50 `full_text` runs. Those receipts do not exist. `scripts/eval_fixtures.py::_run_one_pair` builds an `AuditRuntime` and reads findings back through `FirestoreRunRepository`; it never writes a `runs` document, and only `specguard/web/app.py` persists `model_tool_calls`. A query over the 50 identifiers `EVAL.md` names for those two sections found 0 of 50 `runs` documents and 0 tool-call records. The same limit is recorded for the 7c campaign earlier in this file.
+
+What the persisted records do establish is narrower than the guard asked for, and it is worth stating exactly:
+
+- **No model-initiated `persist_finding` succeeded.** Firestore holds exactly 87 findings across those 50 runs, equal to the runtime's own reported total of 87, with zero mismatched runs and zero rejection records. An extra model-initiated write that passed the gate would have created an extra document, because `persist_finding` allocates a fresh document reference on every call.
+- **What cannot be established** is whether the model called `persist_finding` and the gate refused it, because a refusal returns a dictionary and writes nothing; whether the model called `draft_rfi`, because that tool writes to a fixed per-run filename and a second call overwrites the first; and the tool-name breakdown of the 305 model-initiated calls the harness counted in `full_text`, because those names lived only in harness memory.
+
+"No receipt found" is not "zero calls". The project's own ship gate refuses to treat an absence as a measurement, and applying a weaker standard to a change that touches the measured path would be inconsistent. The change is therefore recorded, not applied, and the `7c` write-tool board row is restated and reopened rather than closed. Nothing about the ledger guarantee changes in the meantime: both write paths run the gate at write time and again before the write, so an unverified claim cannot enter the ledger by either route.
+
+### Board movement
+
+| Row | Was | Now |
+| --- | --- | --- |
+| 7d, exact-span scoring | OPEN | CLOSED — `_matches_pair` scores by evidence equality; seven tests pin it; the unattributed column is zero in all four sections. |
+| 7d, hand-written `EVAL.md` sections | OPEN | CLOSED — the regeneration replaced them, exactly as the row predicted; the replacement prose lives in the generator and is pinned. |
+| 7c, self-check totals under the digest rule | ACCEPTED | CLOSED — this is the first measurement taken under the corrected rule, and `EVAL.md` says so. |
+| 7c, `E-13` and `E-15` published misses | ACCEPTED, explained | CLOSED — both causes corrected and both cases re-measured. |
+| 7c, `full_text` registers the write tools | ACCEPTED | OPEN, restated — `full_text` is now the default, and the receipt needed to narrow its registration does not exist. |
