@@ -2509,3 +2509,67 @@ All commands run in `C:\Users\mcspd\dev\specguard-7d` on arya. Exit codes are un
 1. **The sample runs still show the old presentation.** Every run stored before this change has no `submittal_number` and renders the legacy fallback. Recreating the demo runs so the shoot shows `S-00x` happens after the deploy, not here — this phase writes no live record.
 2. **The deploy is still outstanding**, unchanged from the previous section. It now carries this presentation as well as the read-only registration and the `full_text` default.
 3. **The landing page still lists runs by shortened hex.** `index.html`'s "Recent sample runs" table shows `run_id[:8]` in its Run column. The work order scoped the web change to the run page, so that column was left alone and is noted here rather than changed: after the deploy and the run recreation it will disagree in shape with the run page it links to.
+
+## Phase 7d-audit — claims audit, pre-publish sweep, Devpost draft, live dry run
+
+Date: 2026-08-26. Scope: the Phase 7d-audit work order (claude-memory `specguard-work-order-7d-audit-2026-08.md`), in the worktree `C:\Users\mcspd\dev\specguard-7d` on branch `phase-7d` from the tip `4792f76`. The tree was frozen for features: this phase changed documents and records only, plus four corrections the audit proved necessary. No fixture, prompt, scorer, or runtime file moved. Nothing was merged and no PR was opened; the branch was backup-pushed. Vertex spend: two model-reaching sample audits on the deployed service (the Veylan 208V and Torven 70 deg C dry-run scenes), low single cents; every other receipt is a read-only GET or a `gcloud` describe.
+
+### Checkpoint A1 — the claims audit and the sweep
+
+The full record is `REVIEW-CLAIMS-7D.md`: the claims table (`C7-01` to `C7-20`), the sweep (`S7-01` to `S7-09`), and the receipts (`R7-01` to `R7-10`). Verdict: the load-bearing claims hold. Every published campaign number traces to the 2026-08-25 `8900a76` campaign; the committed `EVAL-RECEIPTS.jsonl` reproduces every tool-call figure exactly (848 lines, 748 calls, 100 summaries, zero write-tool calls, 372 `verify_quote` calls all verified); the four `EVAL SUMMARY` console lines diff byte-identical to the S2 quotes; the history gates and the scrubbed-value greps return zero across 125 revisions; a `detect-secrets` scan over all 508 unique historical blobs found nothing beyond grep-pattern receipts and fixture provenance digests, each triaged benign in the record.
+
+Four corrections were proven and applied at `b7f2513`: the README deployed-revision line (was six revisions stale), the README 7c board row (carried `31ef186` numbers as current), the video narration case-run count (four, is three), and the Devpost pointer to the superseded 2026-08-22 severity record (moved to HANDOFF Phase 6e). The quality gates passed before and after: `uv run pytest -q` exit 0, `680 passed, 2 warnings`, at the frozen tip and again after the edits.
+
+**D7-1, the one STOP row, was resolved by Mason and the controller the same day.** The stray Cursor branch was already deleted, but commit `faec4fd` (author `Cursor Agent <cursoragent@cursor.com>`) persists as `refs/pull/1/head` behind the closed PR #1, and pull refs are user-undeletable. Mason decided: delete and recreate the repository immediately before the public flip, per claude-memory `reference/specguard-preflip-runbook-2026-08.md` (ff-only merge, `ls-remote` snapshot, recreate, verify no pull refs, flip, enable secret scanning). No branch action was taken from this session.
+
+### Checkpoint A2 — the Devpost draft
+
+`DEVPOST-FORM.md` is the paste-ready form draft, generated verbatim from `DEVPOST.md` by section extraction, one block per form field: name, tagline, category, hosted URL, repository URL, video URL (`[TODO]`, the only missing value), the Gemma bonus line, the pre-existing-code disclosure, the story sections, and the built-with tags. No field truncates its source. The tagline stays at 59 characters under the 60-character margin `DEVPOST.md` sets, because Devpost's own limit is unverified (REVIEW-CLAIMS.md D-7). Mason pastes and submits; this session submitted nothing.
+
+### Checkpoint A2 — the live dry run
+
+`VIDEO-SCRIPT.md` was walked against the deployed service. Serving revision at the start and at the end, from `gcloud run services describe`, exit 0 both times: `specguard-00030-jnr`, 100 percent of traffic. Every `curl.exe` call below exited 0.
+
+| Scene | Receipt |
+| --- | --- |
+| Health | `GET /health` HTTP 200, body `ok`, 5.02 s on the cold start of the session, 0.12-class warm thereafter. |
+| Landing | `GET /` HTTP 200. "Recent sample runs" lists the stored legacy runs by shortened hex, as the presentation-polish section predicted. |
+| 3a-3d, Veylan 208V | `POST /sample/veylan-208v` HTTP 303 to run `f2c5f22d428b4b78b891ddd3d72c6483`. Run page: COMPLETED; heading `Submittal S-001`; Claims made 1, Findings persisted 1, Rejected 0, Retried 0; QUOTES VERIFIED; the two scripted quotes on Specification page 3 and Submitted page 1; severity UNCLASSIFIED with reason `severity endpoint not deployed outside demo windows`; the "Tool calls the model initiated" section. |
+| Export | `GET /runs/f2c5f22d…/export.json` HTTP 200. `summary.submittal_number` `S-001`, `summary.agent_mode` `full_text`, three model tool calls (`verify_quote` twice, `set_model_response` once), the severity object carrying `fallback` and the recorded reason, and the exclusions note: no upload passphrase, submission token, or client address in the payload. |
+| RFI | `GET /runs/f2c5f22d…/rfi.pdf` HTTP 200, two pages. Page 1 header: `RFI number: RFI-001`, `Submittal number: S-001`, project, owner, date, finding count; `DRAFT - HUMAN REVIEW REQUIRED`; no 64-hex digest and no run identifier anywhere on page 1. Last page: the chain-of-custody block sits after the `Reviewed by` signature lines, carries both full digests, and ends on the do-not-prove-accuracy caption. |
+| 3e, Torven | `POST /sample/torven-70c` HTTP 303 to run `451a4269a1724c9a9d6e0742014532f9`. COMPLETED, `S-002`, the scripted quotes on Specification page 5 and Submitted page 2. |
+| 3f, quarantine | `POST /sample/veylan-altered` HTTP 303 to run `d9f05f61806248818de1f9b42270cb6b`. QUARANTINED, `S-003`. The notice reads exactly the sentence the script quotes — "The text-layer integrity screen stopped this run. Reason: `text_layer_integrity_screen`. No model call was made and no RFI was drafted." — plus one following sentence about the hidden text being recorded for a human reviewer. Detector `render_mode_3`; the hidden `209V` span rendered in the integrity table under the columns Page, Hidden span text, Font, Size, Detector, Evidence, SHA-256. |
+| 4b, gate | `GET /gate` HTTP 200: the prefilled example VERIFIED, cited page 5, page count 7, no rejection reason, the normalized quote, and both near-miss buttons. `POST /gate` with the one-digit-changed quote: REJECTED, `quote_not_found_on_cited_page`. |
+
+**Findings, none of which is a script edit.** (1) The scenes match the live service; no mismatch beyond the two recorded expectations. (2) The stored legacy sample runs render the pre-number presentation and list by hex, exactly as the presentation-polish section left open; the shoot-day reset archives them and the three dry-run submittals `S-001` to `S-003`, so the counter and the shoot start clean. (3) The 3c severity beat shows UNCLASSIFIED with the recorded sentinel reason in today's world; the script's mandatory fallback line covers it, and the HIGH-badge narration applies only if the 08-29 Gemma decision deploys the endpoint (`GEMMA-SENSITIVE`, REVIEW-CLAIMS-7D C7-17). (4) The landing Run column shows hex for the new numbered runs too — the open presentation row, unchanged.
+
+### The EVAL regeneration-fragility row
+
+ACCEPTED, one sentence: no regeneration is planned before submission, `EVAL.md` carries no hand-written section (the provenance prose lives in the generator and is pinned by tests), and the README's miss narrative sits outside the generated markers, so the next regeneration erases nothing.
+
+### Codex review
+
+One read-only Codex review ran over the audit artifacts (`4792f76..HEAD`); its findings and their dispositions are recorded below in this section after the run.
+
+### Local quality-gate receipts
+
+All commands run in `C:\Users\mcspd\dev\specguard-7d` on arya. Exit codes are unpiped. The table names the final post-review run.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `680 passed, 2 warnings`. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `58 files already formatted` |
+| `git diff --check` | 0 | No whitespace errors. |
+| `git status --porcelain` | 0 | Empty after each commit. |
+
+### Local commits
+
+- `b7f2513` — checkpoint A1: the claims audit, the sweep, and the four proven corrections.
+- The commit carrying this section, `DEVPOST-FORM.md`, and the dry-run record.
+
+### What this phase leaves for Mason
+
+1. **The pre-flip runbook** (claude-memory `reference/specguard-preflip-runbook-2026-08.md`): ff-only merge, repo delete-and-recreate to shed `refs/pull/1/head`, flip, secret-scanning enable. All Mason's steps.
+2. **The Gemma decision, 08-29.** If the endpoint deploys, re-check the four `GEMMA-SENSITIVE` rows in `REVIEW-CLAIMS-7D.md`; if the sentinel stays, the tags expire.
+3. **Shoot, then submit**: `DEVPOST-FORM.md` is the paste source; the video URL is its one `[TODO]`.
