@@ -2440,3 +2440,72 @@ One read-only adversarial review ran over `f78cf51..13dd9be`. It cleared the two
 
 1. **The deploy is still outstanding.** `deploy-specguard.ps1` pins `SPECGUARD_AGENT_MODE=full_text` and the live revision still runs `navigate`. Nothing in this phase changed that; the read-only registration at `8900a76` makes the deploy more worth doing, because until it runs the deployed service registers the two write tools to the model in whichever mode it is running.
 2. **`EVAL.md` and the README block were re-rendered offline, not re-measured.** Both are byte-exact generator output for this campaign's data under the corrected renderer, and the next campaign regenerates them from a live run in the ordinary way. No model call was made in this phase.
+
+## Phase 7d — presentation polish: human submittal numbers, custody metadata demoted
+
+Date: 2026-08-25. Scope: the Phase 7d-ui-polish work order, in the worktree `C:\Users\mcspd\dev\specguard-7d` on branch `phase-7d` from the tip `63b05f7`. `specguard/gate.py`, `specguard/integrity.py`, every prompt file, every fixture PDF, `scripts/eval_fixtures.py`, `EVAL-RECEIPTS.jsonl`, and `EVAL-CONSOLE.log` are unchanged in this phase, and no measured number was edited. Nothing is pushed, merged, or opened as a PR. One persistence change; everything else is presentation.
+
+### What changed, and why
+
+Mason's 2026-08-25 screenshot findings, all three presentation defects rather than correctness ones:
+
+- The RFI header printed the same value under two labels, "Submittal ID" and "Run ID". One identifier read twice is noise.
+- The RFI number was `SG-{run_id[:8].upper()}` — a hex string with a prefix, in a document class whose numbers are `RFI-001`.
+- The chain-of-custody block, two full 64-hex digests and their disclaimer, sat in the reviewer's reading path. The disclaimer text was correct; the placement was the problem.
+
+The first screen a reviewer meets is now findings, quotes, and pages. The custody record is still present, still complete, and still labelled — past the signature block, where a reader who wants it goes looking.
+
+### The counter, and the pairing
+
+The identifier a human reads is a sequence number assigned once, at run creation, from the `counters/submittal_number` document incremented inside a Firestore transaction: `S-001`, `S-002`. `FirestoreRunRepository.assign_submittal_number` reads the count and writes count+1 in one transaction, so two runs starting together cannot be handed the same value — the loser's commit is refused and it runs again against the winner's value. The number is written onto the run record with the first `RUNNING` write and never changes afterwards.
+
+The hex run identifier is untouched. It still keys the Firestore document, the storage objects, and every URL; nothing was renamed and no link moved.
+
+One RFI exists per run, so the RFI reuses that run's sequence value rather than drawing from a second counter: `S-001` carries `RFI-001`. `specguard/tools.py` no longer derives an identifier of its own — `draft_rfi` renders the number the web layer hands it, which is why `AuditRunner.run_audit` gained a `submittal_number` argument. A second counter would be a second thing to drift.
+
+A number is spent at run creation, not at completion, so a failed run keeps the number it was given and the sequence has gaps. That is deliberate: a gap is honest, and reissuing a number a reviewer may already have seen is not.
+
+### The legacy fallback
+
+A run persisted before the field existed has no number to render, so it renders its short run identifier — `01234567` — plainly, and the run page says in one line that the run predates numbered submittals. No `S-` number is invented for it, because an invented one would be indistinguishable from an assigned one. The same fallback covers `run_audit.py`, the CLI path, which has no counter to draw from: its RFI header names the short run identifier and omits the submittal-number field rather than printing one value twice.
+
+### Where things now sit
+
+| Surface | Leads with | Custody metadata |
+| --- | --- | --- |
+| RFI PDF | Header block: RFI number, submittal number, project, owner, date issued, finding count. No hash, no hex. | Last page, past the signature lines, 7.5 pt: run identifier, both full SHA-256 digests, the unchanged "chain-of-custody metadata only ... do not prove accuracy" caption. |
+| Run page | `Submittal S-001` | Collapsed `<details>` disclosure titled "Chain-of-custody metadata", closed by default, holding the hex run identifier and every object digest in full. |
+| `export.json` | Unchanged. | Unchanged. `summary.submittal_number` was added beside the existing counters; every other field, hashes and run identifier included, is untouched. A test compares a numbered export against the same run with the field removed and asserts every other section is equal. |
+
+No digest is truncated anywhere. A shortened hash has no custody value, and the order forbade it explicitly.
+
+### Tests
+
+House style throughout, in-process fakes only, no network and no credentials. `tests/fake_firestore.py` gained transactions modelling Firestore's optimistic concurrency: a transaction records the version of each document it read and its commit raises `Aborted` when one changed. The retry loop driven against it is the real `google.cloud.firestore.transactional` decorator, not a copy, so the concurrency test exercises the library's own behaviour rather than a reimplementation of it.
+
+`tests/test_submittal_number.py` covers the padding and its refusal below one, the `S-`/`RFI-` pairing, the fallback, sequential assignment, the single-counter guarantee, and the racing assignment that retries to `S-042` instead of reissuing. `tests/test_tools.py` pins the header carrying no hex and no repeated identifier, the custody block sitting past `Reviewed by (print)` with both full digests, and the unnumbered fallback. `tests/test_web.py` pins assignment at run creation, a failed run keeping its number, the run page heading, the legacy heading, the collapsed disclosure, and the additive export.
+
+### Local quality-gate receipts
+
+All commands run in `C:\Users\mcspd\dev\specguard-7d` on arya. Exit codes are unpiped.
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest -q` | 0 | `680 passed, 2 warnings`. 659 at `63b05f7`; the 21 new submittal-number, RFI-layout, and run-page tests are the difference. |
+| `uv run ruff check .` | 0 | `All checks passed!` |
+| `uv run ruff format --check .` | 0 | `57 files already formatted` |
+| `git diff --check` | 0 | No whitespace errors. |
+| `git status --porcelain` | 0 | Empty. |
+
+### Local commits
+
+- `dba5cea` — transactions on the Firestore double, with read-version preconditions.
+- `6ed1587` — the submittal counter, the RFI pairing, the demoted custody block, the run-page disclosure, and the additive export.
+- `d58a58d` — the video script and README following the new identifier and custody placement.
+- This section, and the test count recorded from its own run.
+
+### What this phase leaves for Mason
+
+1. **The sample runs still show the old presentation.** Every run stored before this change has no `submittal_number` and renders the legacy fallback. Recreating the demo runs so the shoot shows `S-00x` happens after the deploy, not here — this phase writes no live record.
+2. **The deploy is still outstanding**, unchanged from the previous section. It now carries this presentation as well as the read-only registration and the `full_text` default.
+3. **The landing page still lists runs by shortened hex.** `index.html`'s "Recent sample runs" table shows `run_id[:8]` in its Run column. The work order scoped the web change to the run page, so that column was left alone and is noted here rather than changed: after the deploy and the run recreation it will disagree in shape with the run page it links to.
