@@ -16,7 +16,7 @@ from typing import Any
 
 import pymupdf
 
-from specguard import gate, integrity
+from specguard import gate, integrity, submittal
 from specguard.integrity import PersistedIntegrityFinding
 from specguard.models import (
     CitedQuote,
@@ -91,6 +91,7 @@ class AuditTools:
         cut_sheet_path: str | Path,
         run_id: str,
         output_directory: str | Path,
+        submittal_number: str | None = None,
         now: Callable[[], datetime] | None = None,
         page_budget: int = DEFAULT_PAGE_BUDGET,
         integrity_check_budget: int = DEFAULT_INTEGRITY_CHECK_BUDGET,
@@ -99,6 +100,10 @@ class AuditTools:
         self._spec_path = _canonical_path(spec_path)
         self._cut_sheet_path = _canonical_path(cut_sheet_path)
         self._run_id = run_id
+        #: The number the caller assigned to this run, or ``None`` for a caller
+        #: that has no sequence to draw from. This tool set never assigns one:
+        #: a number invented here would not match the stored run record.
+        self._submittal_number = submittal_number
         self._output_directory = Path(output_directory)
         self._now = now or (lambda: datetime.now(UTC))
         self._drafted_rfis: dict[str, Path] = {}
@@ -497,27 +502,24 @@ class AuditTools:
         screens = self._screen_bound_documents()
         self._output_directory.mkdir(parents=True, exist_ok=True)
         output_path = self._output_directory / f"rfi-{self._run_id}.pdf"
-        rfi_number = f"SG-{self._run_id[:8].upper()}"
+        rfi_number = submittal.rfi_label(self._submittal_number, self._run_id)
         issued = self._now().strftime("%Y-%m-%d")
 
         document = pymupdf.open()
         writer = _RfiWriter(document, rfi_number)
         writer.heading("REQUEST FOR INFORMATION - DRAFT", size=16)
-        writer.field_block(
+        header_fields = [("RFI number", rfi_number)]
+        if self._submittal_number:
+            header_fields.append(("Submittal number", self._submittal_number))
+        header_fields.extend(
             [
-                ("RFI number", rfi_number),
                 ("Project", project),
                 ("Owner", owner),
-                ("Submittal ID", self._run_id),
-                ("Run ID", self._run_id),
                 ("Date issued", issued),
                 ("Findings in this draft", str(len(findings))),
             ]
         )
-        writer.paragraph(
-            "This runtime uses the audit run identifier as the submittal identifier, "
-            "so those two fields carry the same value."
-        )
+        writer.field_block(header_fields)
         writer.space(8)
         writer.line("DRAFT - HUMAN REVIEW REQUIRED", bold=True)
         writer.paragraph(
@@ -559,17 +561,12 @@ class AuditTools:
         )
         writer.space(10)
 
-        writer.heading("CHAIN-OF-CUSTODY METADATA", size=12)
-        writer.paragraph(f"Specification document SHA-256: {spec_document.sha256}")
-        writer.paragraph(f"Submitted document SHA-256: {cut_sheet_document.sha256}")
-        writer.paragraph(
-            "These hashes identify the source byte streams used for this run. "
-            "They are chain-of-custody metadata only. They do not prove accuracy, "
-            "and no part of the verification gate reads them."
-        )
-        writer.space(14)
-
-        writer.reserve(130)
+        # The review block and the chain-of-custody block are reserved
+        # together, at the end. A reviewer reads findings, quotes, and pages;
+        # a 64-character digest tells them nothing about any of that, so it
+        # sits past the signature rather than above it. Nothing is dropped and
+        # nothing is shortened: a truncated digest has no custody value.
+        writer.reserve(210)
         writer.heading("REVIEW", size=12)
         writer.paragraph(
             "This draft is not issued until a human reviewer signs it. SpecGuard signs nothing."
@@ -577,6 +574,17 @@ class AuditTools:
         writer.space(6)
         writer.signature_line("Reviewed by (print)", "Date")
         writer.signature_line("Signature", "Date")
+        writer.space(10)
+
+        writer.heading("CHAIN-OF-CUSTODY METADATA", size=9)
+        writer.small_paragraph(f"Audit run identifier: {self._run_id}")
+        writer.small_paragraph(f"Specification document SHA-256: {spec_document.sha256}")
+        writer.small_paragraph(f"Submitted document SHA-256: {cut_sheet_document.sha256}")
+        writer.small_paragraph(
+            "These values identify the source byte streams used for this run. "
+            "They are chain-of-custody metadata only. They do not prove accuracy, "
+            "and no part of the verification gate reads them."
+        )
         writer.finish()
         document.set_metadata(
             {
@@ -765,6 +773,16 @@ class _RfiWriter:
     def paragraph(self, text: str) -> None:
         self._write_wrapped(text, fontname="helv", fontsize=9.5)
         self._y += 3
+
+    def small_paragraph(self, text: str) -> None:
+        """Write one line of demoted metadata in reduced type.
+
+        Reduced, never truncated. A long token still wraps by character
+        through :meth:`_split_long_word`, so every character of a digest
+        written here survives into the extracted text.
+        """
+        self._write_wrapped(text, fontname="helv", fontsize=7.5)
+        self._y += 2
 
     def space(self, points: float) -> None:
         self._ensure(points)

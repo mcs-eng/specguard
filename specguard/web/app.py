@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.datastructures import FormData
 
-from specguard import context, gate
+from specguard import context, gate, submittal
 from specguard.agent import resolve_agent_mode
 from specguard.models import AgentMode, AuditRunSummary
 from specguard.tools import QUOTES_VERIFIED_MEANING
@@ -700,7 +700,14 @@ async def _run_audit(
     source: str,
     submission_token: str | None = None,
 ) -> dict[str, Any]:
-    """Store an auditable run record for one upload or committed sample pair."""
+    """Store an auditable run record for one upload or committed sample pair.
+
+    The submittal number is taken before anything else is written, so the
+    number a reviewer reads exists on the run record from its first ``RUNNING``
+    write and never changes afterwards. It is also what the RFI is numbered
+    from, which is why the runner receives it rather than deriving one.
+    """
+    submittal_number = services.repository.assign_submittal_number()
     specification_name = f"{run_id}/specification.pdf"
     submitted_document_name = f"{run_id}/submitted-document.pdf"
     uploaded_names: list[str] = []
@@ -720,6 +727,7 @@ async def _run_audit(
         )
         pending_run = _pending_run_record(
             run_id=run_id,
+            submittal_number=submittal_number,
             specification=specification,
             submitted_document=submitted_document,
             source=source,
@@ -749,6 +757,7 @@ async def _run_audit(
                 spec_path=spec_path,
                 cut_sheet_path=cut_sheet_path,
                 run_id=run_id,
+                submittal_number=submittal_number,
                 output_directory=root / "artifacts",
             )
             completed_summary = summary
@@ -758,6 +767,7 @@ async def _run_audit(
 
         run = _run_record(
             run_id=run_id,
+            submittal_number=submittal_number,
             created_at=pending_run["created_at"],
             summary=summary,
             specification=specification,
@@ -790,11 +800,17 @@ def _store_rfi(
 
 
 def _pending_run_record(
-    *, run_id: str, specification: StoredObject, submitted_document: StoredObject, source: str
+    *,
+    run_id: str,
+    submittal_number: str,
+    specification: StoredObject,
+    submitted_document: StoredObject,
+    source: str,
 ) -> dict[str, Any]:
     """Build a run record before the audit can create durable derived data."""
     return {
         "run_id": run_id,
+        "submittal_number": submittal_number,
         "created_at": datetime.now(UTC),
         "source": source,
         "status": "RUNNING",
@@ -810,6 +826,7 @@ def _pending_run_record(
 def _run_record(
     *,
     run_id: str,
+    submittal_number: str,
     created_at: datetime,
     summary: AuditRunSummary,
     specification: StoredObject,
@@ -820,6 +837,7 @@ def _run_record(
     """Build the public Firestore run record without any ephemeral file paths."""
     return {
         "run_id": run_id,
+        "submittal_number": submittal_number,
         "created_at": created_at,
         "source": source,
         "status": "QUARANTINED" if summary.quarantined else "COMPLETED",
@@ -937,8 +955,19 @@ def _stored_object_record(stored: StoredObject) -> dict[str, str]:
 
 
 def _display_run(run: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
-    """Add read-side status fields without changing the Firestore run record."""
+    """Add read-side status fields without changing the Firestore run record.
+
+    ``submittal_label`` is what a reader is shown for this run's identity: the
+    assigned submittal number, or the short run identifier for a run persisted
+    before that field existed. The stored record is not altered either way, so
+    a legacy run stays legacy and no ``S-`` number is invented for it.
+    """
     displayed = dict(run)
+    stored_number = displayed.get("submittal_number")
+    displayed["submittal_number"] = str(stored_number) if stored_number else None
+    displayed["submittal_label"] = submittal.submittal_label(
+        displayed["submittal_number"], str(displayed.get("run_id", ""))
+    )
     status = str(displayed.get("status", ""))
     created_at = displayed.get("created_at")
     reference_time = now or datetime.now(UTC)
@@ -1287,6 +1316,10 @@ def _export_payload(
             "created_at": _isoformat(run.get("created_at")),
         },
         "summary": {
+            # Added in Phase 7d beside the existing counters. Every field that
+            # was here before is still here, and the hex run identifier above
+            # is unchanged: this names the same run in the form a human reads.
+            "submittal_number": run.get("submittal_number"),
             "claims_made": summary.get("claims_made"),
             "rejected": summary.get("rejected"),
             "retried": summary.get("retried"),

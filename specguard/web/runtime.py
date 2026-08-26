@@ -21,9 +21,15 @@ class AuditRunner(Protocol):
         spec_path: Path,
         cut_sheet_path: Path,
         run_id: str,
+        submittal_number: str,
         output_directory: Path,
     ) -> AuditRunSummary:
-        """Run one audit over the two local request copies."""
+        """Run one audit over the two local request copies.
+
+        ``submittal_number`` is the number the caller already assigned to this
+        run and stored on its record. The RFI is numbered from it, so no part
+        of the runtime derives a second identifier of its own.
+        """
 
 
 class GoogleAuditRunner:
@@ -39,6 +45,7 @@ class GoogleAuditRunner:
         spec_path: Path,
         cut_sheet_path: Path,
         run_id: str,
+        submittal_number: str,
         output_directory: Path,
     ) -> AuditRunSummary:
         """Run the existing runtime with Cloud Run application credentials."""
@@ -49,6 +56,7 @@ class GoogleAuditRunner:
                 spec_path=spec_path,
                 cut_sheet_path=cut_sheet_path,
                 run_id=run_id,
+                submittal_number=submittal_number,
                 output_directory=output_directory,
             )
             agent = create_adk_agent(

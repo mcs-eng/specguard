@@ -23,6 +23,7 @@ from specguard.models import (
     QuarantinedDocument,
     RunQuarantine,
 )
+from specguard.submittal import format_submittal_number
 from specguard.tools import QUOTES_VERIFIED_MEANING
 from specguard.web import app as app_module
 from specguard.web.app import (
@@ -67,12 +68,17 @@ class FakeRunRepository:
         self.token_mints_by_hour_ip: dict[tuple[str, str], int] = {}
         self.submission_tokens: dict[str, dict[str, Any]] = {}
         self.minted_tokens = 0
+        self.submittal_sequence = 0
 
     def create_run(self, run: Mapping[str, Any]) -> None:
         self.create_calls += 1
         if self.create_calls in self.failing_create_calls:
             raise RuntimeError("firestore write failed")
         self.runs[str(run["run_id"])] = dict(run)
+
+    def assign_submittal_number(self) -> str:
+        self.submittal_sequence += 1
+        return format_submittal_number(self.submittal_sequence)
 
     def mint_submission_token(self, submission_token: str, *, expires_at: datetime) -> None:
         self.minted_tokens += 1
@@ -184,6 +190,7 @@ class FakeAuditRunner:
         self.summary = summary
         self.failure = failure
         self.calls: list[tuple[bytes, bytes, str]] = []
+        self.submittal_numbers: list[str] = []
 
     async def run_audit(
         self,
@@ -191,9 +198,11 @@ class FakeAuditRunner:
         spec_path: Path,
         cut_sheet_path: Path,
         run_id: str,
+        submittal_number: str,
         output_directory: Path,
     ) -> AuditRunSummary:
         self.calls.append((spec_path.read_bytes(), cut_sheet_path.read_bytes(), run_id))
+        self.submittal_numbers.append(submittal_number)
         if self.failure is not None:
             raise self.failure
         if self.summary is not None:
@@ -1473,6 +1482,7 @@ SPEC_QUOTE_PAGE = 5
 CUT_SHEET_QUOTE = "Field conductor termination rating: 158 deg F."
 CUT_SHEET_QUOTE_PAGE = 2
 FIXTURE_RUN_ID = "fixture-run-6e"
+FIXTURE_SUBMITTAL_NUMBER = "S-012"
 
 
 class ExplodingRepository:
@@ -1508,6 +1518,7 @@ def _fixture_run_client() -> tuple[TestClient, FakeRunRepository, FakeObjectStor
     created_at = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
     repository.runs[FIXTURE_RUN_ID] = {
         "run_id": FIXTURE_RUN_ID,
+        "submittal_number": FIXTURE_SUBMITTAL_NUMBER,
         "created_at": created_at,
         "source": "sample",
         "status": "COMPLETED",
@@ -2364,3 +2375,103 @@ def test_two_apps_never_share_a_cached_window_set() -> None:
     second.get(f"/runs/{FIXTURE_RUN_ID}")
 
     assert second_storage.download_count == 2
+
+
+# --- Phase 7d: the submittal number, and custody metadata out of the path ---
+
+
+def test_a_run_is_created_with_the_next_submittal_number() -> None:
+    """The number is on the record from its first write and never changes."""
+    client, repository, _, runner = _client()
+
+    client.post("/sample/caldra", follow_redirects=False)
+    client.post("/sample/caldra", follow_redirects=False)
+
+    numbers = [run["submittal_number"] for run in repository.runs.values()]
+    assert sorted(numbers) == ["S-001", "S-002"]
+    assert runner.submittal_numbers == ["S-001", "S-002"]
+
+
+def test_a_failed_run_keeps_the_submittal_number_it_was_given() -> None:
+    """A gap in the sequence is honest; reissuing a seen number is not."""
+    client, repository, _, _ = _client(failure=RuntimeError("audit exploded"))
+
+    response = client.post("/sample/caldra", follow_redirects=False)
+
+    assert response.status_code == 500
+    stored = next(iter(repository.runs.values()))
+    assert stored["status"] == "FAILED"
+    assert stored["submittal_number"] == "S-001"
+
+
+def test_the_run_page_leads_with_the_submittal_number() -> None:
+    client, _, _ = _fixture_run_client()
+
+    body = client.get(f"/runs/{FIXTURE_RUN_ID}").text
+    head = body[: body.index("Claims made")]
+
+    assert f"Submittal <code>{FIXTURE_SUBMITTAL_NUMBER}</code>" in head
+    assert f"<title>SpecGuard {FIXTURE_SUBMITTAL_NUMBER}</title>" in body
+    # The hex run identifier still keys every URL, and is no longer the
+    # heading a reader meets first.
+    assert f"<h2>Run <code>{FIXTURE_RUN_ID}</code></h2>" not in body
+    assert f"/runs/{FIXTURE_RUN_ID}/rfi.pdf" in body
+
+
+def test_a_run_persisted_before_the_field_renders_the_short_run_id() -> None:
+    """No invented number for a legacy run, and it says why it has none."""
+    client, repository, _ = _fixture_run_client()
+    legacy = dict(repository.runs[FIXTURE_RUN_ID])
+    legacy.pop("submittal_number")
+    legacy["run_id"] = "0123456789abcdef0123456789abcdef"
+    repository.runs[legacy["run_id"]] = legacy
+
+    body = client.get(f"/runs/{legacy['run_id']}").text
+
+    assert "<h2>Run <code>01234567</code></h2>" in body
+    assert "before submittal numbers were assigned" in body
+    assert "Submittal <code>" not in body
+    assert "S-0" not in body
+
+
+def test_the_custody_hashes_and_the_hex_run_id_sit_in_a_collapsed_disclosure() -> None:
+    """Present, complete, labelled, and out of the reviewer's reading path."""
+    client, repository, _ = _fixture_run_client()
+    documents = repository.runs[FIXTURE_RUN_ID]["documents"]
+
+    body = client.get(f"/runs/{FIXTURE_RUN_ID}").text
+
+    disclosure = body[body.index('<details class="custody">') :]
+    assert "<summary>Chain-of-custody metadata</summary>" in disclosure
+    # No `open` attribute: a disclosure that renders open is not collapsed.
+    assert '<details class="custody" open' not in body
+    assert body.index('<details class="custody">') > body.index("Findings <span")
+    for document in documents.values():
+        assert len(document["sha256"]) == 64
+        assert f"<code>{document['sha256']}</code>" in disclosure
+    assert f"<dd><code>{FIXTURE_RUN_ID}</code></dd>" in disclosure
+    assert "They do not prove accuracy" in disclosure
+
+
+def test_the_export_adds_the_submittal_number_and_changes_nothing_else() -> None:
+    """Additive only: every field the export carried before is still there."""
+    client, repository, _ = _fixture_run_client()
+    with_number = client.get(f"/runs/{FIXTURE_RUN_ID}/export.json").json()
+
+    del repository.runs[FIXTURE_RUN_ID]["submittal_number"]
+    legacy = client.get(f"/runs/{FIXTURE_RUN_ID}/export.json").json()
+
+    assert with_number["summary"]["submittal_number"] == FIXTURE_SUBMITTAL_NUMBER
+    assert legacy["summary"]["submittal_number"] is None
+    assert set(with_number) == set(legacy)
+    for section in ("run", "summary", "rfi"):
+        assert set(with_number[section]) == set(legacy[section])
+    assert with_number["run"] == legacy["run"]
+    assert with_number["documents"] == legacy["documents"]
+    assert with_number["findings"] == legacy["findings"]
+    assert with_number["rejections"] == legacy["rejections"]
+    assert with_number["integrity_records"] == legacy["integrity_records"]
+    assert with_number["exclusions"] == legacy["exclusions"]
+    assert {
+        key: value for key, value in with_number["summary"].items() if key != "submittal_number"
+    } == {key: value for key, value in legacy["summary"].items() if key != "submittal_number"}

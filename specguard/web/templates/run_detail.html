@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}SpecGuard Run {{ run.run_id }}{% endblock %}
+{% block title %}SpecGuard {{ run.submittal_label }}{% endblock %}
 {% macro page_context(window, label) %}
 {% if window and window.found %}
 <div class="context">
@@ -17,7 +17,7 @@
     <span class="badge {% if run.display_status == 'QUARANTINED' %}quarantined{% elif run.display_status == 'FAILED' %}failed{% elif run.display_status == 'RUNNING' or run.display_status == 'STALLED' %}running{% else %}completed{% endif %}">{{ run.display_status }}</span>
     {% if run.source == 'sample' %}<span class="badge sample">SAMPLE</span>{% endif %}
     <div>
-      <h2>Run <code>{{ run.run_id }}</code></h2>
+      {% if run.submittal_number %}<h2>Submittal <code>{{ run.submittal_number }}</code></h2>{% else %}<h2>Run <code>{{ run.submittal_label }}</code></h2><p class="muted">This run was audited before submittal numbers were assigned, so it is identified by its run ID.</p>{% endif %}
       <p class="muted">Created {{ run.created_at }}</p>
     </div>
   </div>
@@ -115,14 +115,17 @@
   {% else %}<p class="empty">No text-layer integrity record exists for this run.</p>{% endif %}
 </section>
 <section class="card">
-  <div class="section-head">
-    <h2>Durable objects</h2>
-    <p>Every source and generated file, keyed by run ID with its SHA-256.</p>
-  </div>
-  <div class="table-wrap"><table><thead><tr><th scope="col">Role</th><th scope="col">Object</th><th scope="col">SHA-256</th></tr></thead><tbody>
-  {% for role, document in run.documents.items() %}<tr><td>{{ role }}</td><td><code>{{ document.object_name }}</code></td><td><code>{{ document.sha256 }}</code></td></tr>{% endfor %}
-  {% if run.rfi %}<tr><td>RFI</td><td><code>{{ run.rfi.object_name }}</code></td><td><code>{{ run.rfi.sha256 }}</code></td></tr>{% endif %}
-  </tbody></table></div>
+  <details class="custody">
+    <summary>Chain-of-custody metadata</summary>
+    <div class="custody-body">
+      <p class="muted">The hex run ID and the SHA-256 of every source and generated file, in full. These identify the byte streams this run read and wrote. They are chain-of-custody metadata only. They do not prove accuracy, and no part of the verification gate reads them.</p>
+      <dl class="stats"><div><dt>Run ID</dt><dd><code>{{ run.run_id }}</code></dd></div></dl>
+      <div class="table-wrap"><table><thead><tr><th scope="col">Role</th><th scope="col">Object</th><th scope="col">SHA-256</th></tr></thead><tbody>
+      {% for role, document in run.documents.items() %}<tr><td>{{ role }}</td><td><code>{{ document.object_name }}</code></td><td><code>{{ document.sha256 }}</code></td></tr>{% endfor %}
+      {% if run.rfi %}<tr><td>RFI</td><td><code>{{ run.rfi.object_name }}</code></td><td><code>{{ run.rfi.sha256 }}</code></td></tr>{% endif %}
+      </tbody></table></div>
+    </div>
+  </details>
 </section>
 <style>
   .run-head { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem; margin-bottom: 1rem; }
@@ -138,5 +141,10 @@
   .context-note { margin: .9rem 0 0; font-size: .88rem; }
   .severity-reason { margin: .5rem 0 0; max-width: 22rem; color: var(--ink); font-size: .86rem; overflow-wrap: anywhere; }
   .severity-caption { margin: .5rem 0 0; max-width: 22rem; color: var(--ink-soft); font-size: .82rem; }
+  .custody > summary { cursor: pointer; font-size: 1.05rem; font-weight: 700; list-style: revert; }
+  .custody > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: .2rem; }
+  .custody-body { margin-top: .9rem; }
+  .custody-body .muted { max-width: 44rem; font-size: .86rem; }
+  .custody-body code { font-size: .8rem; overflow-wrap: anywhere; }
 </style>
 {% endblock %}

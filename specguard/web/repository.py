@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+from specguard.submittal import format_submittal_number
 from specguard.tools import (
     FINDINGS_COLLECTION,
     INTEGRITY_FINDINGS_COLLECTION,
@@ -22,6 +23,11 @@ SAMPLE_IP_LIMITS_COLLECTION = "sample_ip_limits"
 GATE_CHECK_LIMITS_COLLECTION = "gate_check_limits"
 TOKEN_MINT_LIMITS_COLLECTION = "token_mint_limits"
 UPLOAD_SUBMISSION_TOKENS_COLLECTION = "upload_submission_tokens"
+COUNTERS_COLLECTION = "counters"
+
+#: The one document that holds the submittal sequence. One counter serves both
+#: the submittal number and the RFI number, because one RFI exists per run.
+SUBMITTAL_NUMBER_COUNTER = "submittal_number"
 
 
 class SubmissionTokenRefused(Exception):
@@ -33,6 +39,9 @@ class RunRepository(Protocol):
 
     def create_run(self, run: Mapping[str, Any]) -> None:
         """Store one completed, failed, or quarantined audit run."""
+
+    def assign_submittal_number(self) -> str:
+        """Take the next submittal number from the durable sequence."""
 
     def mint_submission_token(self, submission_token: str, *, expires_at: datetime) -> None:
         """Record one submission token the service issued, with its expiry."""
@@ -83,15 +92,42 @@ class RunRepository(Protocol):
 
 
 class FirestoreRunRepository:
-    """Lazy Firestore repository for the SpecGuard web service."""
+    """Lazy Firestore repository for the SpecGuard web service.
 
-    def __init__(self, *, project_id: str) -> None:
+    The client is built on first use so importing this module needs no
+    credentials. A caller may supply one instead, which is how the transaction
+    behaviour is exercised against an in-process fake rather than a project.
+    """
+
+    def __init__(self, *, project_id: str, client: Any | None = None) -> None:
         self._project_id = project_id
-        self._client: firestore.Client | None = None
+        self._client: Any | None = client
 
     def create_run(self, run: Mapping[str, Any]) -> None:
         """Write the run document under its public run identifier."""
         self._collection(RUNS_COLLECTION).document(str(run["run_id"])).set(dict(run))
+
+    def assign_submittal_number(self) -> str:
+        """Increment the durable submittal counter and return the value it gave.
+
+        The read and the write are one transaction, so two runs starting at the
+        same moment cannot be handed the same number: the second transaction
+        sees its read invalidated and is retried against the value the first
+        one wrote.
+
+        A number is spent when a run is created, not when it completes. A run
+        that fails keeps the number it was given, so the sequence has gaps
+        rather than reissuing a number a reviewer may already have seen.
+        """
+        counter = self._collection(COUNTERS_COLLECTION).document(SUBMITTAL_NUMBER_COUNTER)
+
+        @firestore.transactional
+        def assign(transaction: firestore.Transaction) -> int:
+            sequence = _counter_count(counter.get(transaction=transaction)) + 1
+            transaction.set(counter, {"count": sequence})
+            return sequence
+
+        return format_submittal_number(assign(self._client_for_transactions().transaction()))
 
     def mint_submission_token(self, submission_token: str, *, expires_at: datetime) -> None:
         """Record a token this service issued, keyed by its digest rather than its value."""
@@ -231,10 +267,10 @@ class FirestoreRunRepository:
         query = self._collection(collection_name).where(filter=FieldFilter("run_id", "==", run_id))
         return [_snapshot_data(snapshot) for snapshot in query.stream()]
 
-    def _collection(self, name: str) -> firestore.CollectionReference:
+    def _collection(self, name: str) -> Any:
         return self._client_for_transactions().collection(name)
 
-    def _client_for_transactions(self) -> firestore.Client:
+    def _client_for_transactions(self) -> Any:
         if self._client is None:
             self._client = firestore.Client(project=self._project_id)
         return self._client

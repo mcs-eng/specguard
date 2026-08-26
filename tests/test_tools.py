@@ -36,6 +36,11 @@ from tests.fake_firestore import FakeFirestoreClient
 from tests.fixtures_pdf import write_pdf
 
 FIXED_TIME = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+RUN_ID = "run-1234abcd"
+
+#: The number the web service assigns at run creation. The tools never derive
+#: one; they render what they are handed.
+SUBMITTAL_NUMBER = "S-007"
 
 
 def _rfi_text(rfi_path: Path | str | None) -> str:
@@ -64,12 +69,15 @@ def _tools(
     client: FakeFirestoreClient,
     spec: Path,
     cut_sheet: Path,
+    *,
+    submittal_number: str | None = SUBMITTAL_NUMBER,
 ) -> AuditTools:
     return AuditTools(
         firestore_client=client,
         spec_path=spec,
         cut_sheet_path=cut_sheet,
-        run_id="run-1234abcd",
+        run_id=RUN_ID,
+        submittal_number=submittal_number,
         output_directory=tmp_path / "artifacts",
         now=lambda: FIXED_TIME,
     )
@@ -424,12 +432,11 @@ def test_draft_rfi_contains_required_evidence_and_hash_metadata(tmp_path: Path) 
     result = tools.draft_rfi([finding])
     text = _rfi_text(tools.rfi_path_for(result["rfi_id"]))
 
-    assert result["rfi_number"] == "SG-RUN-1234"
-    assert "RFI number: SG-RUN-1234" in text
+    assert result["rfi_number"] == "RFI-007"
+    assert "RFI number: RFI-007" in text
+    assert "Submittal number: S-007" in text
     assert "Project: Fictional Workshop" in text
     assert "Owner: Fictional Public Authority" in text
-    assert "Submittal ID: run-1234abcd" in text
-    assert "Run ID: run-1234abcd" in text
     assert "Date issued: " in text
     assert "FINDINGS - QUOTES VERIFIED" in text
     assert QUOTES_VERIFIED_MEANING in text
@@ -448,8 +455,79 @@ def test_draft_rfi_contains_required_evidence_and_hash_metadata(tmp_path: Path) 
     assert cut_hash in text
     assert "They are chain-of-custody metadata only." in text
     assert "They do not prove accuracy" in text
+    assert f"Audit run identifier: {RUN_ID}" in text
     assert "Reviewed by (print)" in text
     assert "Signature" in text
+
+
+def test_the_rfi_header_carries_no_hex_identifier_and_no_repeated_one(tmp_path: Path) -> None:
+    """The header a reviewer reads first names the submittal, once.
+
+    Mason's finding was that the header printed one value under two labels and
+    that the value was a hex string. The submittal number and the RFI number
+    are two different identifiers of two different artifacts, and neither is
+    hex; the hex run identifier is not in the header at all.
+    """
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    tools = _tools(tmp_path, client, spec, cut_sheet)
+
+    result = tools.draft_rfi([_persisted_finding(spec, cut_sheet)])
+    text = _rfi_text(tools.rfi_path_for(result["rfi_id"]))
+    header = text[: text.index("FINDINGS - QUOTES VERIFIED")]
+
+    assert "RFI-007" in header
+    assert "S-007" in header
+    assert RUN_ID not in header
+    assert "Submittal ID" not in text
+    assert "Run ID" not in text
+    assert "SG-" not in text
+
+
+def test_the_rfi_custody_block_sits_past_the_signature_with_full_digests(
+    tmp_path: Path,
+) -> None:
+    """Custody metadata is present, complete, and out of the reading path."""
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    spec_hash = hashlib.sha256(spec.read_bytes()).hexdigest()
+    cut_hash = hashlib.sha256(cut_sheet.read_bytes()).hexdigest()
+    tools = _tools(tmp_path, client, spec, cut_sheet)
+
+    result = tools.draft_rfi([_persisted_finding(spec, cut_sheet)])
+    text = _rfi_text(tools.rfi_path_for(result["rfi_id"]))
+
+    custody_at = text.index("CHAIN-OF-CUSTODY METADATA")
+    assert custody_at > text.index("FINDINGS - QUOTES VERIFIED")
+    assert custody_at > text.index("Reviewed by (print)")
+    assert custody_at > text.index("Signature")
+    # Full digests, at the new location. A truncated hash has no custody value.
+    assert len(spec_hash) == 64 and len(cut_hash) == 64
+    assert text.index(spec_hash) > custody_at
+    assert text.index(cut_hash) > custody_at
+    assert text.index(RUN_ID) > custody_at
+
+
+def test_an_rfi_for_a_run_with_no_assigned_number_falls_back_to_the_run_id(
+    tmp_path: Path,
+) -> None:
+    """A caller with no sequence to draw from gets the plain fallback.
+
+    ``run_audit.py`` is such a caller: it has no submittal counter. It gets the
+    short run identifier rather than an invented ``S-`` number, and no second
+    identifier appears beside it.
+    """
+    client = FakeFirestoreClient()
+    spec, cut_sheet = _source_pdfs(tmp_path)
+    tools = _tools(tmp_path, client, spec, cut_sheet, submittal_number=None)
+
+    result = tools.draft_rfi([_persisted_finding(spec, cut_sheet)])
+    text = _rfi_text(tools.rfi_path_for(result["rfi_id"]))
+
+    assert result["rfi_number"] == RUN_ID[:8]
+    assert f"RFI number: {RUN_ID[:8]}" in text
+    assert "Submittal number" not in text
+    assert "S-" not in text[: text.index("FINDINGS - QUOTES VERIFIED")]
 
 
 def test_draft_rfi_refuses_hashes_that_do_not_match_the_bound_sources(tmp_path: Path) -> None:
@@ -696,7 +774,7 @@ def test_no_model_registered_tool_returns_the_rfi_filesystem_path(tmp_path: Path
 def _table_pdf(rows: list[list[str]], widths: list[float]) -> pymupdf.Document:
     """Render one table into a fresh document with the real RFI writer."""
     document = pymupdf.open()
-    writer = _RfiWriter(document, "SG-TABLE")
+    writer = _RfiWriter(document, "RFI-TABLE")
     writer.table(["Claim", "Quote"], rows, widths)
     writer.finish()
     return document
