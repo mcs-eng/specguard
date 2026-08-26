@@ -1,9 +1,9 @@
 """The five deterministic tools owned by the SpecGuard ADK agent.
 
-All five belong to :class:`AuditTools`, which the runtime owns. Which of them
-a model may call depends on the agent mode: ``full_text`` registers all five,
-and ``navigate`` registers only the read-only pair in
-:class:`ModelFacingAuditTools`.
+All five belong to :class:`AuditTools`, which the runtime owns. Both agent
+modes register the same three read-only tools through
+:class:`ModelFacingAuditTools`; the two that write are called by the runtime
+only and are never model-reachable.
 """
 
 from __future__ import annotations

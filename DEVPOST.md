@@ -1,6 +1,6 @@
 # SpecGuard: Devpost submission draft
 
-Drafted 2026-08-21 for the All Things Agentic Hackathon. Every number below traces to a receipt named beside it. Placeholders are marked `[TODO]`. Mason fills the form; this file is the text he pastes.
+Drafted 2026-08-21 for the All Things Agentic Hackathon. Every number below names, beside it, the committed artifact it comes from: a published table, the campaign console log (`EVAL-CONSOLE.log`), or the per-call receipt file (`EVAL-RECEIPTS.jsonl`, which carries tool calls and self-check counters; rates and token figures come from the tables and the log). Placeholders are marked `[TODO]`. Mason fills the form; this file is the text he pastes.
 
 ## Contest requirements, recorded verbatim
 

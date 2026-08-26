@@ -9,6 +9,7 @@ build/
 *.egg-info/
 artifacts/
 .env
+EVAL-RECEIPTS.jsonl.partial
 .review-*/
 
 # Planning and environment docs: kept locally, not committed.

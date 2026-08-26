@@ -733,26 +733,34 @@ class ReceiptLog:
 
     A CLI eval run persists no ``runs`` document, so the receipts the runtime
     recorded on every ``AuditRunSummary`` lived only in harness memory and left
-    with the process. This writes them beside the published tables, appended as
-    each audit completes rather than held until the end, so a campaign that
-    stops halfway still leaves the receipts of the audits it did run.
+    with the process. This writes them as each audit completes rather than held
+    until the end — into a gitignored working file beside the published one,
+    promoted over the published file only when the campaign completes. An
+    interrupted campaign therefore leaves two true things on disk: the
+    published file still backing the published tables, and the working file
+    holding the receipts of the audits that did run.
 
-    The file is truncated when the campaign starts. Appending to an earlier
-    campaign's file would publish a mixture of runs that no single table
-    describes.
+    The working file is truncated when the campaign starts. Appending to an
+    earlier campaign's file would publish a mixture of runs that no single
+    table describes.
     """
 
     def __init__(self, path: Path) -> None:
         self._path = Path(path)
+        self._working = self._path.with_name(self._path.name + ".partial")
 
     @property
     def path(self) -> Path:
         return self._path
 
+    @property
+    def working_path(self) -> Path:
+        return self._working
+
     def start_campaign(self) -> None:
-        """Truncate the file so it describes this invocation and no other."""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text("", encoding="utf-8")
+        """Truncate the working file so it describes this invocation and no other."""
+        self._working.parent.mkdir(parents=True, exist_ok=True)
+        self._working.write_text("", encoding="utf-8")
 
     def record_run(
         self,
@@ -763,12 +771,16 @@ class ReceiptLog:
         pair: CasePair,
         iteration: int,
     ) -> None:
-        """Append this run's call lines and its summary line."""
+        """Append this run's call lines and its summary line to the working file."""
         records = receipt_records(outcome, mode=mode, lane=lane, pair=pair, iteration=iteration)
-        with self._path.open("a", encoding="utf-8") as handle:
+        with self._working.open("a", encoding="utf-8") as handle:
             for record in records:
                 handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True))
                 handle.write("\n")
+
+    def finish_campaign(self) -> None:
+        """Promote the working file over the published one; the campaign completed."""
+        self._working.replace(self._path)
 
 
 def aggregate(
@@ -1991,6 +2003,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             lane_results[(lane.name, mode.value)] = aggregate(lane.name, mode, pairs, outcomes)
 
     verdict = evaluate_ship_gate(lane_results)
+    receipts.finish_campaign()
     run_date = datetime.now(UTC).strftime("%Y-%m-%d")
     code_revision = args.code_revision or current_code_revision()
     readme_text = README_PATH.read_text(encoding="utf-8")

@@ -2362,7 +2362,7 @@ EVAL SUMMARY date=2026-08-25 code_revision=8900a76 mode=navigate lane=original c
 EVAL SUMMARY date=2026-08-25 code_revision=8900a76 mode=navigate lane=messy cases=9 runs=10 catch_rate=90% decoy_false_positives=0 unattributed_false_positives=0 rejections=0 retries=0 model_turns=10 mean_prompt_tokens=274534.9 model_tool_calls=272 self_check_rejections=0 runs_returning_a_rejected_quote=0 cases_matching_manifest=8/9
 ```
 
-Provenance of those four lines, stated exactly because it matters: the campaign console output was not captured to a file, and `d98e813` carries no summary lines in its message. They were regenerated offline by rebuilding the campaign's 100 `RunOutcome` objects from `EVAL-RECEIPTS.jsonl` and the committed `EVAL.md` tables and passing them through the harness's own `eval_summary_line`. The rebuild is faithful by construction check: rendering `EVAL.md` from those same objects with the pre-change generator reproduces the committed file byte for byte (`diff -u EVAL.md rendered`, exit 0). No model call was made to produce them.
+Provenance of those four lines, stated exactly because it matters. They were first regenerated offline by rebuilding the campaign's 100 `RunOutcome` objects from `EVAL-RECEIPTS.jsonl` and the committed `EVAL.md` tables and passing them through the harness's own `eval_summary_line`; the rebuild check was that rendering `EVAL.md` from those same objects with the pre-change generator reproduces the committed file byte for byte (`diff -u`, exit 0). The Codex review correctly noted the limit of that warrant: the receipts carry tool calls and self-check counters only, so catches, token means, and the other figures in the rebuild came from the published tables and the check proves consistency with them, not independent derivation. The stronger receipt surfaced afterwards: the orchestrating session had captured the live campaign console to a log, now committed as `EVAL-CONSOLE.log` — 115 lines carrying every per-run console line (run id, quarantine state, turns, tool calls, per-run prompt tokens, catches, rejections) and the four `EVAL SUMMARY` lines as the harness printed them. Those captured summary lines match the regenerated ones field for field. No model call was made in any of this.
 
 ### S3 — the ship gate, and the pre-commitment that governs it
 
@@ -2425,6 +2425,16 @@ All commands run in `C:\Users\mcspd\dev\specguard-7d` on arya. Exit codes are un
 - `0c63243` — the Devpost draft reordered and its mode and campaign statements corrected.
 - `6c7ed84` — the video script brought to this campaign, with the receipts file staged as a provenance beat.
 - This section, and the test count recorded from its own run.
+
+### Codex review of this phase
+
+One read-only adversarial review ran over `f78cf51..13dd9be`. It cleared the two load-bearing changes — no path leaves a write tool model-reachable, and no production renderer consumes `verdict.shipping_mode` — and independently re-verified the committed receipts file: 848 lines, 748 calls, 100 unique runs, no duplicates or gaps, no quote text leaked, all 372 quote checks `verified: true`, no write-tool call present. It could not run pytest inside its sandbox (temp-dir creation denied); the orchestrating session ran the full suite at the tip instead. Three findings, each confirmed and closed in the commits that follow this section's first write:
+
+| Severity | Finding | Fix |
+| --- | --- | --- |
+| P2 | `start_campaign()` truncated the published `EVAL-RECEIPTS.jsonl` before any audit ran, so an interrupted campaign destroyed the receipts behind the still-published tables. | The log now appends to a gitignored `EVAL-RECEIPTS.jsonl.partial` and promotes it over the published file only at campaign completion. An interruption leaves the published receipts intact beside the partial evidence. Pinned by two new tests. |
+| P3 | "Every number below traces to a receipt" overstated provenance: the receipts carry tool calls and self-check counters only, and the offline rebuild imported the other figures from the published tables. | The Devpost sentence now names the artifact class per number. The stronger receipt was also recovered and committed: `EVAL-CONSOLE.log`, the live campaign console capture with per-run prompt tokens and the summary lines as printed, matching the regenerated ones field for field. |
+| P4 | The `specguard/tools.py` module docstring still described the five-tool `full_text` registration. | Corrected to the three-tool read-only surface both modes share. |
 
 ### What this phase leaves for Mason
 
