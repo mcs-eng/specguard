@@ -2520,11 +2520,11 @@ The full record is `REVIEW-CLAIMS-7D.md`: the claims table (`C7-01` to `C7-20`),
 
 Four corrections were proven and applied at `b7f2513`: the README deployed-revision line (was six revisions stale), the README 7c board row (carried `31ef186` numbers as current), the video narration case-run count (four, is three), and the Devpost pointer to the superseded 2026-08-22 severity record (moved to HANDOFF Phase 6e). The quality gates passed before and after: `uv run pytest -q` exit 0, `680 passed, 2 warnings`, at the frozen tip and again after the edits.
 
-**D7-1, the one STOP row, was resolved by Mason and the controller the same day.** The stray Cursor branch was already deleted, but commit `faec4fd` (author `Cursor Agent <cursoragent@cursor.com>`) persists as `refs/pull/1/head` behind the closed PR #1, and pull refs are user-undeletable. Mason decided: delete and recreate the repository immediately before the public flip, per claude-memory `reference/specguard-preflip-runbook-2026-08.md` (ff-only merge, `ls-remote` snapshot, recreate, verify no pull refs, flip, enable secret scanning). No branch action was taken from this session.
+**D7-1, the one STOP row, was resolved by Mason and the controller the same day.** The stray Cursor branch was already deleted, but commit `faec4fd` (authored under Cursor's background-agent identity, readable from the commit itself and deliberately not quoted here) persists as `refs/pull/1/head` behind the closed PR #1, and pull refs are user-undeletable. Mason decided: delete and recreate the repository immediately before the public flip, per claude-memory `reference/specguard-preflip-runbook-2026-08.md` (ff-only merge, `ls-remote` snapshot, recreate, verify no pull refs, flip, enable secret scanning). No branch action was taken from this session.
 
 ### Checkpoint A2 — the Devpost draft
 
-`DEVPOST-FORM.md` is the paste-ready form draft, generated verbatim from `DEVPOST.md` by section extraction, one block per form field: name, tagline, category, hosted URL, repository URL, video URL (`[TODO]`, the only missing value), the Gemma bonus line, the pre-existing-code disclosure, the story sections, and the built-with tags. No field truncates its source. The tagline stays at 59 characters under the 60-character margin `DEVPOST.md` sets, because Devpost's own limit is unverified (REVIEW-CLAIMS.md D-7). Mason pastes and submits; this session submitted nothing.
+`DEVPOST-FORM.md` is the paste-ready form draft, generated from `DEVPOST.md` by section extraction, one block per form field: name, tagline, category, hosted URL, repository URL, video URL (`[TODO]`, the only missing value), the Gemma bonus line, the pre-existing-code disclosure, the story sections, and the built-with tags. The field bodies are verbatim, with two stated exceptions the file's own header names: renamed headings, and one shoot-day instruction appended to the video field. No field truncates its source. The tagline stays at 59 characters under the 60-character margin `DEVPOST.md` sets, because Devpost's own limit is unverified (REVIEW-CLAIMS.md D-7). Mason pastes and submits; this session submitted nothing.
 
 ### Checkpoint A2 — the live dry run
 
@@ -2541,15 +2541,25 @@ Four corrections were proven and applied at `b7f2513`: the README deployed-revis
 | 3f, quarantine | `POST /sample/veylan-altered` HTTP 303 to run `d9f05f61806248818de1f9b42270cb6b`. QUARANTINED, `S-003`. The notice reads exactly the sentence the script quotes — "The text-layer integrity screen stopped this run. Reason: `text_layer_integrity_screen`. No model call was made and no RFI was drafted." — plus one following sentence about the hidden text being recorded for a human reviewer. Detector `render_mode_3`; the hidden `209V` span rendered in the integrity table under the columns Page, Hidden span text, Font, Size, Detector, Evidence, SHA-256. |
 | 4b, gate | `GET /gate` HTTP 200: the prefilled example VERIFIED, cited page 5, page count 7, no rejection reason, the normalized quote, and both near-miss buttons. `POST /gate` with the one-digit-changed quote: REJECTED, `quote_not_found_on_cited_page`. |
 
-**Findings, none of which is a script edit.** (1) The scenes match the live service; no mismatch beyond the two recorded expectations. (2) The stored legacy sample runs render the pre-number presentation and list by hex, exactly as the presentation-polish section left open; the shoot-day reset archives them and the three dry-run submittals `S-001` to `S-003`, so the counter and the shoot start clean. (3) The 3c severity beat shows UNCLASSIFIED with the recorded sentinel reason in today's world; the script's mandatory fallback line covers it, and the HIGH-badge narration applies only if the 08-29 Gemma decision deploys the endpoint (`GEMMA-SENSITIVE`, REVIEW-CLAIMS-7D C7-17). (4) The landing Run column shows hex for the new numbered runs too — the open presentation row, unchanged.
+**Findings, none of which is a script edit.** (1) The scenes match the live service; no mismatch beyond the two recorded expectations. (2) The stored legacy sample runs render the pre-number presentation and list by hex, exactly as the presentation-polish section left open; the shoot-day reset archives them and the three dry-run submittals `S-001` to `S-003`, so the counter and the shoot start clean. (3) The 3c severity beat shows UNCLASSIFIED with the recorded sentinel reason in today's world; the script's mandatory fallback line covers it, and the HIGH-badge narration applies only if the 08-29 Gemma decision deploys the endpoint (`GEMMA-SENSITIVE`, REVIEW-CLAIMS-7D C7-17). (4) The landing Run column shows hex for the new numbered runs too — the open presentation row, unchanged. These receipts describe live HTTP state, which the repository cannot re-verify after the fact; the three runs are public sample runs listed on the deployed landing page until the shoot-day reset archives them, so any reader can check them directly while they stand. This is the same receipt class every prior phase's live table uses.
 
 ### The EVAL regeneration-fragility row
 
 ACCEPTED, one sentence: no regeneration is planned before submission, `EVAL.md` carries no hand-written section (the provenance prose lives in the generator and is pinned by tests), and the README's miss narrative sits outside the generated markers, so the next regeneration erases nothing.
 
-### Codex review
+### Codex review, and correction iteration 1
 
-One read-only Codex review ran over the audit artifacts (`4792f76..HEAD`); its findings and their dispositions are recorded below in this section after the run.
+One read-only Codex review ran over the audit artifacts (`4792f76..95256b6`), invoked directly through the Codex companion in this session, as the agent gate instructs. It modified nothing. It independently re-verified the campaign evidence — 848 receipt lines split 748 and 100 across 100 unique runs, the per-mode tool tallies, zero write-tool calls, all 372 quote checks verified, the console summary lines byte-equal to the S2 quotes, every cited commit resolving, both A1 number corrections true, and no credential or hidden-sentence quote in the diff — and returned two P1 and three P2 findings against the audit documents themselves. Every finding was reproduced before it was acted on; all five are closed or dispositioned in this correction pass.
+
+| Severity | Finding | Disposition |
+| --- | --- | --- |
+| P1 | The audit record quoted Mason's personal commit address, and it and this section quoted the Cursor agent identity with its co-author trailer — reintroducing into tracked files the strings the repo-recreate decision exists to shed, the Phase 1 documenting-a-leak pattern. | FIXED — the literals are replaced by descriptions in `REVIEW-CLAIMS-7D.md` (S7-07, S7-08, the verdict) and in this section; the commit hash and branch name, which carry no attribution, remain. The commit-metadata addresses on Mason's own commits are his chosen git identity and are unchanged. |
+| P1 | This section, committed at `95256b6` before the review ran, described the review as already completed and labelled the gate table "final post-review run". | FIXED — this subsection now records the actual run and its dispositions, and the gate table below was re-run after the corrections, which makes its label true. |
+| P2 | The precondition receipt claimed `deploy-specguard.ps1` "exists on no other branch"; it exists on four other local branches and two remote refs. | FIXED with a stronger, true premise — the `SPECGUARD_AGENT_MODE=full_text` pin entered the script at `3fb5718` (`git log --all -S`, one commit), and only `phase-7d` and its remote contain that commit (`git for-each-ref --contains`), so the deploy ran from a `phase-7d` checkout at or after it. The dry run's `S-001` presentation adds the behavioral bound: only code at or after `6ed1587` renders numbered submittals, and every commit from `6ed1587` to the tip is docs-only outside that feature, so the deployed runtime is the tip's runtime. |
+| P2 | `DEVPOST-FORM.md` claimed verbatim extraction while renaming headings and appending one instruction to the video field. | FIXED — the file's header and this section now name both exceptions; the field bodies are verbatim and the review confirmed the other seven fields match exactly. |
+| P2 | The dry-run table asserts live HTTP state the repository cannot re-verify. | ACCEPTED, disclosed — live receipts are narrative in every prior phase for the same reason; the three runs are public sample runs on the landing page and stay checkable until the shoot-day reset archives them. The dry-run findings paragraph states this. |
+
+One correction iteration was used; the second was not needed and no second review ran.
 
 ### Local quality-gate receipts
 
@@ -2566,7 +2576,8 @@ All commands run in `C:\Users\mcspd\dev\specguard-7d` on arya. Exit codes are un
 ### Local commits
 
 - `b7f2513` — checkpoint A1: the claims audit, the sweep, and the four proven corrections.
-- The commit carrying this section, `DEVPOST-FORM.md`, and the dry-run record.
+- `95256b6` — checkpoint A2 first write: `DEVPOST-FORM.md`, this section, and the dry-run record.
+- The commit carrying this correction pass: the five Codex findings closed or dispositioned, and the gate table re-run.
 
 ### What this phase leaves for Mason
 

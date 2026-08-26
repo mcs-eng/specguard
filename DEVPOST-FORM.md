@@ -1,6 +1,6 @@
 # SpecGuard: Devpost submission form, paste-ready draft
 
-Built 2026-08-26 by the Phase 7d-audit session (checkpoint A2), extracted verbatim from `DEVPOST.md` at the audited tip. Mason pastes and submits; nothing here is submitted by any session. `[TODO]` marks the one value that does not exist yet. Field-limit check: the Devpost help pages state no character limit for the description; the tagline limit is unverified (REVIEW-CLAIMS.md D-7), so the draft stays at 59 characters under the 60-character margin `DEVPOST.md` sets. No field below truncates its source.
+Built 2026-08-26 by the Phase 7d-audit session (checkpoint A2). Every field body is extracted verbatim from `DEVPOST.md` at the audited tip, with two stated exceptions: the section headings are renamed to the form's field names, and the video field appends one shoot-day instruction after the `[TODO]` placeholder. Mason pastes and submits; nothing here is submitted by any session. `[TODO]` marks the one value that does not exist yet. Field-limit check: the Devpost help pages state no character limit for the description; the tagline limit is unverified (REVIEW-CLAIMS.md D-7), so the draft stays at 59 characters under the 60-character margin `DEVPOST.md` sets. No field below truncates its source.
 
 ## Project name
 
