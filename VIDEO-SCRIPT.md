@@ -85,8 +85,8 @@ The recording starts on the landing page with an empty "Recent runs" list (ledge
 
 #### 3d, 2:05 to 2:15. The RFI.
 
-- On screen: click "Open the RFI draft PDF". Show the heading "DRAFT - HUMAN REVIEW REQUIRED", the finding with its two quotes and page numbers, the severity line, and the chain-of-custody block ending "They do not prove accuracy."
-- Narration [30]: "The RFI draft carries the same two quotes and page numbers, the severity line, and the SHA-256 of each source file as chain of custody. The document says it in print: the hashes do not prove accuracy."
+- On screen: click "Open the RFI draft PDF". Show the header block reading RFI number and submittal number, the heading "DRAFT - HUMAN REVIEW REQUIRED", and the finding with its two quotes, page numbers, and severity line. Then jump to the last page and hold on the signature lines with the chain-of-custody block in small type below them, ending "They do not prove accuracy."
+- Narration [30]: "The RFI draft carries the same two quotes and page numbers and the severity line. The SHA-256 of each source file is on the last page, past the signature, as chain of custody. The document says it in print: the hashes do not prove accuracy."
 - Honesty boundary: "chain of custody", never "proof".
 
 #### 3e, 2:15 to 2:50. The subtle catch.
@@ -135,7 +135,7 @@ uv run pytest tests/test_gate.py tests/test_agent.py -v
 
 ### Shot 6, 3:57 to 4:00. Close on the RFI. Separate cut.
 
-- On screen: the generated RFI draft PDF, page 1, held still. The header block reads RFI number, project, owner, submittal ID, run ID, and date. Below it the findings table shows the claim, both quotes with their page numbers, and the severity. Below that the text-layer screen result for each document, then the chain-of-custody hashes, and the line "They are chain-of-custody metadata only." Fade to the README headline, "Uncited claims are blocked from the ledger.", with the repo URL and the `.run.app` URL.
+- On screen: the generated RFI draft PDF, page 1, held still. The header block reads RFI number, submittal number, project, owner, and date, with no hex identifier anywhere on the page. Below it the findings table shows the claim, both quotes with their page numbers, and the severity. Below that the text-layer screen result for each document. Then one cut to the last page: the signature lines, and beneath them in small type the run identifier, the chain-of-custody hashes, and the line "They are chain-of-custody metadata only." Fade to the README headline, "Uncited claims are blocked from the ledger.", with the repo URL and the `.run.app` URL.
 - Narration [25]: "This is what a reviewer receives: every claim with the quote and page it rests on, and hashes labelled chain of custody, not proof. Uncited claims are blocked from the ledger. SpecGuard."
 - Pre-staged: the RFI PDF from the shot 3 run already open in its own tab at page 1, 125 percent zoom.
 - Honesty boundary: "chain of custody", never "proof". The headline carries its README scope and nothing wider.
