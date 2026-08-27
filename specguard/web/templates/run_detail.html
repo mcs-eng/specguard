@@ -70,8 +70,8 @@
   <div class="table-wrap"><table><thead><tr><th scope="col">Turn</th><th scope="col">Tool</th><th scope="col">Document</th><th scope="col">Page</th><th scope="col">Answer</th></tr></thead><tbody>
   {% for call in run.summary.model_tool_calls %}<tr><td>{{ call.turn_index }}</td><td><code>{{ call.tool_name }}</code></td><td>{{ call.document_role or '&mdash;' }}</td><td>{% if call.page_number is not none %}{{ call.page_number }}{% else %}&mdash;{% endif %}</td><td>{% if call.response_error_code %}<code>{{ call.response_error_code }}</code>{% elif call.response_verified is not none %}{% if call.response_verified %}quote found{% else %}quote not found{% endif %}{% else %}&mdash;{% endif %}</td></tr>{% endfor %}
   </tbody></table></div>
-  <p class="muted context-note">The model reads; the runtime writes. No tool that writes to the ledger or drafts an RFI is registered to the model in navigate mode, so no row here can be a write.</p>
-  {% else %}<p class="empty">This run recorded no model-initiated tool call. In <code>full_text</code> mode the runtime sends every page of both documents and the model calls nothing.</p>{% endif %}
+  <p class="muted context-note">The model reads; the runtime writes. In both agent modes the model is registered only the three read-only tools; neither write tool (<code>persist_finding</code>, <code>draft_rfi</code>) is registered to the model, so no row here can be a write.</p>
+  {% else %}<p class="empty">This run recorded no model-initiated tool call. In <code>full_text</code> mode both documents are sent up front, so the model can return its claims without reading more; when it does call a read-only tool such as <code>verify_quote</code> to check its own quote, that call is listed here.</p>{% endif %}
 </section>
 <section class="card">
   <div class="section-head">
