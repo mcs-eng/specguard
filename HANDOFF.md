@@ -2625,3 +2625,23 @@ The first full-suite attempt under the sandbox reached 100% but could not remove
 ### Stop
 
 All five rounds are consumed. No sixth improvement round is authorized. The next operator checkpoint is to verify the two private-repository judge-access grants (or explicitly approve the public-visibility path after the required sweep); leave deployment, publication, media upload, and final Devpost submission for their separate action-time checkpoints.
+
+## Contest-integration hardening — 2026-08-30
+
+Mason's direct 2026-08-30 request superseded the previous five-round stop for one contest-integration pass. The outcome was the smallest source change that makes the local judge path agree with its own promises; it did not merge, deploy, change repository access, upload media, alter Cloud resources, or submit Devpost.
+
+### Closed source gaps
+
+1. The recent-sample table now says `Submittal` and shows the same assigned `S-###` number as the run page, export, and RFI. A legacy record still falls back to its first eight run-ID characters, and the full run ID remains the link target and title.
+2. When an address exhausts the landing-page upload-token budget, the optional upload form is absent but sample setup no longer dereferences its missing controls. The four sample forms initialize independently, retain the running panel and duplicate-submit guard, and continue to the run page.
+3. The direct `verify_quote` README example now names a committed fixture, page, and quote. Copying it from the repository root verifies successfully instead of raising `FileNotFoundError` for a nonexistent `spec.pdf`.
+
+Two route regressions pin the numbered-list identity and the rate-limited page structure. A headless Edge exercise covered the JavaScript behavior the Python route suite cannot execute: upload form absent, sample grid present, running panel visible, `aria-busy=true`, all sample buttons disabled, exactly one sample POST, and no page exception. `node --check` covered JavaScript syntax. The rendered one-page architecture PDF was also inspected at full resolution and is legible without clipping.
+
+### Prompt and evaluation boundary
+
+The versioned claim prompts, structured outputs, tool boundaries, published campaigns, and prompt evaluations were re-read. No current prompt defect was reproduced, so no prompt changed. A last-minute wording change without a comparable measured campaign would trade receipted behavior for an unmeasured hunch; the integration work therefore stayed on deterministic judge-path failures.
+
+### Current external boundary
+
+At the 2026-08-30 checkpoint, GitHub still reported the repository private, with only the owner in the collaborator list and no pending invitations. The Devpost project remains a draft: submitter/country, project start date, architecture-file attachment, video URL, and final submission are not complete. The serving Cloud Run revision remains evidence of a live service, not evidence that this corrected source head is deployed. Mason retains the merge, deployment, access/visibility, media-upload, and submission checkpoints.

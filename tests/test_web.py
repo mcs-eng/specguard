@@ -1176,6 +1176,22 @@ def test_token_minting_is_capped_per_address_per_hour() -> None:
     assert client.post("/sample/caldra", follow_redirects=False).status_code == 303
 
 
+def test_sample_controls_do_not_depend_on_the_rate_limited_upload_form() -> None:
+    """Upload setup is optional because the sample path remains available without it."""
+    client, _, _, _ = _client()
+    for _ in range(TOKEN_MINTS_PER_IP_HOUR):
+        assert client.get("/").status_code == 200
+
+    page = client.get("/")
+    script = client.get("/static/index.js").text
+
+    assert 'id="audit-form"' not in page.text
+    assert 'id="sample-grid"' in page.text
+    guard = "if (auditForm && auditSubmit && auditProgress && auditFields) {"
+    assert guard in script
+    assert script.index(guard) < script.index("const idleLabel = auditSubmit.textContent;")
+
+
 def test_the_landing_page_finds_sample_runs_behind_newer_upload_runs() -> None:
     """Filtering after the query limit would empty the list; the scan is wider.
 
@@ -2416,6 +2432,22 @@ def test_the_run_page_leads_with_the_submittal_number() -> None:
     # heading a reader meets first.
     assert f"<h2>Run <code>{FIXTURE_RUN_ID}</code></h2>" not in body
     assert f"/runs/{FIXTURE_RUN_ID}/rfi.pdf" in body
+
+
+def test_the_landing_page_uses_the_submittal_number_and_keeps_the_legacy_fallback() -> None:
+    """The recent-runs list uses the same human identity as the run it opens."""
+    client, repository, _ = _fixture_run_client()
+    legacy_run_id = "0123456789abcdef0123456789abcdef"
+    legacy = dict(repository.runs[FIXTURE_RUN_ID])
+    legacy.pop("submittal_number")
+    legacy["run_id"] = legacy_run_id
+    repository.runs[legacy_run_id] = legacy
+
+    body = client.get("/").text
+
+    assert '<th scope="col">Submittal</th>' in body
+    assert f'title="{FIXTURE_RUN_ID}"><code>{FIXTURE_SUBMITTAL_NUMBER}</code></a>' in body
+    assert f'title="{legacy_run_id}"><code>{legacy_run_id[:8]}</code></a>' in body
 
 
 def test_a_run_persisted_before_the_field_renders_the_short_run_id() -> None:

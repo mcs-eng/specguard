@@ -228,6 +228,7 @@ Two things these numbers do not show. The gate rejected nothing and the runtime 
 
 Each run page shows every persisted record for one audit.
 
+- **One human identifier across the judge path.** The recent-sample list, run page, JSON export, and RFI use the assigned `S-###` submittal number. The 128-bit run ID remains the capability URL and custody identifier. A record created before numbered submittals existed falls back to its first eight run-ID characters instead of inventing a number.
 - **Quote in context.** Beside each verified quote, the page shows a bounded window of the cited page with the matched text highlighted. The window is built from the gate's own extraction and the gate's own normalization, so a reader sees the text the gate compared, not a second rendering of it. `specguard/context.py` locates the occurrence with the gate's token-boundary rule rather than a copy of it, and it reports no window at all where the gate reports no match.
 - **A rejected claim gets no window.** It has no verified anchor, so the page shows the machine reason the gate returned and the normalized quote it failed to find.
 - **The windows are read once per run.** Building them downloads and reparses both stored PDFs, and run identifiers are public, so a reload would repeat that work indefinitely. Each run's window set is cached in the serving instance, keyed by a digest of the anchors it was built from. A run whose findings are still being written has a different digest, so it recomputes instead of serving a partial set. A failed read is never cached, because it can be transient.
@@ -338,11 +339,18 @@ uv run ruff check .
 2. Call the gate directly.
 
 ```python
+from pathlib import Path
+
 from specguard.gate import verify_quote
 
-result = verify_quote("Receptacles shall be specification grade", 1, "spec.pdf")
-result.verified  # bool
-result.rejection_reason  # None, or a machine-readable reason
+specification = Path("fixtures/asterquay_learning_workshop_specification.pdf")
+result = verify_quote(
+    "Conductor terminations shall be rated 90 deg C minimum.",
+    5,
+    specification,
+)
+assert result.verified is True
+assert result.rejection_reason is None
 ```
 
 3. Run one complete audit from the command line against Vertex AI and Firestore. The command prints claims made, rejected, retried, findings persisted, the severity status with any fallback reason, and the RFI path. The model receives only extracted PDF text with one-based page markers. It does not receive fixture manifests or source file names.
