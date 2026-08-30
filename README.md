@@ -31,7 +31,7 @@ The gate establishes one narrow thing: each quoted text anchor occurs on its cit
 
 <!-- test-count-start -->
 
-`uv run pytest -q` exited 0 with **680 passed** on code revision `19a31b1`. This line is written by `scripts/record_test_count.py` from that run's own summary line; it is not typed by hand. No test requires the network or credentials; every model, Firestore, and storage dependency is an in-process fake.
+`uv run pytest -q` exited 0 with **680 passed** on code revision `25853fa`. This line is written by `scripts/record_test_count.py` from that run's own summary line; it is not typed by hand. No test requires the network or credentials; every model, Firestore, and storage dependency is an in-process fake.
 
 <!-- test-count-end -->
 
@@ -63,6 +63,8 @@ flowchart TD
     R -->|rejection reason| A
     L -.->|writes severity fields only, cannot change verification status| SEV
 ```
+
+The upload-ready version is [specguard-architecture.pdf](output/pdf/specguard-architecture.pdf). It is the architecture attachment prepared for the Devpost draft.
 
 The honesty boundary is the edge from the model into the gate. Nothing the model emits reaches the ledger or the RFI without passing the gate, and the gate runs again inside the persistence tool and inside the RFI writer. The integrity screen sits before the model, so a flagged document never becomes model input.
 
