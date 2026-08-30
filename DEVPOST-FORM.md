@@ -1,6 +1,19 @@
 # SpecGuard: Devpost submission form, paste-ready draft
 
-Built 2026-08-26 by the Phase 7d-audit session (checkpoint A2). Every field body is extracted verbatim from `DEVPOST.md` at the audited tip, with two stated exceptions: the section headings are renamed to the form's field names, and the video field appends one shoot-day instruction after the `[TODO]` placeholder. Mason pastes and submits; nothing here is submitted by any session. `[TODO]` marks the one value that does not exist yet. Field-limit check: the Devpost help pages state no character limit for the description; the tagline limit is unverified (REVIEW-CLAIMS.md D-7), so the draft stays at 59 characters under the 60-character margin `DEVPOST.md` sets. No field below truncates its source.
+Built 2026-08-26 and refreshed against the live Devpost form on 2026-08-29. This is a paste-and-checklist draft, not a completed submission: Mason owns every personal or attested field and the final submit action. The editable project is an unsubmitted draft at `https://devpost.com/software/specguard-2i3tzp`. The narrative bodies below remain aligned with `DEVPOST.md`; the current field map and its action-time blanks appear first.
+
+## Action-time fields — Mason only
+
+- **Submitter type** and **country of residence** are required personal selections. Do not infer either.
+- **Organization name** is labeled required by the live form but applies only when submitting for an organization; Mason must verify the form's conditional behavior rather than inventing an answer.
+- **Project start date** is required in `MM-DD-YY` form. Mason supplies it.
+- **Repository access:** enter `https://github.com/mcs-eng/specguard`. It is private; before submission, verify access for `testing@devpost.com` and `cloudhackathons@google.com`, or obtain approval for a public change after a history/privacy sweep.
+- **Reproducible testing instructions:** select `Yes` only after rechecking the README spin-up instructions on the exact final head.
+- **Google SDK:** select `Agent Development Kit (ADK)`. **Cloud services:** select `Cloud Run` and `Firestore`, the matching options the live form offers.
+- **Architecture diagram:** upload [specguard-architecture.pdf](output/pdf/specguard-architecture.pdf) to the required file field. It is ready but not yet attached; the available connector cannot upload this field and the current browser has no Devpost session.
+- **Google AI models:** enter `Gemini 3.7 Flash via Vertex AI; Gemma 3 1B advisory severity annotation (disabled-endpoint fallback on the current deployed revision)`. Do not claim a live Gemma severity result without separate current proof.
+- **Video URL:** `[TODO: public YouTube or Vimeo URL]`. The video is required and must remain under four minutes; Mason records the narration.
+- Leave optional testing instructions blank unless Mason explicitly approves a judge-access plan. Never paste the demo passphrase.
 
 ## Project name
 
@@ -20,15 +33,15 @@ Taskmaster
 
 ## Repository URL
 
-`https://github.com/mcs-eng/specguard` (private until 2026-08-30, public before submission).
+`https://github.com/mcs-eng/specguard` (private as of 2026-08-29). Before submission, verify access for `testing@devpost.com` and `cloudhackathons@google.com`, or obtain approval for a public-visibility change after a history/privacy sweep.
 
 ## Video URL
 
-`[TODO: YouTube or Vimeo link, public]` — record per VIDEO-SCRIPT.md, upload, paste the public link.
+`[TODO: YouTube or Vimeo link, public]` — Mason records per `VIDEO-SCRIPT.md`, then uploads and pastes the public link.
 
-## Additional Google AI model (bonus, 0.2 points)
+## Google AI models (required)
 
-Gemma (`google/gemma3@gemma-3-1b-it` on a Vertex AI Model Garden endpoint) as the severity annotation. One model, 0.2 points claimed.
+Gemini 3.7 Flash via Vertex AI; Gemma (`google/gemma3@gemma-3-1b-it`) as the advisory severity annotation. The current deployed revision records the disabled-endpoint fallback, so this does not claim live severity scoring.
 
 ## Pre-existing code disclosure
 
