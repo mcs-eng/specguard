@@ -1,6 +1,6 @@
 # SpecGuard demo video: shooting script (4:00)
 
-Drafted 2026-08-21 from the Video section of PLAN.md. Shot times are targets. The contest rule is a hard ceiling: "It should not be longer than 4 minutes. If it is longer than 4 minutes, only the first 4 minutes may be evaluated." Host the file publicly on YouTube or Vimeo.
+Drafted 2026-08-21 from the Video section of PLAN.md and refreshed 2026-08-29 from the serving service. Shot times are targets. The contest rule is a hard ceiling: "It should not be longer than 4 minutes. If it is longer than 4 minutes, only the first 4 minutes may be evaluated." Host the file publicly on YouTube or Vimeo. The current shoot variant uses public fictional sample buttons and the already-serving Cloud Run revision; it neither enters the upload passphrase nor changes a Cloud resource.
 
 ## Continuous-segment rules (from PLAN.md, binding)
 
@@ -9,7 +9,7 @@ Drafted 2026-08-21 from the Video section of PLAN.md. Shot times are targets. Th
 - Slides before and after are separate cuts.
 - Never claim the whole video is one take.
 - The integrity beat (3:00 to 3:30) may ride inside the continuous segment if latency allows; otherwise it is its own cut and is not described as part of the unbroken segment.
-- Pre-stage the warm service, the fixtures, the tabs, and the terminal font. Expect 3 to 5 takes.
+- Pre-stage the public sample buttons, the tabs, and the terminal font. Expect 3 to 5 takes.
 
 ## Honesty boundary for the whole video
 
@@ -18,7 +18,7 @@ Drafted 2026-08-21 from the Video section of PLAN.md. Shot times are targets. Th
 - "VERIFIED" means the quoted characters were found on the cited page. Do not say "verified as correct" or "confirmed accurate".
 - The rejection-and-retry loop does not fire live: across the 80 model-reaching runs of the 2026-08-25 campaign at code revision `8900a76` (EVAL.md) the gate rejected nothing, because the model cited every quote correctly on the first turn. It is proven by the test suite and shown from pytest on camera. Never imply it fires in the live demo. The live "blocked before the model" beat is the integrity quarantine, which is deterministic.
 - SHA-256 is chain-of-custody metadata. Do not call it proof of accuracy.
-- The Gemma label is advisory and falls back to UNCLASSIFIED with a recorded reason when the endpoint is down. Say "advisory" on camera. The endpoint is up only for the shoot; a judge auditing later sees the fallback state.
+- The Gemma label is advisory and falls back to UNCLASSIFIED with a recorded reason when the endpoint is down. Say "advisory" on camera. The current serving revision uses that fallback; do not enable an endpoint or claim live severity scoring for this shoot.
 - The eval numbers are seven fictional fixtures, 100 runs across both agent modes and both lanes. Do not call them accuracy on real submittals. Every model-initiated tool call behind them is committed to `EVAL-RECEIPTS.jsonl`, so "receipted" is a claim the file backs; do not use the word for anything that file does not carry.
 - Do not read the hidden sentence from the altered fixture into this script or any other prose file. It may appear on screen in the integrity record table; reading it aloud from the screen is allowed.
 
@@ -55,20 +55,24 @@ Narration is written at about 150 words per minute. Word counts are in brackets.
 
 ### Shot 2, 0:20 to 1:00. Architecture. Separate cut.
 
-- On screen: the README architecture diagram (rendered Mermaid) for 20 s; then 5 s on the Cloud Run console service page showing `specguard`, the live revision, and the `.run.app` URL; then 5 s on the Vertex AI endpoints page showing `specguard-gemma` deployed. These two console shots are the "backend runs on Google Cloud" proof the rules ask for.
+- On screen: the README architecture diagram (or `output/pdf/specguard-architecture.pdf`) for 20 s; then 10 s on a terminal running the read-only Cloud Run receipt below, with the public `.run.app` URL visible in the browser. This proves the serving revision without a console login or a resource change.
 - Narration [67]: "One Google ADK agent on Gemini 3.7 Flash reads both documents and proposes claims, each with verbatim quotes and page numbers. Around it, a runtime the model cannot skip: an integrity screen on both text layers, a log of every tool call, a gate that must find each quote on its cited page, one bounded retry, and the gate again at write time. All on Cloud Run."
-- Pre-staged: README open at the diagram; Cloud Run and Vertex console tabs signed in.
+- Pre-staged: README or the PDF diagram; the public service; and this read-only command in a terminal:
+
+```powershell
+gcloud run services describe specguard --region us-central1 --project specguard-hack --format="yaml(status.url,status.latestReadyRevisionName,status.traffic)"
+```
 - Honesty boundary: "proposes" for the model, "cannot skip" for the runtime. The recorded tool calls are the receipt for what the model actually did; do not claim the model performs the verification.
 
 ### Shot 3, 1:00 to about 3:00. CONTINUOUS SEGMENT. One unbroken recording.
 
-The recording starts on the landing page with an empty "Recent runs" list (ledger reset done) and the URL bar visible the whole time.
+The recording starts on the landing page with the URL bar visible the whole time. Existing sample rows are harmless; do not reset the ledger for this shoot.
 
-#### 3a, 1:00 to 1:12. Submit the 208V cut sheet.
+#### 3a, 1:00 to 1:12. Run the public 208V sample.
 
-- On screen: drag `asterquay_learning_workshop_specification.pdf` into the Specification zone, drag `veylan_arcworks_208v_switchboard.pdf` into the Submittal zone, both zones show the file name and size with a check mark, type the passphrase, click Run audit. The running panel appears: "Audit running. Do not submit again."
-- Narration [31]: "Here is a submittal arriving the way an operator sends it: the spec, the vendor cut sheet, one button. The page shows no progress bar, because the server reports no progress."
-- Pre-staged: fixtures folder open beside the browser; passphrase in the clipboard or memorised.
+- On screen: click `Veylan 208V` under "Run a sample audit." The running panel appears: "Audit running. Do not submit again."
+- Narration [31]: "Here is a fictional 208V sample a judge can run without a passphrase: one click. It is the deployed audit, and the page shows no progress because the server reports none."
+- Pre-staged: landing page with the four public sample buttons visible.
 - Honesty boundary: none beyond the page text.
 
 #### 3b, 1:12 to about 1:40. The wait.
@@ -93,13 +97,13 @@ The recording starts on the landing page with an empty "Recent runs" list (ledge
 
 #### 3e, 2:15 to 2:50. The subtle catch.
 
-- On screen: back to the landing page; drag the spec and `torven_70c_termination_switchboard.pdf`; Run audit; wait; the run page shows "Specification page 5" `Conductor terminations shall be rated 90 deg C minimum.` and "Submitted page 2" `Field conductor termination rating: 158 deg F.`; the claim text names the conversion.
+- On screen: back to the landing page; click the `Torven 70 deg C` public sample; wait; the run page shows "Specification page 5" `Conductor terminations shall be rated 90 deg C minimum.` and "Submitted page 2" `Field conductor termination rating: 158 deg F.`; the claim text names the conversion.
 - Narration over the wait and the result [53]: "Second cut sheet. The spec wants terminations rated 90 degrees Celsius; this vendor states the rating only in Fahrenheit. 158 Fahrenheit is 70 Celsius — below the requirement. The gate verified both quotes, pages 5 and 2. The conversion is the model's claim, and the quotes give the reviewer the exact place to check."
 - Honesty boundary: the conversion is the model's claim, verified only as text anchors.
 
 #### 3f, 2:50 to about 3:20. The integrity beat. Inside the segment if latency allows; otherwise its own cut.
 
-- On screen: back to the landing page; drag the spec and `veylan_arcworks_208v_altered.pdf`; Run audit. Within seconds the run page shows the QUARANTINED badge and the notice "The text-layer integrity screen stopped this run. Reason: text_layer_integrity_screen. No model call was made and no RFI was drafted." Scroll to "Integrity records": page 1, two hidden spans, font and size, the document SHA-256. The first span reads `Nominal system: 209V, 3-phase, 4-wire.`; the second is a sentence addressed to an automated reviewer.
+- On screen: back to the landing page; click the `Veylan altered (integrity screen)` public sample. Within seconds the run page shows the QUARANTINED badge and the notice "The text-layer integrity screen stopped this run. Reason: text_layer_integrity_screen. No model call was made and no RFI was drafted." Scroll to "Integrity records": page 1, two hidden spans, font and size, the document SHA-256. The first span reads `Nominal system: 209V, 3-phase, 4-wire.`; the second is a sentence addressed to an automated reviewer.
 - Narration [66]: "Same vendor, same visible page. This copy has two hidden spans no reader can see: a 209-volt line under the visible 208, and a sentence addressed to an automated reviewer. The screen reads the character flags before the model reads a word: the run stops. No model call, no finding, no RFI. The screen detects this one method; the README lists what it does not detect."
 - Pre-staged: nothing beyond the fixture.
 - Honesty boundary: "detects this one method" is mandatory. Do not say "detects tampering" in general.
@@ -141,6 +145,17 @@ uv run pytest tests/test_gate.py tests/test_agent.py -v
 - Narration [30]: "What a reviewer receives: every claim with the quote and page it rests on, and hashes labelled chain of custody, not proof. Uncited claims are blocked from the ledger. SpecGuard."
 - Pre-staged: the RFI PDF from the shot 3 run already open in its own tab at page 1, 125 percent zoom.
 - Honesty boundary: "chain of custody", never "proof". The headline carries its README scope and nothing wider.
+
+## Current shoot-day override — zero-change public-sample version
+
+This section supersedes the historical `Shoot-day checklist` below. It was refreshed from the serving revision on 2026-08-29 and is the only shoot plan authorized for the current closeout.
+
+1. Do not deploy, update, reset, warm, or tear down any Cloud resource. Do not enter the upload passphrase and do not open arbitrary uploads.
+2. Before recording, run the read-only Cloud Run command in Shot 2. It must show a ready revision receiving 100% traffic. Keep the public `.run.app` service visible beside it.
+3. For the continuous segment, click the public `Veylan 208V`, `Torven 70 deg C`, and `Veylan altered (integrity screen)` samples. Call them fictional public samples in narration; do not present them as operator uploads.
+4. Use the run page's recorded `UNCLASSIFIED` fallback wording. The advisory label does not participate in verification.
+5. Pre-stage the landing page, `/gate`, the Cloud Run receipt terminal, the architecture diagram, EVAL.md, and EVAL-RECEIPTS.jsonl. Read counters and run IDs from the screen; do not rely on examples in this file.
+6. Mason records the narration. No generated voice is used. The published video is a separate action-time approval.
 
 ## Shoot-day checklist
 
