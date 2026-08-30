@@ -1,0 +1,3 @@
+# Release evidence is binary; never subject it to text conversion or text diffs.
+output/pdf/*.pdf binary
+output/screenshots/*.png binary
