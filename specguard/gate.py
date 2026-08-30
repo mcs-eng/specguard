@@ -51,7 +51,7 @@ _WHITESPACE_RUN = re.compile(r"\s+")
 #: Characters that bind to a digit and so must not sit against a quote edge
 #: that is itself a digit. Without these, the page text ``0.5 A`` would satisfy
 #: a claim quoting ``5 A``, and ``-5 kPa`` would satisfy ``5 kPa``.
-_NUMBER_BINDING = frozenset(".,-+/±⁄")
+_NUMBER_BINDING = frozenset(".,-+/±⁄−")
 
 
 class VerificationResult(BaseModel):
