@@ -4,11 +4,11 @@ Drafted 2026-08-21 from the Video section of PLAN.md and refreshed 2026-08-29 fr
 
 ## Continuous-segment rules (from PLAN.md, binding)
 
-- The core segment, 1:00 to 3:00, is one unbroken screen recording of the deployed service. It is the only part of the video claimed as unbroken.
+- The core segment, 0:43 to 2:47, is one unbroken screen recording of the deployed service. It is the only part of the video claimed as unbroken.
 - Narration may be re-recorded over it.
 - Slides before and after are separate cuts.
 - Never claim the whole video is one take.
-- The integrity beat (3:00 to 3:30) may ride inside the continuous segment if latency allows; otherwise it is its own cut and is not described as part of the unbroken segment.
+- The integrity beat is a separate cut after the continuous segment. Do not describe it as part of the unbroken recording.
 - Pre-stage the public sample buttons, the tabs, and the terminal font. Expect 3 to 5 takes.
 
 ## Honesty boundary for the whole video
@@ -38,25 +38,25 @@ Use these to size narration over waits. No receipt exists in HANDOFF.md for end-
 | `uv run pytest -q` (whole suite) | see the count README records from its own run; about 70 s locally on 2026-08-25 | local, 2026-08-25 |
 | Gemma 3 1B endpoint deploy | 1 min 48 s | SETUP.md, HANDOFF.md |
 
-Plan the continuous segment for two model runs of 10 to 15 s each on a warm revision. Budget 50 s for each if the first take is cold. The prior-day timed dry run (checklist, T-1) replaces these estimates with a fresh number.
+Plan the continuous segment for one model run. It reserves the observed 10 to 50 s range, including a 50 s maximum wait. If the run has not completed by that point, stop the take and report the actual delay rather than pretending it completed.
 
-Narration budget, measured 2026-08-26 by counting every primary paragraph in this file: **579 words**, which is 3:44 of audio at 155 words per minute or 3:37 at 160. Against the 4:00 ceiling that leaves 16 to 23 seconds of unnarrated screen time, so the delivery must stay at or above 155 words per minute and long waits must carry narration. The bracket on each paragraph is its actual word count. An earlier draft of this script carried 778 words — unrecordable inside the ceiling — and was cut on 08-26 with every mandatory line, number, and page reference preserved.
+The active sequence below ends at 4:00 and reserves 50 seconds for the one live model wait. The spoken text deliberately leaves quiet screen time; do not add narration, a second sample, or an extra evidence beat unless another beat is removed and the ending remains at or before 4:00.
 
 ## Shot list
 
 Narration is written at about 150 words per minute. Word counts are in brackets.
 
-### Shot 1, 0:00 to 0:20. Problem slide. Separate cut.
+### Shot 1, 0:00 to 0:18. Problem slide. Separate cut.
 
 - On screen: one slide. Left: a spec line, "Provide a 480V, 3-phase distribution switchboard". Right: a cut-sheet line, "Nominal system: 208V, 3-phase, 4-wire". Below: "Submittal review misses cost real money."
-- Narration [52]: "A submittal review asks one question: does the vendor's product meet what the spec requires. A 208-volt switchboard against a 480-volt spec is an expensive miss. A reviewer that can assert anything is worse than none: its output gets trusted. SpecGuard is built so it cannot assert what it did not read."
+- Narration [40]: "A submittal review asks whether a vendor product meets the spec. A 208-volt switchboard against a 480-volt requirement is an expensive miss. A reviewer that can assert anything is worse than none. SpecGuard cannot assert what it did not read."
 - Pre-staged: the slide.
 - Honesty boundary: no numbers, no accuracy claim.
 
-### Shot 2, 0:20 to 1:00. Architecture. Separate cut.
+### Shot 2, 0:18 to 0:43. Architecture. Separate cut.
 
-- On screen: the README architecture diagram (or `output/pdf/specguard-architecture.pdf`) for 20 s; then 10 s on a terminal running the read-only Cloud Run receipt below, with the public `.run.app` URL visible in the browser. This proves the serving revision without a console login or a resource change.
-- Narration [67]: "One Google ADK agent on Gemini 3.7 Flash reads both documents and proposes claims, each with verbatim quotes and page numbers. Around it, a runtime the model cannot skip: an integrity screen on both text layers, a log of every tool call, a gate that must find each quote on its cited page, one bounded retry, and the gate again at write time. All on Cloud Run."
+- On screen: the README architecture diagram (or `output/pdf/specguard-architecture.pdf`) for 15 s; then 10 s on a terminal running the read-only Cloud Run receipt below, with the public `.run.app` URL visible in the browser. This proves the serving revision without a console login or a resource change.
+- Narration [50]: "One Google ADK agent on Gemini 3.7 Flash reads both documents and proposes quoted, paginated claims. The runtime it cannot skip screens text layers, records model tool calls, requires a token-boundary match on the cited page, and verifies again before any write. The ready Cloud Run revision is the backend."
 - Pre-staged: README or the PDF diagram; the public service; and this read-only command in a terminal:
 
 ```powershell
@@ -64,86 +64,57 @@ gcloud run services describe specguard --region us-central1 --project specguard-
 ```
 - Honesty boundary: "proposes" for the model, "cannot skip" for the runtime. The recorded tool calls are the receipt for what the model actually did; do not claim the model performs the verification.
 
-### Shot 3, 1:00 to about 3:00. CONTINUOUS SEGMENT. One unbroken recording.
+### Shot 3, 0:43 to 2:47. CONTINUOUS SEGMENT. One unbroken recording.
 
 The recording starts on the landing page with the URL bar visible the whole time. Existing sample rows are harmless; do not reset the ledger for this shoot.
 
-#### 3a, 1:00 to 1:12. Run the public 208V sample.
+#### 3a, 0:43 to 0:51. Run the public 208V sample.
 
 - On screen: click `Veylan 208V` under "Run a sample audit." The running panel appears: "Audit running. Do not submit again."
-- Narration [31]: "Here is a fictional 208V sample a judge can run without a passphrase: one click. It is the deployed audit, and the page shows no progress because the server reports none."
+- Narration [18]: "A public fictional 208V sample, one click. It starts the deployed audit; the page does not invent progress."
 - Pre-staged: landing page with the four public sample buttons visible.
 - Honesty boundary: none beyond the page text.
 
-#### 3b, 1:12 to about 1:40. The wait.
+#### 3b, 0:51 to 1:41. The wait.
 
 - On screen: the running panel. Real latency, 10 to 50 s.
-- Narration over the wait [53]: "While that runs: both text layers were already screened for hidden spans, and both documents went in with page markers. The model returns structured claims. The gate then requires each quote as a contiguous match on token boundaries on its cited page. No fuzzy matching, no other page. A miss is a rejection."
-- If the wait outlasts the narration, hold on the panel. Fallback filler line [25]: "The model step is the only part of this run whose duration the server cannot report, so the page shows the wait as a wait rather than animate a guess."
+- Narration over the wait [37]: "Before the model responds, both text layers are screened and page-marked. It proposes structured claims. The gate accepts only a contiguous token-boundary quote on its cited page: no fuzzy match, no other page. A miss is rejected."
+- If the wait outlasts the narration, hold on the panel without filling the silence.
 - Honesty boundary: describe the runtime's actions, not the model's reasoning.
 
-#### 3c, 1:40 to 2:05. The findings page.
+#### 3c, 1:41 to 2:14. The findings page.
 
-- On screen: the run page. Point at, in order: the COMPLETED badge; the counters Claims made 1, Findings persisted 1, Rejected 0, Retried 0; the claim text; "Specification page 3" with `Provide a 480V, 3-phase distribution switchboard for service distribution.`; "Submitted page 1" with `Nominal system: 208V, 3-phase, 4-wire.`; the severity badge HIGH with `google-gemma3-gemma-3-1b-it` under it.
-- Narration [66]: "One claim, one finding. VERIFIED means one thing: these exact characters were found on page 3 of the spec and page 1 of the cut sheet. It does not say the conclusion is right — a human reads that. Rejected zero and retried zero: the model cited correctly first time, so the retry loop did not fire on this run. The HIGH label is Gemma's advisory severity."
-- If the badge reads UNCLASSIFIED, use the fallback line [35]: "Severity shows UNCLASSIFIED with a recorded reason: the Gemma endpoint did not answer this call. The label is advisory. The finding stands, because the gate, not the label, decides what enters the ledger."
-- Honesty boundary: the sentence "the retry loop did not fire on this run" is mandatory when the counters read zero.
+- On screen: the run page. Point at, in order: the COMPLETED badge; the counters Claims made 1, Findings persisted 1, Rejected 0, Retried 0; the claim text; "Specification page 3" with `Provide a 480V, 3-phase distribution switchboard for service distribution.`; "Submitted page 1" with `Nominal system: 208V, 3-phase, 4-wire.`; and the current `UNCLASSIFIED` severity reason.
+- Narration [49]: "One claim, one finding. VERIFIED means only these exact characters appear on spec page 3 and cut-sheet page 1. It does not say the conclusion is correct; a human decides. The model cited correctly first time, so the retry loop did not run. Severity is advisory and currently unclassified."
+- Honesty boundary: say that the retry loop did not run when the counters read zero.
 
-#### 3d, 2:05 to 2:15. The RFI.
+#### 3d, 2:14 to 2:47. The RFI.
 
 - On screen: click "Open the RFI draft PDF". Show the header block reading RFI number and submittal number, the heading "DRAFT - HUMAN REVIEW REQUIRED", and the finding with its two quotes, page numbers, and severity line. Then jump to the last page and hold on the signature lines with the chain-of-custody block in small type below them, ending "They do not prove accuracy."
 - Narration [34]: "The RFI carries the same quotes and pages. Each file's SHA-256 sits on the last page, past the signature, as chain of custody. In print on the page: the hashes do not prove accuracy."
 - Honesty boundary: "chain of custody", never "proof".
 
-#### 3e, 2:15 to 2:50. The subtle catch.
+End of the continuous segment. The integrity screen is separate and must not extend the live-model wait.
 
-- On screen: back to the landing page; click the `Torven 70 deg C` public sample; wait; the run page shows "Specification page 5" `Conductor terminations shall be rated 90 deg C minimum.` and "Submitted page 2" `Field conductor termination rating: 158 deg F.`; the claim text names the conversion.
-- Narration over the wait and the result [53]: "Second cut sheet. The spec wants terminations rated 90 degrees Celsius; this vendor states the rating only in Fahrenheit. 158 Fahrenheit is 70 Celsius — below the requirement. The gate verified both quotes, pages 5 and 2. The conversion is the model's claim, and the quotes give the reviewer the exact place to check."
-- Honesty boundary: the conversion is the model's claim, verified only as text anchors.
-
-#### 3f, 2:50 to about 3:20. The integrity beat. Inside the segment if latency allows; otherwise its own cut.
+### Shot 4, 2:47 to 3:10. Integrity screen. Separate cut.
 
 - On screen: back to the landing page; click the `Veylan altered (integrity screen)` public sample. Within seconds the run page shows the QUARANTINED badge and the notice "The text-layer integrity screen stopped this run. Reason: text_layer_integrity_screen. No model call was made and no RFI was drafted." Scroll to "Integrity records": page 1, two hidden spans, font and size, the document SHA-256. The first span reads `Nominal system: 209V, 3-phase, 4-wire.`; the second is a sentence addressed to an automated reviewer.
-- Narration [66]: "Same vendor, same visible page. This copy has two hidden spans no reader can see: a 209-volt line under the visible 208, and a sentence addressed to an automated reviewer. The screen reads the character flags before the model reads a word: the run stops. No model call, no finding, no RFI. The screen detects this one method; the README lists what it does not detect."
+- Narration [42]: "Same visible page, but this copy hides a 209-volt line and a sentence for an automated reviewer. Character flags stop it before the model reads a word: no model call, finding, or RFI. This screen detects that one method, not every concealment."
 - Pre-staged: nothing beyond the fixture.
 - Honesty boundary: "detects this one method" is mandatory. Do not say "detects tampering" in general.
 
-End of the continuous segment. If 3f pushed past 3:30, shoot 3f as a separate cut and say nothing about it being continuous.
-
-### Shot 4, about 3:00 to 3:30. Gate rejection from pytest, then the live playground. Separate cut. Two beats.
-
-#### 4a, about 3:00 to 3:18. The tests.
-
-- On screen: terminal, font 18 pt or larger. Run:
-
-```powershell
-uv run pytest tests/test_gate.py tests/test_agent.py -v
-```
-
-  About 9 to 10 s. The last lines on screen are the `tests/test_agent.py` names: `test_rejected_claim_gets_exactly_one_retry_then_rejection PASSED`, `test_one_retry_can_correct_the_quote_and_persist PASSED`, `test_retry_must_return_exactly_one_corrected_claim PASSED`, then the pass count — 68 on 2026-08-25. Read the count off the screen rather than saying it; the suite grows.
-- Narration over the run [49]: "The rejection-and-retry loop is proven here, not by live luck. These tests drive a rejected quote through the runtime: the claim goes back to the model once with the machine-readable reason, a corrected quote is verified again before it persists, and a second miss is recorded as a rejection."
-- Pre-staged: the command typed and ready; `uv sync` done; one dry run so the cache is warm.
-- Honesty boundary: "proven here, not by live luck" is the mandatory framing.
-
-#### 4b, about 3:18 to 3:30. Run the gate yourself.
+### Shot 5, 3:10 to 3:30. Run the gate yourself. Separate cut.
 
 - On screen: the browser tab already on `/gate`. The prefilled example is `Conductor terminations shall be rated 90 deg C minimum.` on page 5 of the specification, and the verdict card reads VERIFIED with page count 7 and no rejection reason. Click the first near-miss link, "One digit changed: 90 becomes 80". The card flips to REJECTED with the machine reason `quote_not_found_on_cited_page`. Do not type; one click is the whole beat.
 - Narration [35]: "This is the same gate function, live. The real sentence verifies against page 5. Change one digit and it is refused, with the machine reason. No model runs here. Judges can try their own quotes."
 - Pre-staged: the `/gate` tab loaded and scrolled so the verdict card and the near-miss links are both visible.
 - Honesty boundary: "the same gate function" is accurate and is the claim to make. Do not say the page proves the ledger; it proves the gate verdict only.
 
-### Shot 5, about 3:30 to 3:47. The eval table and its receipts. Separate cut.
-
-- On screen: EVAL.md, the header naming the code revision and the deployed default, one results table, and the "Cases that did not match the manifest" section. Then a two-second flick to `EVAL-RECEIPTS.jsonl` scrolled anywhere in its middle: dense JSON lines, one per model-initiated tool call. Do not zoom in far enough to read one; the point is that the file exists and is committed.
-- Narration [43]: "A hundred real runs on the fixtures. Both original-lane discrepancies caught in every run of both modes; no false positive, no decoy hit. On the hard lane, ninety in navigate against eighty-six in full text — three case-runs in seventy, noise, not a winner."
-- If the timing carries the receipts flick, append the extended close [12]: "Every tool call behind those numbers is committed, one line each." Without the flick, end on "not a winner."
-- Honesty boundary: "on the fixtures", never "accuracy". Read the current table before recording; the numbers below the table are regenerated by the harness, not typed here. Do not say navigate is better: name both numbers and call the gap noise.
-
-### Shot 6, about 3:47 to 4:00. Close on the RFI. Separate cut.
+### Shot 6, 3:30 to 4:00. Close on the evidence. Separate cut.
 
 - On screen: the generated RFI draft PDF, page 1, held still. The header block reads RFI number, submittal number, project, owner, and date, with no hex identifier anywhere on the page. Below it the findings table shows the claim, both quotes with their page numbers, and the severity. Below that the text-layer screen result for each document. Then one cut to the last page: the signature lines, and beneath them in small type the run identifier, the chain-of-custody hashes, and the line "They are chain-of-custody metadata only." Fade to the README headline, "Uncited claims are blocked from the ledger.", with the repo URL and the `.run.app` URL.
-- Narration [30]: "What a reviewer receives: every claim with the quote and page it rests on, and hashes labelled chain of custody, not proof. Uncited claims are blocked from the ledger. SpecGuard."
-- Pre-staged: the RFI PDF from the shot 3 run already open in its own tab at page 1, 125 percent zoom.
+- Narration [36]: "What persists is an RFI draft, not a decision: claim, quotes, pages, and hashes labelled chain of custody, not accuracy. The repository includes reproducible setup, evaluation receipts, and this architecture. A human reviews every claim. SpecGuard."
+- Pre-staged: the RFI PDF from Shot 3 and the README headline with the repository and service URLs.
 - Honesty boundary: "chain of custody", never "proof". The headline carries its README scope and nothing wider.
 
 ## Current shoot-day override — zero-change public-sample version
@@ -152,12 +123,14 @@ This section supersedes the historical `Shoot-day checklist` below. It was refre
 
 1. Do not deploy, update, reset, warm, or tear down any Cloud resource. Do not enter the upload passphrase and do not open arbitrary uploads.
 2. Before recording, run the read-only Cloud Run command in Shot 2. It must show a ready revision receiving 100% traffic. Keep the public `.run.app` service visible beside it.
-3. For the continuous segment, click the public `Veylan 208V`, `Torven 70 deg C`, and `Veylan altered (integrity screen)` samples. Call them fictional public samples in narration; do not present them as operator uploads.
+3. For the continuous segment, click only the public `Veylan 208V` sample. Capture `Veylan altered (integrity screen)` as the separate integrity cut. Call both fictional public samples in narration; do not present them as operator uploads.
 4. Use the run page's recorded `UNCLASSIFIED` fallback wording. The advisory label does not participate in verification.
-5. Pre-stage the landing page, `/gate`, the Cloud Run receipt terminal, the architecture diagram, EVAL.md, and EVAL-RECEIPTS.jsonl. Read counters and run IDs from the screen; do not rely on examples in this file.
+5. Pre-stage the landing page, `/gate`, the Cloud Run receipt terminal, the architecture diagram, the completed-run RFI, and the README headline. Read counters and run IDs from the screen; do not rely on examples in this file.
 6. Mason records the narration. No generated voice is used. The published video is a separate action-time approval.
 
-## Shoot-day checklist
+## Historical shoot-day checklist (archived — do not execute for the current closeout)
+
+The zero-change public-sample override above is authoritative. This dated record is retained only as historical planning evidence; it calls for paid and mutating work that is forbidden for the current closeout.
 
 All commands below run on arya (PowerShell) from `C:\Users\mcspd\dev\specguard`, with the Cloud SDK on `PATH` as `deploy-specguard.ps1` prefixes it. Record each command with its `$LASTEXITCODE`.
 
