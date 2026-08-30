@@ -231,6 +231,19 @@ def test_match_may_not_start_against_a_number_binding_character(
     assert result.rejection_reason is RejectionReason.QUOTE_NOT_FOUND_ON_CITED_PAGE
 
 
+def test_match_may_not_start_against_a_unicode_minus() -> None:
+    """A Unicode minus must bind to the following numeric token too."""
+    from specguard.gate import contains_on_boundaries
+
+    assert (
+        contains_on_boundaries(
+            normalize("pressure of −5 kPa at inlet"),
+            normalize("5 kPa at inlet"),
+        )
+        is False
+    )
+
+
 def test_whole_numbers_still_verify(tmp_path: Path) -> None:
     """The numeric boundary rule must not reject an honest whole-number quote."""
     pdf = write_pdf(tmp_path / "numbers.pdf", [["breaker rated 0.5 A minimum"]])
