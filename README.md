@@ -64,6 +64,8 @@ flowchart TD
     L -.->|writes severity fields only, cannot change verification status| SEV
 ```
 
+The upload-ready version is [specguard-architecture.pdf](output/pdf/specguard-architecture.pdf). It is the architecture attachment prepared for the Devpost draft.
+
 The honesty boundary is the edge from the model into the gate. Nothing the model emits reaches the ledger or the RFI without passing the gate, and the gate runs again inside the persistence tool and inside the RFI writer. The integrity screen sits before the model, so a flagged document never becomes model input.
 
 The Gemma label sits after the ledger. It does write, and the diagram says so: the severity annotation updates `severity`, `severity_model_id`, `severity_endpoint_label`, `severity_status`, and `severity_reason` on a finding that is already in the ledger. It cannot change a verification status, a rejection reason, a quote, or a claim, and it cannot create a findings record: the update reads the finding first and refuses unless that record exists, belongs to the same run, and carries `verification_status == "verified"`.
