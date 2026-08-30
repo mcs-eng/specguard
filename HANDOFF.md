@@ -2584,3 +2584,44 @@ All commands run in `C:\Users\mcspd\dev\specguard-7d` on arya. Exit codes are un
 1. **The pre-flip runbook** (claude-memory `reference/specguard-preflip-runbook-2026-08.md`): ff-only merge, repo delete-and-recreate to shed `refs/pull/1/head`, flip, secret-scanning enable. All Mason's steps.
 2. **The Gemma decision, 08-29.** If the endpoint deploys, re-check the four `GEMMA-SENSITIVE` rows in `REVIEW-CLAIMS-7D.md`; if the sentinel stays, the tags expire.
 3. **Shoot, then submit**: `DEVPOST-FORM.md` is the paste source; the video URL is its one `[TODO]`.
+
+## Five-round contest closeout — 2026-08-29
+
+Scope: a judge-ready closeout on `phase-7d` in `C:\Users\mcspd\dev\specguard-7d`. The cross-check of the `specguard*` checkouts selected this branch as the only current phase head; the other phase worktrees were clean, older ancestors and were not modified. This closeout changed documentation and release evidence only. It did not change the gate, runtime, fixtures, evaluation campaign, Cloud resources, repository access, or Devpost submission state.
+
+### Round ledger
+
+| Round | Verified gap and action | Durable receipt |
+| --- | --- | --- |
+| 1/5 | Selected `phase-7d` as the authoritative checkout; re-checked the rules, private-repository boundary, serving revision, source/live provenance limit, and judge path. | Read-only audit; no source change. |
+| 2/5 | Replaced the stale generated test-count receipt with a real suite result from the unchanged code tip. | `fe9d965` — README records `680 passed` at `25853fa`. |
+| 3/5 | Added a Devpost-ready architecture attachment and refreshed the live form/access handoff without inventing personal answers. Created a draft only. | `6c0678c`, `b40a08d`; draft `https://devpost.com/software/specguard-2i3tzp` remains unsubmitted. |
+| 4/5 | Captured the public fictional-sample judge path, quarantine, RFI, gate behavior, and a zero-change human-narration package. Marked release binaries correctly. | `651c6fe`, `db59f4e`; run records `S-006` / `0ba4351084174135a5c9dc57897549a3` and `S-007` / `a3602381ac534c7793dfd03cfdc9d7e5`. |
+| 5/5 | Independent review found an over-four-minute script and a mislabelled gate screenshot. The active plan is now six contiguous cuts from 0:00 to 4:00, and the image visibly shows the real rejected near-miss. | `ad7ad78`; the final closeout ledger is this section. |
+
+### Final verification checkpoint
+
+At the checkpoint before this ledger-only commit, `HEAD == origin/phase-7d == ad7ad78` and `main...HEAD` began at `58cbab4`. The tree was clean and `git diff --check main...HEAD` passed. The same independent reviewer re-read `ad7ad78` after the correction and found no remaining P0/P1 in the two scoped blockers: the 0:00–4:00 sequence is contiguous, and `output/screenshots/gate-near-miss-rejected.png` visibly shows `REJECTED` with `quote_not_found_on_cited_page` for the `80 deg C` near-miss.
+
+The final local checks on that unchanged runtime source were:
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `& .\.venv\Scripts\python.exe -m pytest -q` | 0 | `680 passed, 2 warnings` in 65.37 s. |
+| `& .\.venv\Scripts\ruff.exe check .` | 0 | `All checks passed!` |
+| `& .\.venv\Scripts\ruff.exe format --check .` | 0 | `59 files already formatted` |
+| timeline parser for `VIDEO-SCRIPT.md` | 0 | Six contiguous shots, ending at 4:00. |
+
+The first full-suite attempt under the sandbox reached 100% but could not remove its disposable `.pytest-tmp`; the same suite with normal test-directory permission passed above. That is an execution-environment boundary, not a test or product failure.
+
+### Live, deployment, and submission boundaries
+
+- The public service was exercised only with its fictional sample buttons and gate playground. The completed sample persisted one page-cited finding and produced an RFI; the altered sample quarantined before any model call; the one-digit gate near-miss returned `quote_not_found_on_cited_page`. No arbitrary upload, passphrase, deployment, GPU endpoint, secret, or Cloud resource was used or changed.
+- Cloud Run reported ready revision `specguard-00030-jnr` at 100% traffic. This proves the serving revision and traffic state, not an exact source SHA or image-to-commit mapping. Do not claim source/live alignment until an operator produces that provenance.
+- The GitHub repository remains private. This closeout did not verify the two required judge collaborator grants and did not change visibility. Before any public flip, re-run the history/privacy sweep and obtain Mason's action-time approval.
+- The Devpost project is a real draft, not a submission. Its video URL is empty; personal required fields and the architecture-file attachment remain for Mason in an authenticated Devpost session. No media was uploaded and no project was published or submitted.
+- The active `VIDEO-SCRIPT.md` and the separate `specguard-video` teleprompter/shoot kit use Mason's human narration only. The package has no generated voice.
+
+### Stop
+
+All five rounds are consumed. No sixth improvement round is authorized. The next operator checkpoint is to verify the two private-repository judge-access grants (or explicitly approve the public-visibility path after the required sweep); leave deployment, publication, media upload, and final Devpost submission for their separate action-time checkpoints.
