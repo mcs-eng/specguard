@@ -811,19 +811,29 @@ def test_deploy_script_limits_cloud_run_request_concurrency() -> None:
 
 
 def test_deploy_script_binds_a_clean_head_to_the_runtime_revision() -> None:
-    """A deploy must record the clean Git source without inventing an image tag."""
+    """A deploy must upload an immutable archive of the recorded Git source."""
     script = (Path(__file__).parents[1] / "deploy-specguard.ps1").read_text(encoding="utf-8")
 
     status = "git -C $PSScriptRoot status --porcelain=v1 --untracked-files=all"
     refusal = 'throw "Refusing to deploy a dirty source tree."'
     revision = "git -C $PSScriptRoot rev-parse --verify HEAD"
+    archive = "git -C $PSScriptRoot archive --format=zip --output=$sourceArchive $sourceRevision"
     deploy = "gcloud @deployArguments"
 
     assert status in script
     assert refusal in script
     assert revision in script
+    assert archive in script
+    assert "$PSNativeCommandUseErrorActionPreference = $false" in script
     assert script.index(status) < script.index(refusal) < script.index(deploy)
-    assert script.index(revision) < script.index(deploy)
+    assert script.index(revision) < script.index(archive) < script.index(deploy)
+    assert '"--source"\n    $sourceSnapshot' in script
+    assert '"--source"\n    $PSScriptRoot' not in script
+    assert "Expand-Archive -LiteralPath $sourceArchive -DestinationPath $sourceSnapshot" in script
+    assert (
+        "Remove-Item -LiteralPath $snapshotRoot -Recurse -Force -ErrorAction SilentlyContinue"
+        in script
+    )
     assert '"--image"' not in script
     assert "cloud-run-source-deploy/specguard:$sourceRevision" not in script
     assert "SPECGUARD_SOURCE_REVISION=$sourceRevision" in script

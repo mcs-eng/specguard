@@ -3,6 +3,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $false
 $env:Path = "C:\Users\mcspd\AppData\Local\Google\Cloud SDK\google-cloud-sdk\bin;$env:Path"
 
 $sourceStatus = @(git -C $PSScriptRoot status --porcelain=v1 --untracked-files=all)
@@ -18,12 +19,16 @@ if ($LASTEXITCODE -ne 0 -or $sourceRevision -notmatch "^[0-9a-f]{40}$") {
     throw "Could not resolve one full Git source revision before deployment."
 }
 
+$snapshotRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("specguard-source-" + [guid]::NewGuid().ToString("N"))
+$sourceArchive = Join-Path $snapshotRoot "source.zip"
+$sourceSnapshot = Join-Path $snapshotRoot "source"
+
 $deployArguments = @(
     "run"
     "deploy"
     "specguard"
     "--source"
-    $PSScriptRoot
+    $sourceSnapshot
     "--region"
     "us-central1"
     "--service-account"
@@ -52,7 +57,25 @@ if ($PlanOnly) {
     exit 0
 }
 
-gcloud @deployArguments
-if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
+$deployExitCode = 0
+try {
+    New-Item -ItemType Directory -Path $snapshotRoot | Out-Null
+    git -C $PSScriptRoot archive --format=zip --output=$sourceArchive $sourceRevision
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not archive the recorded Git source revision for deployment."
+    }
+    Expand-Archive -LiteralPath $sourceArchive -DestinationPath $sourceSnapshot
+
+    gcloud @deployArguments
+    $deployExitCode = $LASTEXITCODE
+}
+finally {
+    Remove-Item -LiteralPath $snapshotRoot -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $snapshotRoot) {
+        Write-Warning "The temporary deployment source snapshot could not be removed: $snapshotRoot"
+    }
+}
+
+if ($deployExitCode -ne 0) {
+    exit $deployExitCode
 }
