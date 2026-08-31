@@ -31,7 +31,7 @@ The gate establishes one narrow thing: each quoted text anchor occurs on its cit
 
 <!-- test-count-start -->
 
-`uv run pytest -q` exited 0 with **680 passed** on code revision `19a31b1`. This line is written by `scripts/record_test_count.py` from that run's own summary line; it is not typed by hand. No test requires the network or credentials; every model, Firestore, and storage dependency is an in-process fake.
+`uv run pytest -q` exited 0 with **684 passed** on code revision `b59acf0`. This line is written by `scripts/record_test_count.py` from that run's own summary line; it is not typed by hand. No test requires the network or credentials; every model, Firestore, and storage dependency is an in-process fake.
 
 <!-- test-count-end -->
 
@@ -63,6 +63,8 @@ flowchart TD
     R -->|rejection reason| A
     L -.->|writes severity fields only, cannot change verification status| SEV
 ```
+
+The upload-ready version is [specguard-architecture.pdf](output/pdf/specguard-architecture.pdf). It is the architecture attachment prepared for the Devpost draft.
 
 The honesty boundary is the edge from the model into the gate. Nothing the model emits reaches the ledger or the RFI without passing the gate, and the gate runs again inside the persistence tool and inside the RFI writer. The integrity screen sits before the model, so a flagged document never becomes model input.
 
@@ -226,6 +228,7 @@ Two things these numbers do not show. The gate rejected nothing and the runtime 
 
 Each run page shows every persisted record for one audit.
 
+- **One human identifier across the judge path.** The recent-sample list, run page, JSON export, and RFI use the assigned `S-###` submittal number. The 128-bit run ID remains the capability URL and custody identifier. A record created before numbered submittals existed falls back to its first eight run-ID characters instead of inventing a number.
 - **Quote in context.** Beside each verified quote, the page shows a bounded window of the cited page with the matched text highlighted. The window is built from the gate's own extraction and the gate's own normalization, so a reader sees the text the gate compared, not a second rendering of it. `specguard/context.py` locates the occurrence with the gate's token-boundary rule rather than a copy of it, and it reports no window at all where the gate reports no match.
 - **A rejected claim gets no window.** It has no verified anchor, so the page shows the machine reason the gate returned and the normalized quote it failed to find.
 - **The windows are read once per run.** Building them downloads and reparses both stored PDFs, and run identifiers are public, so a reload would repeat that work indefinitely. Each run's window set is cached in the serving instance, keyed by a digest of the anchors it was built from. A run whose findings are still being written has a different digest, so it recomputes instead of serving a partial set. A failed read is never cached, because it can be transient.
@@ -246,6 +249,8 @@ Every response carries the same five headers.
 `script-src 'self'` allows no inline script, so the landing page's behaviour lives in `/static/index.js`. `style-src` still allows inline style, because the pages ship their stylesheet inside the document and no style rule can execute code.
 
 `GET /healthz` returns `200 ok`. It reads no Firestore collection, no storage bucket, and no model endpoint, so it answers one question only: did this process start and can it serve. `GET /health` serves the same handler, and on Cloud Run it is the path that works: the Google Front End answers `/healthz` with its own 404 and never forwards the request to the container. That 404 carries none of the five headers above, which is how the interception is visible.
+
+The clean-tree deployment path adds `X-SpecGuard-Source-Revision` to that response. `deploy-specguard.ps1` refuses tracked or untracked changes, resolves the full Git `HEAD`, and records that SHA in both `SPECGUARD_SOURCE_REVISION` and the Cloud Run `specguard-source-revision` label. The header is source identity, not dependency health and not an image digest. Cloud Run owns the source-built image name; an attended deployment records that revision's immutable digest and confirms that the new revision has 100 percent traffic before claiming source-to-serving alignment. `-PlanOnly` proves the local preflight and prints the intended source and label without touching Cloud resources.
 
 ## What the test suite proves
 
@@ -336,11 +341,18 @@ uv run ruff check .
 2. Call the gate directly.
 
 ```python
+from pathlib import Path
+
 from specguard.gate import verify_quote
 
-result = verify_quote("Receptacles shall be specification grade", 1, "spec.pdf")
-result.verified  # bool
-result.rejection_reason  # None, or a machine-readable reason
+specification = Path("fixtures/asterquay_learning_workshop_specification.pdf")
+result = verify_quote(
+    "Conductor terminations shall be rated 90 deg C minimum.",
+    5,
+    specification,
+)
+assert result.verified is True
+assert result.rejection_reason is None
 ```
 
 3. Run one complete audit from the command line against Vertex AI and Firestore. The command prints claims made, rejected, retried, findings persisted, the severity status with any fallback reason, and the RFI path. The model receives only extracted PDF text with one-based page markers. It does not receive fixture manifests or source file names.

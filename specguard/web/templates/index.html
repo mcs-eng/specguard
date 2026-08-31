@@ -108,12 +108,12 @@
   {% if runs %}
   <div class="table-wrap">
     <table>
-      <thead><tr><th scope="col">Status</th><th scope="col">Run</th><th scope="col" class="num">Findings</th><th scope="col" class="num">Rejected</th><th scope="col">RFI</th><th scope="col">Created</th></tr></thead>
+      <thead><tr><th scope="col">Status</th><th scope="col">Submittal</th><th scope="col" class="num">Findings</th><th scope="col" class="num">Rejected</th><th scope="col">RFI</th><th scope="col">Created</th></tr></thead>
       <tbody>
       {% for run in runs %}
         <tr>
           <td><span class="badge {% if run.display_status == 'QUARANTINED' %}quarantined{% elif run.display_status == 'FAILED' %}failed{% elif run.display_status == 'RUNNING' or run.display_status == 'STALLED' %}running{% else %}completed{% endif %}">{{ run.display_status }}</span>{% if run.source == 'sample' %}<span class="badge sample">SAMPLE</span>{% endif %}{% if run.is_stalled %}<p class="muted">No completion for over ten minutes.</p>{% endif %}</td>
-          <td><a class="run-link" href="/runs/{{ run.run_id }}" title="{{ run.run_id }}"><code>{{ run.run_id[:8] }}</code></a></td>
+          <td><a class="run-link" href="/runs/{{ run.run_id }}" title="{{ run.run_id }}"><code>{{ run.submittal_label }}</code></a></td>
           <td class="num">{{ run.summary.findings_persisted }}</td>
           <td class="num">{{ run.summary.rejected }}</td>
           <td>{% if run.rfi %}<a href="/runs/{{ run.run_id }}/rfi.pdf">RFI PDF</a>{% elif run.status == 'COMPLETED' and run.summary.findings_persisted == 0 and run.summary.rejected == 0 %}<span class="muted">No RFI — no discrepancies found.</span>{% elif run.status == 'COMPLETED' and run.summary.findings_persisted == 0 %}<span class="muted">No verified findings</span>{% else %}<span class="muted">None</span>{% endif %}</td>

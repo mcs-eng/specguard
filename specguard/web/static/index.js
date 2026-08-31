@@ -54,31 +54,35 @@ const auditForm = document.getElementById('audit-form');
 const auditSubmit = document.getElementById('audit-submit');
 const auditProgress = document.getElementById('audit-progress');
 const auditFields = document.getElementById('audit-fields');
-const idleLabel = auditSubmit.textContent;
 const idleTitle = document.title;
-let submitting = false;
-function setIdle() {
-  submitting = false;
-  auditSubmit.disabled = false;
-  auditSubmit.textContent = idleLabel;
-  auditProgress.hidden = true;
-  auditForm.removeAttribute('aria-busy');
-  auditFields.removeAttribute('data-state');
-  auditFields.removeAttribute('inert');
-  document.title = idleTitle;
+let resetAudit = () => {};
+if (auditForm && auditSubmit && auditProgress && auditFields) {
+  const idleLabel = auditSubmit.textContent;
+  let submitting = false;
+  function setIdle() {
+    submitting = false;
+    auditSubmit.disabled = false;
+    auditSubmit.textContent = idleLabel;
+    auditProgress.hidden = true;
+    auditForm.removeAttribute('aria-busy');
+    auditFields.removeAttribute('data-state');
+    auditFields.removeAttribute('inert');
+    document.title = idleTitle;
+  }
+  auditForm.addEventListener('submit', event => {
+    if (submitting) { event.preventDefault(); return; }
+    submitting = true;
+    auditSubmit.disabled = true;
+    auditSubmit.textContent = 'Audit running';
+    auditProgress.hidden = false;
+    auditProgress.focus();
+    auditForm.setAttribute('aria-busy', 'true');
+    auditFields.setAttribute('data-state', 'submitting');
+    auditFields.setAttribute('inert', '');
+    document.title = 'Audit running — ' + idleTitle;
+  });
+  resetAudit = setIdle;
 }
-auditForm.addEventListener('submit', event => {
-  if (submitting) { event.preventDefault(); return; }
-  submitting = true;
-  auditSubmit.disabled = true;
-  auditSubmit.textContent = 'Audit running';
-  auditProgress.hidden = false;
-  auditProgress.focus();
-  auditForm.setAttribute('aria-busy', 'true');
-  auditFields.setAttribute('data-state', 'submitting');
-  auditFields.setAttribute('inert', '');
-  document.title = 'Audit running — ' + idleTitle;
-});
 const sampleGrid = document.getElementById('sample-grid');
 const sampleProgress = document.getElementById('sample-progress');
 const sampleForms = sampleGrid.querySelectorAll('form');
@@ -102,7 +106,7 @@ for (const sampleForm of sampleForms) {
     document.title = 'Sample audit running — ' + idleTitle;
   });
 }
-window.addEventListener('pageshow', event => { if (event.persisted) { setIdle(); setSampleIdle(); } });
+window.addEventListener('pageshow', event => { if (event.persisted) { resetAudit(); setSampleIdle(); } });
 const relativeTime = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
 const timeUnits = [['second', 60], ['minute', 60], ['hour', 24], ['day', 7], ['week', 4.35], ['month', 12], ['year', Infinity]];
 for (const stamp of document.querySelectorAll('time[datetime]')) {

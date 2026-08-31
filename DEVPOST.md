@@ -1,10 +1,10 @@
 # SpecGuard: Devpost submission draft
 
-Drafted 2026-08-21 for the All Things Agentic Hackathon. Every number below names, beside it, the committed artifact it comes from: a published table, the campaign console log (`EVAL-CONSOLE.log`), or the per-call receipt file (`EVAL-RECEIPTS.jsonl`, which carries tool calls and self-check counters; rates and token figures come from the tables and the log). Placeholders are marked `[TODO]`. Mason fills the form; this file is the text he pastes.
+Drafted 2026-08-21 and refreshed 2026-08-29 for the All Things Agentic Hackathon. Every number below names, beside it, the committed artifact it comes from: a published table, the campaign console log (`EVAL-CONSOLE.log`), or the per-call receipt file (`EVAL-RECEIPTS.jsonl`, which carries tool calls and self-check counters; rates and token figures come from the tables and the log). Placeholders are marked `[TODO]`. Mason fills the form; this file is the text he pastes. The editable project remains an unsubmitted draft at `https://devpost.com/software/specguard-2i3tzp`.
 
 ## Contest requirements, recorded verbatim
 
-Source: `https://allthingsagentichackathon.devpost.com/rules` and the hackathon home page, fetched 2026-08-21. The submission form at `https://devpost.com/submit-to/30845-all-things-agentic-hackathon/manage/submissions` is behind the Devpost login, so field-level character limits could not be read; the Devpost help article "How to enter a submission" names a "project name" and an "elevator pitch (tagline)" field and states no limits. Keep the tagline under 60 characters as a margin.
+Source: `https://allthingsagentichackathon.devpost.com/rules`, the hackathon home page, and the live Devpost submission-field map, rechecked 2026-08-29. `DEVPOST-FORM.md` records the current required fields, their source-proven values, and the operator-owned blanks. Keep the tagline under 60 characters as a margin.
 
 - Deadline: "August 31, 2026 (5:00 P.M. Pacific Time)".
 - Video length: "It should not be longer than 4 minutes. If it is longer than 4 minutes, only the first 4 minutes may be evaluated."
@@ -19,6 +19,10 @@ Source: `https://allthingsagentichackathon.devpost.com/rules` and the hackathon 
 - Also required: "URL to the hosted Project (if available) for judging and testing, such as web UI, Chrome Extension, mobile app, etc."; "Spin-up Instructions: A step-by-step guide in your README.md explaining how to set up and run the project locally or deploy it to the cloud."; "Include an Architecture Diagram with a clear visual representation of your system".
 - Judging: "Innovation & Operational Utility (40%)", "Architectural Discipline & Tech Stack (30%)", "Demo & Production Readiness (30%)".
 
+## Operator instruction — do not paste
+
+- Upload [specguard-architecture.pdf](output/pdf/specguard-architecture.pdf) through Devpost's architecture-diagram file field. Track its current attachment state only in `DEVPOST-FORM.md` under "Action-time fields — Mason only"; do not copy this instruction into a public submission field.
+
 ## Form fields
 
 **Project name:** SpecGuard
@@ -29,11 +33,11 @@ Source: `https://allthingsagentichackathon.devpost.com/rules` and the hackathon 
 
 **Hosted project URL:** `https://specguard-108657628939.us-central1.run.app` (Cloud Run, us-central1). Judges can run the four public sample audits without a passphrase: Caldra (compliant), Veylan 208V, Torven 70 deg C, and Veylan altered (integrity screen). `POST /audit` keeps arbitrary uploads behind the demo passphrase to protect the demo budget. The landing page lists sample runs only; an uploaded submittal is reachable by the run URL its uploader receives, and by nothing else.
 
-**Repository URL:** `https://github.com/mcs-eng/specguard` (private until 2026-08-30, public before submission).
+**Repository URL:** `https://github.com/mcs-eng/specguard` (private as of 2026-08-29). Before submission, Mason must either verify that `testing@devpost.com` and `cloudhackathons@google.com` have access or approve a public-visibility change after a history/privacy sweep. Do not submit until one path is recorded.
 
 **Video URL:** `[TODO: YouTube or Vimeo link, public]`
 
-**Additional Google AI model for the bonus:** Gemma (`google/gemma3@gemma-3-1b-it` on a Vertex AI Model Garden endpoint) as the severity annotation. One model, 0.2 points claimed.
+**Google AI models:** Gemini 3.7 Flash via Vertex AI; Gemma (`google/gemma3@gemma-3-1b-it`) as an advisory severity annotation. The current deployed revision records Gemma's disabled-endpoint fallback, so no bonus claim should describe live severity scoring without separate current proof.
 
 **Pre-existing code disclosure:** None. Every line in the repository was written inside the contest window, and nothing was copied from an earlier project. (PLAN.md, Contest facts.)
 

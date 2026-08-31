@@ -364,10 +364,17 @@ def test_an_untrusted_deployment_ignores_the_forwarded_header_entirely() -> None
 
 def test_a_trusted_deployment_reads_the_appended_address(monkeypatch: Any) -> None:
     """Cloud Run appends the peer address, and the deploy script turns this on."""
+    source_revision = "ab" * 20
     monkeypatch.setenv("SPECGUARD_TRUST_FORWARDED_FOR", "1")
-    assert WebSettings.from_environment().trust_forwarded_for is True
+    monkeypatch.setenv("SPECGUARD_SOURCE_REVISION", source_revision)
+    settings = WebSettings.from_environment()
+    assert settings.trust_forwarded_for is True
+    assert settings.source_revision == source_revision
     monkeypatch.delenv("SPECGUARD_TRUST_FORWARDED_FOR")
-    assert WebSettings.from_environment().trust_forwarded_for is False
+    monkeypatch.delenv("SPECGUARD_SOURCE_REVISION")
+    settings = WebSettings.from_environment()
+    assert settings.trust_forwarded_for is False
+    assert settings.source_revision == "unrecorded"
 
     client, repository, _, _ = _client(trust_forwarded_for=True)
 
@@ -803,6 +810,36 @@ def test_deploy_script_limits_cloud_run_request_concurrency() -> None:
     assert "SPECGUARD_GEMMA_ENDPOINT=disabled" in script
 
 
+def test_deploy_script_binds_a_clean_head_to_the_runtime_revision() -> None:
+    """A deploy must upload an immutable archive of the recorded Git source."""
+    script = (Path(__file__).parents[1] / "deploy-specguard.ps1").read_text(encoding="utf-8")
+
+    status = "git -C $PSScriptRoot status --porcelain=v1 --untracked-files=all"
+    refusal = 'throw "Refusing to deploy a dirty source tree."'
+    revision = "git -C $PSScriptRoot rev-parse --verify HEAD"
+    archive = "git -C $PSScriptRoot archive --format=zip --output=$sourceArchive $sourceRevision"
+    deploy = "gcloud @deployArguments"
+
+    assert status in script
+    assert refusal in script
+    assert revision in script
+    assert archive in script
+    assert "$PSNativeCommandUseErrorActionPreference = $false" in script
+    assert script.index(status) < script.index(refusal) < script.index(deploy)
+    assert script.index(revision) < script.index(archive) < script.index(deploy)
+    assert '"--source"\n    $sourceSnapshot' in script
+    assert '"--source"\n    $PSScriptRoot' not in script
+    assert "Expand-Archive -LiteralPath $sourceArchive -DestinationPath $sourceSnapshot" in script
+    assert (
+        "Remove-Item -LiteralPath $snapshotRoot -Recurse -Force -ErrorAction SilentlyContinue"
+        in script
+    )
+    assert '"--image"' not in script
+    assert "cloud-run-source-deploy/specguard:$sourceRevision" not in script
+    assert "SPECGUARD_SOURCE_REVISION=$sourceRevision" in script
+    assert '"specguard-source-revision=$sourceRevision"' in script
+
+
 def test_deploy_image_bundles_sample_fixture_pdfs() -> None:
     dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text(encoding="utf-8")
 
@@ -1174,6 +1211,38 @@ def test_token_minting_is_capped_per_address_per_hour() -> None:
     assert "Run a sample audit" in over_budget.text
     assert 'href="/gate"' in over_budget.text
     assert client.post("/sample/caldra", follow_redirects=False).status_code == 303
+
+
+def test_sample_controls_do_not_depend_on_the_rate_limited_upload_form() -> None:
+    """Upload setup is optional because the sample path remains available without it."""
+    client, _, _, _ = _client()
+    for _ in range(TOKEN_MINTS_PER_IP_HOUR):
+        assert client.get("/").status_code == 200
+
+    page = client.get("/")
+    script = client.get("/static/index.js").text
+
+    assert 'id="audit-form"' not in page.text
+    assert 'id="sample-grid"' in page.text
+    guard = "if (auditForm && auditSubmit && auditProgress && auditFields) {"
+    guard_start = script.index(guard)
+    block_start = script.index("{", guard_start)
+    depth = 0
+    block_end = None
+    for position, character in enumerate(script[block_start:], start=block_start):
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                block_end = position
+                break
+
+    assert block_end is not None
+    guarded_upload_setup = script[block_start : block_end + 1]
+    assert "const idleLabel = auditSubmit.textContent;" in guarded_upload_setup
+    assert "auditForm.addEventListener('submit'" in guarded_upload_setup
+    assert block_end < script.index("const sampleGrid")
 
 
 def test_the_landing_page_finds_sample_runs_behind_newer_upload_runs() -> None:
@@ -1632,9 +1701,15 @@ def _fixture_run_client() -> tuple[TestClient, FakeRunRepository, FakeObjectStor
 
 @pytest.mark.parametrize("path", ["/healthz", "/health"])
 def test_healthz_returns_200_without_reading_any_dependency(path: str) -> None:
+    source_revision = "ab" * 20
     app = create_app(
         WebServices(
-            settings=WebSettings(project_id="p", bucket_name="b", demo_passphrase="x"),
+            settings=WebSettings(
+                project_id="p",
+                bucket_name="b",
+                demo_passphrase="x",
+                source_revision=source_revision,
+            ),
             repository=ExplodingRepository(),
             storage=ExplodingStorage(),
             audit_runner=FakeAuditRunner(),
@@ -1646,6 +1721,7 @@ def test_healthz_returns_200_without_reading_any_dependency(path: str) -> None:
 
     assert response.status_code == 200
     assert response.text == "ok"
+    assert response.headers["x-specguard-source-revision"] == source_revision
 
 
 @pytest.mark.parametrize(
@@ -2416,6 +2492,22 @@ def test_the_run_page_leads_with_the_submittal_number() -> None:
     # heading a reader meets first.
     assert f"<h2>Run <code>{FIXTURE_RUN_ID}</code></h2>" not in body
     assert f"/runs/{FIXTURE_RUN_ID}/rfi.pdf" in body
+
+
+def test_the_landing_page_uses_the_submittal_number_and_keeps_the_legacy_fallback() -> None:
+    """The recent-runs list uses the same human identity as the run it opens."""
+    client, repository, _ = _fixture_run_client()
+    legacy_run_id = "0123456789abcdef0123456789abcdef"
+    legacy = dict(repository.runs[FIXTURE_RUN_ID])
+    legacy.pop("submittal_number")
+    legacy["run_id"] = legacy_run_id
+    repository.runs[legacy_run_id] = legacy
+
+    body = client.get("/").text
+
+    assert '<th scope="col">Submittal</th>' in body
+    assert f'title="{FIXTURE_RUN_ID}"><code>{FIXTURE_SUBMITTAL_NUMBER}</code></a>' in body
+    assert f'title="{legacy_run_id}"><code>{legacy_run_id[:8]}</code></a>' in body
 
 
 def test_a_run_persisted_before_the_field_renders_the_short_run_id() -> None:
