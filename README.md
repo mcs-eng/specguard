@@ -250,6 +250,8 @@ Every response carries the same five headers.
 
 `GET /healthz` returns `200 ok`. It reads no Firestore collection, no storage bucket, and no model endpoint, so it answers one question only: did this process start and can it serve. `GET /health` serves the same handler, and on Cloud Run it is the path that works: the Google Front End answers `/healthz` with its own 404 and never forwards the request to the container. That 404 carries none of the five headers above, which is how the interception is visible.
 
+The clean-tree deployment path adds `X-SpecGuard-Source-Revision` to that response. `deploy-specguard.ps1` refuses tracked or untracked changes, resolves the full Git `HEAD`, and records that SHA in both `SPECGUARD_SOURCE_REVISION` and the Cloud Run `specguard-source-revision` label. The header is source identity, not dependency health and not an image digest. Cloud Run owns the source-built image name; an attended deployment records that revision's immutable digest and confirms that the new revision has 100 percent traffic before claiming source-to-serving alignment. `-PlanOnly` proves the local preflight and prints the intended source and label without touching Cloud resources.
+
 ## What the test suite proves
 
 Known-good cases that verify:

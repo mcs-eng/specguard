@@ -364,10 +364,17 @@ def test_an_untrusted_deployment_ignores_the_forwarded_header_entirely() -> None
 
 def test_a_trusted_deployment_reads_the_appended_address(monkeypatch: Any) -> None:
     """Cloud Run appends the peer address, and the deploy script turns this on."""
+    source_revision = "ab" * 20
     monkeypatch.setenv("SPECGUARD_TRUST_FORWARDED_FOR", "1")
-    assert WebSettings.from_environment().trust_forwarded_for is True
+    monkeypatch.setenv("SPECGUARD_SOURCE_REVISION", source_revision)
+    settings = WebSettings.from_environment()
+    assert settings.trust_forwarded_for is True
+    assert settings.source_revision == source_revision
     monkeypatch.delenv("SPECGUARD_TRUST_FORWARDED_FOR")
-    assert WebSettings.from_environment().trust_forwarded_for is False
+    monkeypatch.delenv("SPECGUARD_SOURCE_REVISION")
+    settings = WebSettings.from_environment()
+    assert settings.trust_forwarded_for is False
+    assert settings.source_revision == "unrecorded"
 
     client, repository, _, _ = _client(trust_forwarded_for=True)
 
@@ -801,6 +808,26 @@ def test_deploy_script_limits_cloud_run_request_concurrency() -> None:
     assert '"--concurrency"\n    "2"' in script
     assert '"--max-instances"\n    "1"' in script
     assert "SPECGUARD_GEMMA_ENDPOINT=disabled" in script
+
+
+def test_deploy_script_binds_a_clean_head_to_the_runtime_revision() -> None:
+    """A deploy must record the clean Git source without inventing an image tag."""
+    script = (Path(__file__).parents[1] / "deploy-specguard.ps1").read_text(encoding="utf-8")
+
+    status = "git -C $PSScriptRoot status --porcelain=v1 --untracked-files=all"
+    refusal = 'throw "Refusing to deploy a dirty source tree."'
+    revision = "git -C $PSScriptRoot rev-parse --verify HEAD"
+    deploy = "gcloud @deployArguments"
+
+    assert status in script
+    assert refusal in script
+    assert revision in script
+    assert script.index(status) < script.index(refusal) < script.index(deploy)
+    assert script.index(revision) < script.index(deploy)
+    assert '"--image"' not in script
+    assert "cloud-run-source-deploy/specguard:$sourceRevision" not in script
+    assert "SPECGUARD_SOURCE_REVISION=$sourceRevision" in script
+    assert '"specguard-source-revision=$sourceRevision"' in script
 
 
 def test_deploy_image_bundles_sample_fixture_pdfs() -> None:
@@ -1664,9 +1691,15 @@ def _fixture_run_client() -> tuple[TestClient, FakeRunRepository, FakeObjectStor
 
 @pytest.mark.parametrize("path", ["/healthz", "/health"])
 def test_healthz_returns_200_without_reading_any_dependency(path: str) -> None:
+    source_revision = "ab" * 20
     app = create_app(
         WebServices(
-            settings=WebSettings(project_id="p", bucket_name="b", demo_passphrase="x"),
+            settings=WebSettings(
+                project_id="p",
+                bucket_name="b",
+                demo_passphrase="x",
+                source_revision=source_revision,
+            ),
             repository=ExplodingRepository(),
             storage=ExplodingStorage(),
             audit_runner=FakeAuditRunner(),
@@ -1678,6 +1711,7 @@ def test_healthz_returns_200_without_reading_any_dependency(path: str) -> None:
 
     assert response.status_code == 200
     assert response.text == "ok"
+    assert response.headers["x-specguard-source-revision"] == source_revision
 
 
 @pytest.mark.parametrize(

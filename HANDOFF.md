@@ -2645,3 +2645,9 @@ The versioned claim prompts, structured outputs, tool boundaries, published camp
 ### Current external boundary
 
 At the 2026-08-30 checkpoint, GitHub still reported the repository private, with only the owner in the collaborator list and no pending invitations. The Devpost project remains a draft: submitter/country, project start date, architecture-file attachment, video URL, and final submission are not complete. The serving Cloud Run revision remains evidence of a live service, not evidence that this corrected source head is deployed. Mason retains the merge, deployment, access/visibility, media-upload, and submission checkpoints.
+
+### Source-to-serving provenance seam
+
+The prior checkpoint correctly could not map a Git commit to the serving Cloud Run revision. The prepared deployment path now closes the local half of that gap without a custom build pipeline: it refuses a dirty tracked or untracked tree, resolves the full `HEAD`, and supplies that value to Cloud Run as both `SPECGUARD_SOURCE_REVISION` and a `specguard-source-revision` label. The dependency-free `/health` response preserves `200 ok` and adds `X-SpecGuard-Source-Revision`. Cloud Run owns the source-built image name; a `-PlanOnly` preflight performs the Git checks and prints the source and label without calling `gcloud`.
+
+This seam is locally proven, not deployed. The external boundary remains open until an attended deployment of the exact reviewed head records: the new revision at 100 percent traffic, its nonempty immutable image digest, its runtime source environment value, and a public `/health` header equal to that same Git SHA. The existing `specguard-00030-jnr` service predates the seam and must not be relabelled as proof of the candidate source.

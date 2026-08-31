@@ -55,14 +55,22 @@ Narration is written at about 150 words per minute. Word counts are in brackets.
 
 ### Shot 2, 0:18 to 0:43. Architecture. Separate cut.
 
-- On screen: the README architecture diagram (or `output/pdf/specguard-architecture.pdf`) for 15 s; then 10 s on a terminal running the read-only Cloud Run receipt below, with the public `.run.app` URL visible in the browser. This proves the serving revision without a console login or a resource change.
+- On screen: the README architecture diagram (or `output/pdf/specguard-architecture.pdf`) for 15 s; then 10 s on a terminal running the read-only Cloud Run receipt below, with the public `.run.app` URL visible in the browser. On the final deployed head, the receipt names the serving revision, immutable image digest, and recorded source SHA without a console login or a resource change.
 - Narration [50]: "One Google ADK agent on Gemini 3.7 Flash reads both documents and proposes quoted, paginated claims. The runtime it cannot skip screens text layers, records model tool calls, requires a token-boundary match on the cited page, and verifies again before any write. The ready Cloud Run revision is the backend."
 - Pre-staged: README or the PDF diagram; the public service; and this read-only command in a terminal:
 
 ```powershell
-gcloud run services describe specguard --region us-central1 --project specguard-hack --format="yaml(status.url,status.latestReadyRevisionName,status.traffic)"
+$expectedSource = git rev-parse HEAD
+$service = gcloud run services describe specguard --region us-central1 --project specguard-hack --format=json | ConvertFrom-Json
+$revision = $service.status.latestReadyRevisionName
+$traffic = @($service.status.traffic | Where-Object { $_.revisionName -eq $revision })
+if ($traffic.Count -ne 1 -or [int]$traffic[0].percent -ne 100) { throw "Latest ready revision does not serve 100 percent of traffic." }
+gcloud run revisions describe $revision --region us-central1 --project specguard-hack --format="yaml(metadata.name,status.imageDigest,spec.containers[0].env)"
+$servedSource = (Invoke-WebRequest https://specguard-108657628939.us-central1.run.app/health).Headers["X-SpecGuard-Source-Revision"]
+if ($servedSource -ne $expectedSource) { throw "Serving source does not match this checkout." }
+$servedSource
 ```
-- Honesty boundary: "proposes" for the model, "cannot skip" for the runtime. The recorded tool calls are the receipt for what the model actually did; do not claim the model performs the verification.
+- Honesty boundary: "proposes" for the model, "cannot skip" for the runtime. The recorded tool calls are the receipt for what the model actually did; do not claim the model performs the verification. Do not call source/live alignment proven unless the SHA comparison succeeds and the revision receipt carries a nonempty image digest.
 
 ### Shot 3, 0:43 to 2:47. CONTINUOUS SEGMENT. One unbroken recording.
 

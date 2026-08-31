@@ -96,6 +96,8 @@ SECURITY_HEADERS = {
     "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
 }
 
+SOURCE_REVISION_HEADER = "X-SpecGuard-Source-Revision"
+
 
 @dataclass(frozen=True)
 class SampleAuditCase:
@@ -204,6 +206,10 @@ class WebSettings:
     #: Cloud Run does. False everywhere else, because there the header is
     #: whatever the caller typed.
     trust_forwarded_for: bool = False
+    #: Full Git revision supplied by the clean-tree deployment path. A local
+    #: process, or a revision created by an older deploy script, reports the
+    #: absence rather than guessing which source it serves.
+    source_revision: str = "unrecorded"
 
     @classmethod
     def from_environment(cls) -> WebSettings:
@@ -214,6 +220,8 @@ class WebSettings:
             demo_passphrase=os.environ.get("SPECGUARD_DEMO_PASSPHRASE", ""),
             trust_forwarded_for=os.environ.get("SPECGUARD_TRUST_FORWARDED_FOR") == "1",
             agent_mode=resolve_agent_mode(),
+            source_revision=os.environ.get("SPECGUARD_SOURCE_REVISION", "unrecorded")
+            or "unrecorded",
         )
 
 
@@ -325,7 +333,11 @@ def create_app(services: WebServices | None = None) -> FastAPI:
         deployed service. ``/healthz`` stays registered because it is the
         conventional name and it is reachable everywhere else this app runs.
         """
-        return Response("ok", media_type="text/plain; charset=utf-8")
+        return Response(
+            "ok",
+            media_type="text/plain; charset=utf-8",
+            headers={SOURCE_REVISION_HEADER: app.state.services.settings.source_revision},
+        )
 
     @app.api_route("/", methods=["GET", "HEAD"])
     def findings_page(request: Request) -> Response:
