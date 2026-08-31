@@ -19,6 +19,10 @@ Source: `https://allthingsagentichackathon.devpost.com/rules`, the hackathon hom
 - Also required: "URL to the hosted Project (if available) for judging and testing, such as web UI, Chrome Extension, mobile app, etc."; "Spin-up Instructions: A step-by-step guide in your README.md explaining how to set up and run the project locally or deploy it to the cloud."; "Include an Architecture Diagram with a clear visual representation of your system".
 - Judging: "Innovation & Operational Utility (40%)", "Architectural Discipline & Tech Stack (30%)", "Demo & Production Readiness (30%)".
 
+## Operator instruction — do not paste
+
+- Upload [specguard-architecture.pdf](output/pdf/specguard-architecture.pdf) through Devpost's architecture-diagram file field. Track its current attachment state only in `DEVPOST-FORM.md` under "Action-time fields — Mason only"; do not copy this instruction into a public submission field.
+
 ## Form fields
 
 **Project name:** SpecGuard
@@ -30,8 +34,6 @@ Source: `https://allthingsagentichackathon.devpost.com/rules`, the hackathon hom
 **Hosted project URL:** `https://specguard-108657628939.us-central1.run.app` (Cloud Run, us-central1). Judges can run the four public sample audits without a passphrase: Caldra (compliant), Veylan 208V, Torven 70 deg C, and Veylan altered (integrity screen). `POST /audit` keeps arbitrary uploads behind the demo passphrase to protect the demo budget. The landing page lists sample runs only; an uploaded submittal is reachable by the run URL its uploader receives, and by nothing else.
 
 **Repository URL:** `https://github.com/mcs-eng/specguard` (private as of 2026-08-29). Before submission, Mason must either verify that `testing@devpost.com` and `cloudhackathons@google.com` have access or approve a public-visibility change after a history/privacy sweep. Do not submit until one path is recorded.
-
-**Architecture diagram:** [specguard-architecture.pdf](output/pdf/specguard-architecture.pdf), ready for the required Devpost file field. It is not yet attached to the draft.
 
 **Video URL:** `[TODO: YouTube or Vimeo link, public]`
 

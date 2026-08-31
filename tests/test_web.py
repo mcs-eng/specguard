@@ -1188,8 +1188,24 @@ def test_sample_controls_do_not_depend_on_the_rate_limited_upload_form() -> None
     assert 'id="audit-form"' not in page.text
     assert 'id="sample-grid"' in page.text
     guard = "if (auditForm && auditSubmit && auditProgress && auditFields) {"
-    assert guard in script
-    assert script.index(guard) < script.index("const idleLabel = auditSubmit.textContent;")
+    guard_start = script.index(guard)
+    block_start = script.index("{", guard_start)
+    depth = 0
+    block_end = None
+    for position, character in enumerate(script[block_start:], start=block_start):
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                block_end = position
+                break
+
+    assert block_end is not None
+    guarded_upload_setup = script[block_start : block_end + 1]
+    assert "const idleLabel = auditSubmit.textContent;" in guarded_upload_setup
+    assert "auditForm.addEventListener('submit'" in guarded_upload_setup
+    assert block_end < script.index("const sampleGrid")
 
 
 def test_the_landing_page_finds_sample_runs_behind_newer_upload_runs() -> None:
