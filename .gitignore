@@ -15,3 +15,6 @@ EVAL-RECEIPTS.jsonl.partial
 # Planning and environment docs: kept locally, not committed.
 SETUP.md
 PLAN.md
+
+# Agent worktrees live under .worktrees/ and are never project source.
+.worktrees/
