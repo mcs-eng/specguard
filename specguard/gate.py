@@ -109,21 +109,27 @@ def _sits_on_token_boundaries(haystack: str, needle: str, start: int) -> bool:
     return True
 
 
-def contains_on_boundaries(haystack: str, needle: str) -> bool:
-    """True if ``needle`` occurs in ``haystack`` on token boundaries.
+def find_on_boundaries(haystack: str, needle: str) -> int:
+    """Return the offset of the first occurrence of ``needle`` on token boundaries.
 
     Both arguments must already be normalized. Every occurrence is checked, not
     only the first: an occurrence that cuts a number in half does not hide a
-    later occurrence that does not.
+    later occurrence that does not. Returns ``-1`` when no occurrence qualifies
+    and for an empty ``needle``.
     """
     if not needle:
-        return False
+        return -1
     start = haystack.find(needle)
     while start != -1:
         if _sits_on_token_boundaries(haystack, needle, start):
-            return True
+            return start
         start = haystack.find(needle, start + 1)
-    return False
+    return -1
+
+
+def contains_on_boundaries(haystack: str, needle: str) -> bool:
+    """True if ``needle`` occurs in ``haystack`` on token boundaries."""
+    return find_on_boundaries(haystack, needle) != -1
 
 
 def extract_page_text(pdf_path: str | Path, page_number: int) -> str:

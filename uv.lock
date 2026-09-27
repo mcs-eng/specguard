@@ -1740,14 +1740,18 @@ name = "specguard"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "pydantic" },
+    { name = "pymupdf" },
+]
+
+[package.optional-dependencies]
+demo = [
     { name = "fastapi" },
     { name = "google-adk" },
     { name = "google-cloud-firestore" },
     { name = "google-cloud-secret-manager" },
     { name = "google-cloud-storage" },
     { name = "jinja2" },
-    { name = "pydantic" },
-    { name = "pymupdf" },
     { name = "python-multipart" },
     { name = "uvicorn" },
 ]
@@ -1757,27 +1761,30 @@ dev = [
     { name = "pymupdf-fonts" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "specguard", extra = ["demo"] },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", specifier = ">=0.115,<1" },
-    { name = "google-adk", specifier = "==2.7.1" },
-    { name = "google-cloud-firestore", specifier = ">=2.21,<3" },
-    { name = "google-cloud-secret-manager", specifier = ">=2.20,<3" },
-    { name = "google-cloud-storage", specifier = ">=3.0,<4" },
-    { name = "jinja2", specifier = ">=3.1,<4" },
+    { name = "fastapi", marker = "extra == 'demo'", specifier = ">=0.115,<1" },
+    { name = "google-adk", marker = "extra == 'demo'", specifier = "==2.7.1" },
+    { name = "google-cloud-firestore", marker = "extra == 'demo'", specifier = ">=2.21,<3" },
+    { name = "google-cloud-secret-manager", marker = "extra == 'demo'", specifier = ">=2.20,<3" },
+    { name = "google-cloud-storage", marker = "extra == 'demo'", specifier = ">=3.0,<4" },
+    { name = "jinja2", marker = "extra == 'demo'", specifier = ">=3.1,<4" },
     { name = "pydantic", specifier = ">=2.9,<3" },
     { name = "pymupdf", specifier = "==1.28.2" },
-    { name = "python-multipart", specifier = ">=0.0.20,<1" },
-    { name = "uvicorn", specifier = ">=0.30,<1" },
+    { name = "python-multipart", marker = "extra == 'demo'", specifier = ">=0.0.20,<1" },
+    { name = "uvicorn", marker = "extra == 'demo'", specifier = ">=0.30,<1" },
 ]
+provides-extras = ["demo"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "pymupdf-fonts", specifier = ">=1.0.5" },
     { name = "pytest", specifier = ">=9.0.3,<10" },
     { name = "ruff", specifier = ">=0.6,<1" },
+    { name = "specguard", extras = ["demo"] },
 ]
 
 [[package]]

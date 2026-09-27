@@ -4,9 +4,16 @@ version = "0.1.0"
 description = "Deterministic verification gate for construction submittal audit claims."
 readme = "README.md"
 requires-python = ">=3.12"
+# The gate and the quote-check CLI need only these two. Everything the hosted
+# audit demo needs (ADK, Gemini, Firestore, Cloud Storage, FastAPI) is the
+# `demo` extra, so a local install of the gate pulls no cloud dependency.
 dependencies = [
     "pymupdf==1.28.2",
     "pydantic>=2.9,<3",
+]
+
+[project.optional-dependencies]
+demo = [
     "fastapi>=0.115,<1",
     "google-adk==2.7.1",
     "google-cloud-firestore>=2.21,<3",
@@ -17,8 +24,12 @@ dependencies = [
     "google-cloud-secret-manager>=2.20,<3",
 ]
 
+[project.scripts]
+specguard = "specguard.cli:main"
+
 [dependency-groups]
 dev = [
+    "specguard[demo]",
     "pymupdf-fonts>=1.0.5",
     "pytest>=9.0.3,<10",
     "ruff>=0.6,<1",
