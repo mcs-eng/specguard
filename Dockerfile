@@ -10,7 +10,7 @@ ENV UV_LINK_MODE=copy
 COPY pyproject.toml uv.lock README.md ./
 COPY specguard ./specguard
 COPY fixtures/*.pdf ./fixtures/
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --extra demo
 
 EXPOSE 8080
 

@@ -4,7 +4,7 @@ SpecGuard audits a construction cut sheet against a specification. Every finding
 
 **Uncited claims are blocked from the ledger.**
 
-**The core is two things.** The first is `specguard/gate.py`: 184 lines that take a quote, a page number, and a PDF and answer whether that quote is on that page, under one normalization rule, with no fuzzy matching, no edit distance, and no cross-page search. Its contract is reproduced verbatim below and `tests/test_gate.py` proves it. The second is the audit itself: one Google ADK agent on Gemini 3.7 Flash reads the two documents and returns structured discrepancy claims in a single model turn, each claim carrying one verbatim quote and one page number per document. Every run in the 100-audit campaign below that reached the model made exactly one call to the claim generator. The agent proposes; the gate decides what survives.
+**The core is two things.** The first is `specguard/gate.py`: 190 lines that take a quote, a page number, and a PDF and answer whether that quote is on that page, under one normalization rule, with no fuzzy matching, no edit distance, and no cross-page search. Its contract is reproduced verbatim below and `tests/test_gate.py` proves it. The second is the audit itself: one Google ADK agent on Gemini 3.7 Flash reads the two documents and returns structured discrepancy claims in a single model turn, each claim carrying one verbatim quote and one page number per document. Every run in the 100-audit campaign below that reached the model made exactly one call to the claim generator. The agent proposes; the gate decides what survives.
 
 **Everything else here is the proof system built around that core.** A deterministic runtime screens both documents before the model reads anything, verifies every quoted anchor, sends a rejected claim back to the model once, verifies again at write time, and drafts the RFI. A text-layer integrity screen quarantines a document whose text layer disagrees with its visible page. An eval harness runs the real runtime over committed fixtures and publishes what it measured, misses included. Every model-initiated tool call of that campaign is committed to `EVAL-RECEIPTS.jsonl`, so the published tool-call columns can be checked call by call rather than taken on this file's word. Two agent modes exist so the reading path can be compared rather than asserted. None of that widens what the gate proves. All of it exists so a reader need not take this file's word for what the gate proves.
 
@@ -17,6 +17,7 @@ The gate establishes one narrow thing: each quoted text anchor occurs on its cit
 ## What is in this repository
 
 - `specguard/gate.py`: the verification gate. Its contract is reproduced verbatim below.
+- `specguard/cli.py`: `specguard quote-check`, the gate as a local command line with JSON output and a batch mode. It needs PyMuPDF and Pydantic only; the hosted demo's dependencies are the `demo` extra.
 - `specguard/integrity.py`: the text-layer integrity screen that runs before any model call.
 - `specguard/agent.py` and `specguard/tools.py`: one ADK agent, five role-bound tools of which the three read-only ones are registered to the model, the bounded one-retry loop, guarded Firestore persistence, and RFI draft PDF generation.
 - `specguard/severity.py`: the advisory Gemma severity annotation with recorded fallback.
@@ -354,6 +355,14 @@ result = verify_quote(
 assert result.verified is True
 assert result.rejection_reason is None
 ```
+
+   Or check quotes from the command line. `specguard quote-check` runs the same `verify_quote` on a local PDF and prints one JSON document: a summary and one result per quote with `status` (`pass`, `fail`, or `error`), the machine reason, the normalized quote, and match diagnostics that never change a verdict. It exits 0 when every quote passed, 1 when any failed or errored, and 2 on a usage error. `--batch FILE` reads JSON Lines of `{"id", "pdf", "page", "quote"}`; `--format text` prints one line per quote; `--help` documents every field.
+
+```bash
+uv run specguard quote-check --pdf fixtures/asterquay_learning_workshop_specification.pdf --page 5 --quote "Conductor terminations shall be rated 90 deg C minimum."
+```
+
+   The gate and the CLI install without the hosted demo's dependencies: `pip install .` pulls PyMuPDF and Pydantic only, and `pip install ".[demo]"` adds ADK, Gemini, Firestore, Cloud Storage, and FastAPI. `uv sync` installs both, because the dev group includes the extra.
 
 3. Run one complete audit from the command line against Vertex AI and Firestore. The command prints claims made, rejected, retried, findings persisted, the severity status with any fallback reason, and the RFI path. The model receives only extracted PDF text with one-based page markers. It does not receive fixture manifests or source file names.
 
