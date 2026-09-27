@@ -208,24 +208,23 @@ def check_quote(
             normalized_quote=normalized_quote,
             **common,
         )
-    if not path.exists():
-        return _result(
-            status="error",
-            reason=ERROR_PDF_NOT_FOUND,
-            detail=f"no file at {shown_path}",
-            normalized_quote=normalized_quote,
-            **common,
-        )
-    if not path.is_file():
-        return _result(
-            status="error",
-            reason=ERROR_PDF_NOT_FOUND,
-            detail=f"{shown_path} is not a file",
-            normalized_quote=normalized_quote,
-            **common,
-        )
-
     try:
+        if not path.exists():
+            return _result(
+                status="error",
+                reason=ERROR_PDF_NOT_FOUND,
+                detail=f"no file at {shown_path}",
+                normalized_quote=normalized_quote,
+                **common,
+            )
+        if not path.is_file():
+            return _result(
+                status="error",
+                reason=ERROR_PDF_NOT_FOUND,
+                detail=f"{shown_path} is not a file",
+                normalized_quote=normalized_quote,
+                **common,
+            )
         snapshot = path.read_bytes()
         verdict = verify_quote(quote, page, path)
         unchanged = path.read_bytes() == snapshot

@@ -320,6 +320,36 @@ def test_an_all_passing_batch_exits_zero(capsys, spec_pdf: Path, tmp_path) -> No
     assert output["summary"]["passed"] == 2
 
 
+@pytest.mark.parametrize("probe", ["exists", "is_file"])
+def test_a_denied_pdf_probe_does_not_abort_the_batch(
+    capsys, monkeypatch, spec_pdf: Path, tmp_path: Path, probe: str
+) -> None:
+    denied = tmp_path / "denied.pdf"
+    denied.write_bytes(spec_pdf.read_bytes())
+    original = getattr(Path, probe)
+
+    def deny_one_path(path):
+        if path == denied:
+            raise PermissionError("access denied")
+        return original(path)
+
+    monkeypatch.setattr(Path, probe, deny_one_path)
+    batch = write_batch(
+        tmp_path / "quotes.jsonl",
+        [
+            {"id": "denied", "pdf": str(denied), "page": 1, "quote": EXACT_QUOTE},
+            {"id": "good", "pdf": str(spec_pdf), "page": 1, "quote": EXACT_QUOTE},
+        ],
+    )
+    code, output = run(capsys, "--batch", str(batch))
+
+    assert code == 1
+    assert output["summary"] == {"total": 2, "passed": 1, "failed": 0, "errors": 1}
+    assert output["results"][0]["reason"] == "pdf_unreadable"
+    assert "PermissionError" in output["results"][0]["detail"]
+    assert output["results"][1]["status"] == "pass"
+
+
 def test_relative_pdf_paths_resolve_against_pdf_root(capsys, spec_pdf: Path, tmp_path) -> None:
     batch = write_batch(
         tmp_path / "quotes.jsonl", [{"pdf": spec_pdf.name, "page": 1, "quote": EXACT_QUOTE}]
