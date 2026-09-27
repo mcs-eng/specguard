@@ -16,13 +16,16 @@ Storage, FastAPI), which are the ``demo`` extra.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from specguard.gate import extract_page_text, find_on_boundaries, normalize, verify_quote
+import pymupdf
+
+from specguard.gate import find_on_boundaries, normalize, verify_quote
 from specguard.models import RejectionReason
 
 OUTPUT_SCHEMA = "specguard.quote-check/v1"
@@ -75,8 +78,10 @@ output (--format json, the default): one JSON document on stdout
   {"schema": "specguard.quote-check/v1", "ok": bool,
    "summary": {"total", "passed", "failed", "errors"},
    "results": [{"id", "line", "status", "verified", "reason", "detail",
-                "pdf", "page", "page_count", "quote", "normalized_quote",
-                "match"}]}
+                "pdf", "pdf_sha256", "page", "page_count", "quote",
+                "normalized_quote", "match"}]}
+  pdf_sha256  SHA-256 of the bytes the gate read; null when the file was
+              never read. A file that changes while it is checked is an error.
   status  "pass"  the gate verified the quote on the cited page
           "fail"  the gate rejected it; reason is page_out_of_range or
                   quote_not_found_on_cited_page
@@ -132,6 +137,7 @@ def _result(
     page_count: int | None = None,
     normalized_quote: str | None = None,
     match: dict[str, Any] | None = None,
+    pdf_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Build one result record with every key present, in a fixed order."""
     return {
@@ -142,6 +148,7 @@ def _result(
         "reason": reason,
         "detail": detail,
         "pdf": pdf,
+        "pdf_sha256": pdf_sha256,
         "page": page,
         "page_count": page_count,
         "quote": quote,
@@ -178,10 +185,13 @@ def check_quote(
 ) -> dict[str, Any]:
     """Run the gate on one quote and return a result record.
 
-    The verdict is :func:`specguard.gate.verify_quote`. The page is then read a
-    second time for the diagnostics in ``match``; if that second read disagrees
-    with the verdict, the file changed between reads and the record is an
-    error rather than a verdict.
+    The verdict is :func:`specguard.gate.verify_quote`, which reads the file
+    itself. The CLI reads the file's bytes once before the gate and once after
+    it. The diagnostics in ``match`` come from that first snapshot, and the
+    record carries its SHA-256. If the two reads differ, the file changed while
+    it was checked and the record is an error, not a verdict. A writer that
+    replaces the file and restores it between the reads is outside this check,
+    exactly as it is outside the gate's own guarantee.
     """
     path = Path(pdf)
     if pdf_root is not None and not path.is_absolute():
@@ -216,12 +226,24 @@ def check_quote(
         )
 
     try:
+        snapshot = path.read_bytes()
         verdict = verify_quote(quote, page, path)
+        unchanged = path.read_bytes() == snapshot
     except Exception as exc:  # any open or read failure is reported, not raised
         return _result(
             status="error",
             reason=ERROR_PDF_UNREADABLE,
             detail=f"could not read {shown_path}: {type(exc).__name__}: {exc}",
+            normalized_quote=normalized_quote,
+            **common,
+        )
+
+    common["pdf_sha256"] = hashlib.sha256(snapshot).hexdigest()
+    if not unchanged:
+        return _result(
+            status="error",
+            reason=ERROR_PDF_CHANGED,
+            detail=f"{shown_path} changed while it was being checked; re-run once it is stable",
             normalized_quote=normalized_quote,
             **common,
         )
@@ -240,12 +262,14 @@ def check_quote(
         )
 
     try:
-        normalized_page = normalize(extract_page_text(path, page))
-    except Exception as exc:  # the file changed or vanished after the verdict
+        filetype = path.suffix.lstrip(".") or "pdf"
+        with pymupdf.open(stream=snapshot, filetype=filetype) as document:
+            normalized_page = normalize(document[page - 1].get_text())
+    except Exception as exc:  # the gate opened these bytes, so this is not expected
         return _result(
             status="error",
-            reason=ERROR_PDF_CHANGED,
-            detail=f"{shown_path} could not be re-read after the gate ran: {type(exc).__name__}",
+            reason=ERROR_PDF_UNREADABLE,
+            detail=f"could not re-open the snapshot of {shown_path}: {type(exc).__name__}",
             page_count=verdict.page_count,
             normalized_quote=verdict.normalized_quote,
             **common,
@@ -257,7 +281,7 @@ def check_quote(
         return _result(
             status="error",
             reason=ERROR_PDF_CHANGED,
-            detail=f"{shown_path} changed between the gate's read and the diagnostic read",
+            detail=f"the gate's read of {shown_path} and the CLI's snapshot disagree",
             page_count=verdict.page_count,
             normalized_quote=needle,
             **common,
@@ -321,12 +345,22 @@ def check_quote(
 
 def _decode_batch(raw: bytes) -> str:
     """Decode a batch file: UTF-16 when it carries a BOM, else UTF-8 (BOM optional)."""
-    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return raw.decode("utf-16")
     try:
+        if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+            return raw.decode("utf-16")
         return raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        raise _UsageError(f"batch input is not UTF-8 or BOM-marked UTF-16 ({exc})") from exc
+        raise _UsageError(f"batch input is not valid UTF-8 or BOM-marked UTF-16 ({exc})") from exc
+
+
+def _batch_lines(text: str) -> list[tuple[int, str]]:
+    """Split JSON Lines at physical line breaks only, skipping blank lines.
+
+    ``str.splitlines`` would also split at U+2028, U+2029, and U+0085, which a
+    JSON string may carry literally, and so cut one valid record in two.
+    """
+    lines = text.split("\n")
+    return [(number, raw) for number, raw in enumerate(lines, start=1) if raw.strip(" \t\r")]
 
 
 def _read_batch(source: str) -> str:
@@ -488,9 +522,7 @@ def _run_quote_check(args: argparse.Namespace) -> dict[str, Any]:
             raise _UsageError(f"--batch cannot be combined with {flags}")
         text = _read_batch(args.batch)
         results = [
-            _check_batch_line(raw, number, args.pdf_root)
-            for number, raw in enumerate(text.splitlines(), start=1)
-            if raw.strip()
+            _check_batch_line(raw, number, args.pdf_root) for number, raw in _batch_lines(text)
         ]
         if not results:
             raise _UsageError("the batch input holds no records; nothing was verified")

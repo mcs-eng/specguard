@@ -8,6 +8,7 @@ drifted from the gate fails here. All PDFs are the fictional fixtures from
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import subprocess
@@ -18,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from specguard import cli
 from specguard.cli import main
 from specguard.gate import verify_quote
 from tests.fixtures_pdf import SOFT_HYPHEN, write_image_only_pdf, write_pdf
@@ -377,7 +379,67 @@ def test_a_batch_that_is_not_utf8_is_a_usage_error(capsys, tmp_path: Path) -> No
     code = main(["quote-check", "--batch", str(batch)])
 
     assert code == 2
-    assert "not UTF-8" in capsys.readouterr().err
+    assert "not valid UTF-8" in capsys.readouterr().err
+
+
+def test_a_truncated_utf16_batch_is_a_usage_error(capsys, tmp_path: Path) -> None:
+    """A UTF-16 BOM followed by half a code unit is reported, not raised."""
+    batch = tmp_path / "truncated.jsonl"
+    batch.write_bytes(b"\xff\xfe\x00")
+    code = main(["quote-check", "--batch", str(batch)])
+
+    assert code == 2
+    assert "not valid UTF-8 or BOM-marked UTF-16" in capsys.readouterr().err
+
+
+def test_a_unicode_line_separator_inside_a_quote_does_not_split_the_record(
+    capsys, spec_pdf: Path, tmp_path: Path
+) -> None:
+    """JSON allows U+2028 and U+0085 literally in a string; JSON Lines splits at newline only."""
+    batch = tmp_path / "separators.jsonl"
+    records = [
+        {"id": "ls", "pdf": str(spec_pdf), "page": 1, "quote": "Receptacles shall be"},
+        {"id": "nel", "pdf": str(spec_pdf), "page": 1, "quote": "specification\u0085grade"},
+    ]
+    batch.write_text(
+        "\r\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\r\n", encoding="utf-8"
+    )
+    code, output = run(capsys, "--batch", str(batch))
+
+    assert code == 0
+    assert [(r["id"], r["line"], r["status"]) for r in output["results"]] == [
+        ("ls", 1, "pass"),
+        ("nel", 2, "pass"),
+    ]
+
+
+def test_the_result_carries_the_sha256_of_the_bytes_checked(capsys, spec_pdf: Path) -> None:
+    _, output = run(capsys, "--pdf", str(spec_pdf), "--page", "1", "--quote", EXACT_QUOTE)
+
+    assert output["results"][0]["pdf_sha256"] == hashlib.sha256(spec_pdf.read_bytes()).hexdigest()
+
+
+def test_a_pdf_replaced_during_the_check_is_an_error_not_a_verdict(
+    capsys, monkeypatch, tmp_path: Path
+) -> None:
+    """Same quote, same page, same verdict after the swap: the bytes still differ."""
+    pdf = write_pdf(tmp_path / "moving.pdf", [["rated 20 amperes"]])
+    replacement = write_pdf(tmp_path / "replacement.pdf", [["NOTICE rated 20 amperes"], ["x"]])
+    real_verify = cli.verify_quote
+
+    def verify_then_swap(quote, page_number, pdf_path):
+        result = real_verify(quote, page_number, pdf_path)
+        Path(pdf_path).write_bytes(replacement.read_bytes())
+        return result
+
+    monkeypatch.setattr(cli, "verify_quote", verify_then_swap)
+    code, output = run(capsys, "--pdf", str(pdf), "--page", "1", "--quote", "rated 20 amperes")
+
+    assert code == 1
+    result = output["results"][0]
+    assert result["status"] == "error"
+    assert result["reason"] == "pdf_changed_during_check"
+    assert result["match"] is None
 
 
 def test_a_batch_spanning_pages_and_files(capsys, spec_pdf: Path, tmp_path: Path) -> None:
