@@ -41,6 +41,13 @@ def test_the_last_summary_line_wins() -> None:
     assert parse_passed_count("was 374 passed before\n400 passed in 32.33s") == 400
 
 
+def test_failure_like_output_before_a_passing_summary_does_not_hide_the_count() -> None:
+    """Only pytest's final result summary decides whether a count is usable."""
+    output = "captured application output: 4 failed records\n400 passed, 2 warnings in 32.33s"
+
+    assert parse_passed_count(output) == 400
+
+
 def test_the_rendered_line_names_the_count_the_command_and_the_revision() -> None:
     block = render_test_count(400, "6f27d92", "uv run pytest -q")
 

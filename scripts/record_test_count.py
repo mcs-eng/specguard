@@ -40,12 +40,18 @@ def parse_passed_count(output: str) -> int | None:
     line that also reports a failure or an error. Either way there is no number
     worth publishing.
     """
-    if FAILED_PATTERN.search(output):
+    result_lines = [
+        line
+        for line in output.splitlines()
+        if PASSED_PATTERN.search(line) or FAILED_PATTERN.search(line)
+    ]
+    if not result_lines:
         return None
-    matches = PASSED_PATTERN.findall(output)
-    if not matches:
+    summary = result_lines[-1]
+    if FAILED_PATTERN.search(summary):
         return None
-    return int(matches[-1])
+    match = PASSED_PATTERN.search(summary)
+    return int(match.group(1)) if match is not None else None
 
 
 def render_test_count(count: int, revision: str, command: str) -> str:
