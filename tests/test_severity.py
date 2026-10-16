@@ -287,6 +287,23 @@ def test_gemma_severity_classifier_parses_valid_structured_response() -> None:
     assert "requiring review" in result.rationale
 
 
+def test_gemma_classifier_treats_an_empty_response_as_fallback() -> None:
+    """A successful request with no text is not a severity classification."""
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = ""
+    mock_client.models.generate_content.return_value = mock_response
+
+    classifier = GemmaSeverityClassifier(model_id="gemma-4-31b-it", client=mock_client)
+    result = classifier.classify("Discrepancy", "Spec quote", "Cut sheet quote")
+
+    assert result.severity is Severity.UNCLASSIFIED
+    assert result.status == "fallback"
+    assert result.reason == "Empty response text from Gemma"
+    assert result.model_id is None
+    assert result.endpoint_label == "gemma-4-31b-it"
+
+
 def test_the_api_key_backend_reports_no_model_when_the_response_names_none() -> None:
     """One provenance rule for both backends: model_id is reported, never configured.
 
