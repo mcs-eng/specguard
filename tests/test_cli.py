@@ -43,6 +43,68 @@ def write_batch(path: Path, records: list[object], encoding: str = "utf-8") -> P
     return path
 
 
+# --- parser round trips -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param(
+            {
+                "id": 'Q-"7"\\\n雪',
+                "pdf": 'drawings\\panel "A"\t café.pdf',
+                "page": 7,
+                "quote": 'Line "one"\\two\tthree\nfour\u2029five',
+            },
+            id="json-sensitive-strings",
+        ),
+        pytest.param(
+            {"id": 0, "pdf": "zero.pdf", "page": 1, "quote": "zero identifier"},
+            id="zero-integer-id",
+        ),
+        pytest.param(
+            {"id": -(2**100), "pdf": "large.pdf", "page": 2**100, "quote": "large integers"},
+            id="arbitrary-size-integers",
+        ),
+        pytest.param(
+            {"id": None, "pdf": "null.pdf", "page": -4, "quote": "explicit null identifier"},
+            id="null-id",
+        ),
+        pytest.param(
+            {"pdf": "omitted.pdf", "page": 3, "quote": "omitted identifier"},
+            id="omitted-id",
+        ),
+    ],
+)
+def test_valid_batch_records_round_trip_through_the_parser(
+    monkeypatch: pytest.MonkeyPatch, record: dict[str, object]
+) -> None:
+    """Every supported JSON value reaches quote checking without coercion or loss."""
+    calls: list[tuple[object, object, object, dict[str, object]]] = []
+    sentinel = {"parsed": True}
+
+    def capture(pdf: object, page: object, quote: object, **kwargs: object) -> dict[str, bool]:
+        calls.append((pdf, page, quote, kwargs))
+        return sentinel
+
+    monkeypatch.setattr(cli, "check_quote", capture)
+    pdf_root = Path("root with spaces")
+
+    result = cli._check_batch_line(
+        json.dumps(record, ensure_ascii=False), line=37, pdf_root=pdf_root
+    )
+
+    assert result is sentinel
+    assert calls == [
+        (
+            record["pdf"],
+            record["page"],
+            record["quote"],
+            {"record_id": record.get("id"), "line": 37, "pdf_root": pdf_root},
+        )
+    ]
+
+
 # --- single mode: verdicts --------------------------------------------------
 
 
