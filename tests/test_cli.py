@@ -201,6 +201,15 @@ def test_a_file_that_is_not_a_pdf_is_an_error_record(capsys, tmp_path: Path) -> 
     assert output["results"][0]["reason"] == "pdf_unreadable"
 
 
+def test_a_directory_is_not_accepted_as_a_pdf(capsys, tmp_path: Path) -> None:
+    code, output = run(capsys, "--pdf", str(tmp_path), "--page", "1", "--quote", "x")
+
+    assert code == 1
+    assert output["results"][0]["status"] == "error"
+    assert output["results"][0]["reason"] == "pdf_not_found"
+    assert "is not a file" in output["results"][0]["detail"]
+
+
 def test_a_whitespace_only_quote_is_an_error_record(capsys, spec_pdf: Path) -> None:
     code, output = run(capsys, "--pdf", str(spec_pdf), "--page", "1", "--quote", " \t ")
 

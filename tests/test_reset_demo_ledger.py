@@ -13,6 +13,7 @@ from scripts.reset_demo_ledger import (
     CloudStorageObjectStore,
     FirestoreLedgerStore,
     archive_collection_name,
+    archive_collections,
     archive_object_name,
     archive_objects,
     build_archive_key,
@@ -212,6 +213,27 @@ def test_an_archive_key_that_already_holds_documents_is_refused() -> None:
         reset_demo_ledger(FirestoreLedgerStore(client), FakeObjectStore(), archive_key=ARCHIVE_KEY)
 
     assert client.data["runs"] != {}
+
+
+def test_an_archive_collection_cannot_be_archived_as_live_data() -> None:
+    client = _populated_client()
+    store = FirestoreLedgerStore(client)
+    archive = archive_collection_name("runs", ARCHIVE_KEY)
+
+    with pytest.raises(ValueError, match="refusing to archive an archive collection"):
+        archive_collections(store, archive_key="20260823T090000Z", collections=[archive])
+
+    assert client.data.get(archive, {}) == {}
+    assert client.data["runs"][RUN_ID]["status"] == "COMPLETED"
+
+
+def test_reset_leaves_content_addressed_document_records_untouched() -> None:
+    client = _populated_client()
+    client.collection("documents").document("a" * 64).set({"sha256": "a" * 64})
+
+    reset_demo_ledger(FirestoreLedgerStore(client), FakeObjectStore(), archive_key=ARCHIVE_KEY)
+
+    assert client.data["documents"] == {"a" * 64: {"sha256": "a" * 64}}
 
 
 def test_an_archive_key_that_already_holds_objects_is_refused() -> None:
