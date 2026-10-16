@@ -223,6 +223,7 @@ def test_an_archive_collection_cannot_be_archived_as_live_data() -> None:
     with pytest.raises(ValueError, match="refusing to archive an archive collection"):
         archive_collections(store, archive_key="20260823T090000Z", collections=[archive])
 
+    assert client.data.get(archive, {}) == {}
     assert client.data["runs"][RUN_ID]["status"] == "COMPLETED"
 
 
