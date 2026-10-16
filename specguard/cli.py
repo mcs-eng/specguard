@@ -373,8 +373,11 @@ def _read_batch(source: str) -> str:
         raise _UsageError(f"cannot read batch file {source!r}: {exc.strerror or exc}") from exc
 
 
-def _check_batch_line(text: str, line: int, pdf_root: Path | None) -> dict[str, Any]:
+def _check_batch_line(
+    text: str, line: int, pdf_root: Path | None, batch_source: str = "-"
+) -> dict[str, Any]:
     """Validate one batch line and run the gate on it, or describe why not."""
+    source_location = f"batch file {batch_source}: " if batch_source != "-" else ""
     try:
         record = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -383,7 +386,10 @@ def _check_batch_line(text: str, line: int, pdf_root: Path | None) -> dict[str, 
             line=line,
             status="error",
             reason=ERROR_INVALID_JSON,
-            detail=f"line {line} is not valid JSON: {exc.msg} at column {exc.colno}",
+            detail=(
+                f"{source_location}line {line} is not valid JSON: "
+                f"{exc.msg} at column {exc.colno}"
+            ),
             pdf=None,
             page=None,
             quote=None,
@@ -395,7 +401,7 @@ def _check_batch_line(text: str, line: int, pdf_root: Path | None) -> dict[str, 
             status="error",
             reason=ERROR_INVALID_RECORD,
             detail=(
-                f"line {line} must be a JSON object with pdf, page, and quote; "
+                f"{source_location}line {line} must be a JSON object with pdf, page, and quote; "
                 f"got a JSON {_json_type_name(record)}"
             ),
             pdf=None,
@@ -433,7 +439,7 @@ def _check_batch_line(text: str, line: int, pdf_root: Path | None) -> dict[str, 
             line=line,
             status="error",
             reason=ERROR_INVALID_RECORD,
-            detail=f"line {line}: " + "; ".join(problems),
+            detail=f"{source_location}line {line}: " + "; ".join(problems),
             pdf=pdf if isinstance(pdf, str) else None,
             page=page if isinstance(page, int) and not isinstance(page, bool) else None,
             quote=quote if isinstance(quote, str) else None,
@@ -521,7 +527,8 @@ def _run_quote_check(args: argparse.Namespace) -> dict[str, Any]:
             raise _UsageError(f"--batch cannot be combined with {flags}")
         text = _read_batch(args.batch)
         results = [
-            _check_batch_line(raw, number, args.pdf_root) for number, raw in _batch_lines(text)
+            _check_batch_line(raw, number, args.pdf_root, args.batch)
+            for number, raw in _batch_lines(text)
         ]
         if not results:
             raise _UsageError("the batch input holds no records; nothing was verified")
