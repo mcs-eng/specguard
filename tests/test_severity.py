@@ -204,6 +204,64 @@ def test_classifier_wiring_with_a_fake() -> None:
     assert fake.calls[0] == ("Parameter mismatch.", "Req A", "Sub B")
 
 
+def test_a_single_quote_is_classified_with_an_empty_cut_sheet_quote() -> None:
+    classifier = FakeSeverityClassifier(severity=Severity.MEDIUM)
+    finding = Finding(
+        submittal_id="fictional-submittal",
+        spec_locator="Page 1",
+        cut_sheet_locator="Page 1",
+        claim_text="Only one source quote was supplied.",
+        quotes=[
+            CitedQuote(text="The requirement is alpha.", page_number=1, document_path="spec.pdf")
+        ],
+        verification_status=VerificationStatus.VERIFIED,
+    )
+
+    result = classify_severity(finding, classifier=classifier)
+
+    assert result.severity is Severity.MEDIUM
+    assert classifier.calls == [
+        ("Only one source quote was supplied.", "The requirement is alpha.", "")
+    ]
+
+
+def test_an_unsupported_finding_type_fails_closed() -> None:
+    classifier = FakeSeverityClassifier()
+
+    result = classify_severity("not a finding", classifier=classifier)  # type: ignore[arg-type]
+
+    assert result == SeverityResult(
+        severity=Severity.UNCLASSIFIED,
+        model_id=None,
+        status="fallback",
+        reason="Unsupported finding type",
+    )
+    assert classifier.calls == []
+
+
+def test_vertex_endpoint_classifier_treats_empty_predictions_as_fallback() -> None:
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"predictions": []}
+    session = MagicMock()
+    session.post.return_value = response
+
+    result = severity_module.VertexEndpointSeverityClassifier(
+        endpoint_resource_name="fictional-endpoint",
+        endpoint_dns="fictional.vertexai.example",
+        model_id="fictional-model-label",
+        session=session,
+    ).classify("Discrepancy", "Spec quote", "Cut quote")
+
+    assert result == SeverityResult(
+        severity=Severity.UNCLASSIFIED,
+        model_id=None,
+        endpoint_label="fictional-model-label",
+        status="fallback",
+        reason="Empty predictions list from Vertex endpoint",
+    )
+    assert session.post.call_count == 1
+
+
 def test_unclassified_retained_on_classifier_failure() -> None:
     """If the classifier throws an exception, UNCLASSIFIED is retained and fallback recorded."""
     fake = FakeSeverityClassifier(should_fail=True)
