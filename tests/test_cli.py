@@ -275,6 +275,132 @@ def test_text_format_prints_one_line_per_result_and_a_summary(capsys, spec_pdf: 
 # --- batch mode --------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected_detail"),
+    [
+        (
+            "{not json",
+            "line 1 is not valid JSON: "
+            "Expecting property name enclosed in double quotes at column 2",
+        ),
+        ("pdf: specification.pdf", "line 1 is not valid JSON: Expecting value at column 1"),
+    ],
+    ids=("invalid-json", "yaml-is-not-json"),
+)
+def test_malformed_batch_syntax_is_an_error_record(
+    capsys, tmp_path: Path, raw: str, expected_detail: str
+) -> None:
+    """Batch input is JSON Lines; JSON and YAML syntax errors are record errors."""
+    batch = write_batch(tmp_path / "malformed.jsonl", [raw])
+
+    code, output = run(capsys, "--batch", str(batch))
+
+    assert code == 1
+    assert output["summary"] == {"total": 1, "passed": 0, "failed": 0, "errors": 1}
+    assert output["results"][0]["status"] == "error"
+    assert output["results"][0]["reason"] == "invalid_json"
+    assert output["results"][0]["detail"] == expected_detail
+
+
+@pytest.mark.parametrize(
+    ("record", "missing"),
+    [
+        ({}, "pdf, page, quote"),
+        ({"page": 1, "quote": "x"}, "pdf"),
+        ({"pdf": "specification.pdf", "quote": "x"}, "page"),
+        ({"pdf": "specification.pdf", "page": 1}, "quote"),
+    ],
+    ids=("all", "pdf", "page", "quote"),
+)
+def test_missing_required_batch_fields_are_named(
+    capsys, tmp_path: Path, record: dict[str, object], missing: str
+) -> None:
+    batch = write_batch(tmp_path / "missing.jsonl", [record])
+
+    code, output = run(capsys, "--batch", str(batch))
+
+    assert code == 1
+    result = output["results"][0]
+    assert result["status"] == "error"
+    assert result["verified"] is False
+    assert result["reason"] == "invalid_record"
+    assert result["detail"] == f"line 1: missing required field(s): {missing}"
+
+
+@pytest.mark.parametrize(
+    ("record", "problem"),
+    [
+        (
+            {"pdf": 7, "page": 1, "quote": "x"},
+            "pdf must be a non-empty string; got a JSON number",
+        ),
+        (
+            {"pdf": "specification.pdf", "page": 1.5, "quote": "x"},
+            "page must be a JSON integer (one-based); got a JSON number 1.5",
+        ),
+        (
+            {"pdf": "specification.pdf", "page": 1, "quote": None},
+            "quote must be a string; got a JSON null",
+        ),
+        (
+            {"id": False, "pdf": "specification.pdf", "page": 1, "quote": "x"},
+            "id must be a string or an integer; got a JSON boolean",
+        ),
+    ],
+    ids=("pdf", "page", "quote", "id"),
+)
+def test_wrong_batch_field_types_are_named(
+    capsys, tmp_path: Path, record: dict[str, object], problem: str
+) -> None:
+    batch = write_batch(tmp_path / "wrong-type.jsonl", [record])
+
+    code, output = run(capsys, "--batch", str(batch))
+
+    assert code == 1
+    result = output["results"][0]
+    assert result["status"] == "error"
+    assert result["verified"] is False
+    assert result["reason"] == "invalid_record"
+    assert result["detail"] == f"line 1: {problem}"
+
+
+def test_the_process_exits_one_and_prints_json_for_a_malformed_record(tmp_path: Path) -> None:
+    batch = write_batch(tmp_path / "malformed.jsonl", ["{not json"])
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "specguard.cli", "quote-check", "--batch", str(batch)],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stderr == ""
+    output = json.loads(completed.stdout)
+    assert output["ok"] is False
+    assert output["results"][0]["reason"] == "invalid_json"
+    assert output["results"][0]["detail"].startswith("line 1 is not valid JSON:")
+
+
+def test_the_process_exits_two_and_prints_usage_errors_to_stderr() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-m", "specguard.cli", "quote-check"],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr == (
+        "specguard quote-check: error: single mode needs --pdf, --page, and --quote "
+        "(missing --pdf, --page, --quote), or use --batch FILE\n"
+        "run 'specguard quote-check --help' for the input format\n"
+    )
+
+
 def test_a_mixed_batch_reports_every_line_in_order(capsys, spec_pdf: Path, tmp_path) -> None:
     batch = write_batch(
         tmp_path / "quotes.jsonl",
