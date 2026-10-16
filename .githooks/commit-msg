@@ -1,0 +1,8 @@
+#!/bin/sh
+# commit-msg hook
+set -eu
+[ -n "${1:-}" ] || exit 0
+# Strip every Co-authored-by trailer (case-insensitive) so no personal email lands in a commit.
+strip_tmp="$1.strip.$$"
+grep -iv '^co-authored-by:' "$1" > "$strip_tmp" || true
+mv "$strip_tmp" "$1"
