@@ -54,9 +54,7 @@ def test_google_runner_passes_the_assigned_identity_and_closes_firestore(
             return expected
 
     monkeypatch.setattr(web_runtime, "AuditRuntime", FakeRuntime)
-    runner = web_runtime.GoogleAuditRunner(
-        project_id="demo-project", agent_mode=AgentMode.NAVIGATE
-    )
+    runner = web_runtime.GoogleAuditRunner(project_id="demo-project", agent_mode=AgentMode.NAVIGATE)
 
     result = asyncio.run(
         runner.run_audit(
