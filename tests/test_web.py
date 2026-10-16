@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from specguard import gate
 from specguard.models import (
     AgentMode,
+    AuditModelUsage,
     AuditRunSummary,
     DocumentRole,
     ModelToolCall,
@@ -739,6 +740,11 @@ def test_a_failed_run_keeps_the_receipts_the_audit_already_produced() -> None:
             )
         ],
         self_check_rejections=1,
+        audit_model_usage=AuditModelUsage(
+            prompt_tokens=101,
+            output_tokens=17,
+            total_tokens=118,
+        ),
     )
     client, repository, _, _ = _client(summary=summary, failing_create_calls=frozenset({2}))
 
@@ -755,6 +761,12 @@ def test_a_failed_run_keeps_the_receipts_the_audit_already_produced() -> None:
     assert run["summary"]["agent_mode"] == "navigate"
     assert run["summary"]["self_check_rejections"] == 1
     assert run["summary"]["model_tool_calls"][0]["tool_name"] == "extract_pdf_text"
+    assert run["summary"]["audit_model_usage"] == {
+        "prompt_tokens": 101,
+        "output_tokens": 17,
+        "total_tokens": 118,
+        "unavailable_reason": None,
+    }
 
 
 def test_audit_keeps_recorded_objects_when_the_failed_write_cannot_land() -> None:

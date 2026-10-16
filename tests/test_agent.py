@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from google.genai import types
 
 from specguard.agent import AdkClaimGenerator, AuditRuntime
-from specguard.models import AuditClaim, AuditClaimBatch
+from specguard.models import AuditClaim, AuditClaimBatch, AuditModelUsage
 from specguard.tools import FINDINGS_COLLECTION, REJECTIONS_COLLECTION, AuditTools
 from tests.fake_firestore import FakeFirestoreClient
 from tests.fixtures_pdf import write_pdf
@@ -267,3 +267,135 @@ def test_adk_claim_generator_records_sdk_usage_metadata() -> None:
     assert usage.output_tokens == 17
     assert usage.total_tokens == 118
     assert usage.unavailable_reason is None
+
+
+def _usage_event(
+    *,
+    prompt_tokens: int | None = None,
+    output_tokens: int | None = None,
+    total_tokens: int | None = None,
+    final: bool = True,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        usage_metadata=SimpleNamespace(
+            prompt_token_count=prompt_tokens,
+            candidates_token_count=output_tokens,
+            total_token_count=total_tokens,
+        ),
+        content=(
+            types.Content(role="model", parts=[types.Part.from_text(text='{"claims": []}')])
+            if final
+            else None
+        ),
+        is_final_response=lambda: final,
+    )
+
+
+def _adk_generator_over(*turns: list[SimpleNamespace]) -> AdkClaimGenerator:
+    class FakeRunner:
+        def __init__(self) -> None:
+            self._turns = iter(turns)
+
+        async def run_async(self, **_: object):
+            for event in next(self._turns):
+                yield event
+
+    generator = object.__new__(AdkClaimGenerator)
+    generator._runner = FakeRunner()
+    generator._run_id = "audit-run-1"
+    generator._user_id = "local-auditor"
+    generator._session_created = True
+    generator._prompt_tokens = 0
+    generator._output_tokens = 0
+    generator._total_tokens = 0
+    generator._usage_seen = False
+    generator._model_tool_calls = ()
+    generator._recorded_call_ids = ()
+    generator._turn_index = 0
+    return generator
+
+
+def test_adk_usage_accumulates_across_events_and_model_turns() -> None:
+    generator = _adk_generator_over(
+        [
+            _usage_event(prompt_tokens=10, output_tokens=2, total_tokens=12, final=False),
+            _usage_event(prompt_tokens=3, output_tokens=1, total_tokens=4),
+        ],
+        [_usage_event(prompt_tokens=7, output_tokens=5, total_tokens=12)],
+    )
+
+    first_batch = asyncio.run(generator.generate_claims("First audit turn."))
+    second_batch = asyncio.run(generator.generate_claims("Second audit turn."))
+    usage = generator.audit_model_usage()
+
+    assert first_batch.claims == []
+    assert second_batch.claims == []
+    assert usage.prompt_tokens == 20
+    assert usage.output_tokens == 8
+    assert usage.total_tokens == 28
+    assert usage.unavailable_reason is None
+
+
+def test_adk_usage_keeps_a_missing_counter_unavailable_after_later_events() -> None:
+    generator = _adk_generator_over(
+        [_usage_event(prompt_tokens=10, output_tokens=None, total_tokens=12)],
+        [_usage_event(prompt_tokens=7, output_tokens=5, total_tokens=12)],
+    )
+
+    asyncio.run(generator.generate_claims("First audit turn."))
+    asyncio.run(generator.generate_claims("Second audit turn."))
+    usage = generator.audit_model_usage()
+
+    assert usage.prompt_tokens == 17
+    assert usage.output_tokens is None
+    assert usage.total_tokens == 24
+    assert usage.unavailable_reason is None
+
+
+def test_adk_usage_metadata_without_any_counts_records_unavailability() -> None:
+    generator = _adk_generator_over([_usage_event()])
+
+    batch = asyncio.run(generator.generate_claims("Audit this document."))
+    usage = generator.audit_model_usage()
+
+    assert batch.claims == []
+    assert usage.prompt_tokens is None
+    assert usage.output_tokens is None
+    assert usage.total_tokens is None
+    assert (
+        usage.unavailable_reason
+        == "The ADK audit call path did not expose token usage metadata."
+    )
+
+
+def test_adk_usage_records_zero_as_an_sdk_reported_count() -> None:
+    generator = _adk_generator_over(
+        [_usage_event(prompt_tokens=0, output_tokens=0, total_tokens=0)]
+    )
+
+    asyncio.run(generator.generate_claims("Audit this document."))
+    usage = generator.audit_model_usage()
+
+    assert usage.prompt_tokens == 0
+    assert usage.output_tokens == 0
+    assert usage.total_tokens == 0
+    assert usage.unavailable_reason is None
+
+
+def test_runtime_preserves_the_generators_exact_usage_record(tmp_path: Path) -> None:
+    expected = AuditModelUsage(prompt_tokens=31, output_tokens=None, total_tokens=44)
+
+    class UsageClaimGenerator(FakeClaimGenerator):
+        def audit_model_usage(self) -> AuditModelUsage:
+            return expected
+
+    generator = UsageClaimGenerator(AuditClaimBatch(claims=[]))
+    runtime, _, _, _ = _runtime(tmp_path, generator)
+
+    summary = asyncio.run(runtime.run())
+
+    assert summary.audit_model_usage is expected
+    assert summary.audit_model_usage.prompt_tokens == 31
+    assert summary.audit_model_usage.output_tokens is None
+    assert summary.audit_model_usage.total_tokens == 44
+    assert summary.audit_model_usage.unavailable_reason is None

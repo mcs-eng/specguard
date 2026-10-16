@@ -329,6 +329,34 @@ def test_an_all_passing_batch_exits_zero(capsys, spec_pdf: Path, tmp_path) -> No
     assert output["summary"]["passed"] == 2
 
 
+def test_an_empty_quote_record_does_not_stop_the_batch(
+    capsys, spec_pdf: Path, tmp_path: Path
+) -> None:
+    batch = write_batch(
+        tmp_path / "quotes.jsonl",
+        [
+            {"id": "empty", "pdf": str(spec_pdf), "page": 1, "quote": " \t "},
+            {"id": "good", "pdf": str(spec_pdf), "page": 1, "quote": EXACT_QUOTE},
+        ],
+    )
+
+    code, output = run(capsys, "--batch", str(batch))
+
+    assert code == 1
+    assert output["ok"] is False
+    assert output["summary"] == {"total": 2, "passed": 1, "failed": 0, "errors": 1}
+    assert [result["line"] for result in output["results"]] == [1, 2]
+    empty, good = output["results"]
+    assert empty["id"] == "empty"
+    assert empty["status"] == "error"
+    assert empty["verified"] is False
+    assert empty["reason"] == "empty_quote"
+    assert empty["normalized_quote"] == ""
+    assert good["id"] == "good"
+    assert good["status"] == "pass"
+    assert good["verified"] is True
+
+
 @pytest.mark.parametrize("probe", ["exists", "is_file"])
 def test_a_denied_pdf_probe_does_not_abort_the_batch(
     capsys, monkeypatch, spec_pdf: Path, tmp_path: Path, probe: str
