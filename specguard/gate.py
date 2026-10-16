@@ -11,8 +11,9 @@ VERIFICATION CONTRACT
       between two letters, remove it together with any whitespace that follows
       it. A soft hyphen next to a digit never joins, so ``1<U+00AD>2`` stays
       two tokens and does not become ``12``.
-   c. Remove every remaining soft hyphen, leaving the surrounding whitespace
-      alone.
+   c. Replace a remaining soft hyphen between token characters with a space,
+      then remove every other soft hyphen. This keeps digit-adjacent text as
+      separate tokens instead of silently minting a different number.
    d. Casefold.
    e. Collapse every run of whitespace to a single space.
    f. Strip leading and trailing whitespace.
@@ -46,6 +47,7 @@ SOFT_HYPHEN = "\u00ad"
 #: A soft hyphen joins a word across a line break only between two letters.
 #: ``[^\W\d_]`` is "letter": word character, but not a digit and not underscore.
 _SOFT_HYPHEN_WORD_JOIN = re.compile(r"(?<=[^\W\d_])" + SOFT_HYPHEN + r"\s*(?=[^\W\d_])")
+_SOFT_HYPHEN_TOKEN_BREAK = re.compile(r"(?<=\w)" + SOFT_HYPHEN + r"(?=\w)")
 _WHITESPACE_RUN = re.compile(r"\s+")
 
 #: Characters that bind to a digit and so must not sit against a quote edge
@@ -79,6 +81,7 @@ def normalize(text: str) -> str:
     """
     text = unicodedata.normalize("NFKC", text)
     text = _SOFT_HYPHEN_WORD_JOIN.sub("", text)
+    text = _SOFT_HYPHEN_TOKEN_BREAK.sub(" ", text)
     text = text.replace(SOFT_HYPHEN, "")
     text = text.casefold()
     text = _WHITESPACE_RUN.sub(" ", text)
@@ -89,9 +92,11 @@ def _cuts_a_token(edge: str, neighbour: str) -> bool:
     """True if ``neighbour`` continues the token that ``edge`` belongs to.
 
     An alphanumeric edge may not sit against another alphanumeric character.
-    A digit edge additionally may not sit against a character that binds to a
-    number, so a quote of ``5 A`` cannot ride on the page text ``0.5 A``.
+    A digit and a number-binding character may not be split in either order,
+    so neither ``5 A`` nor ``.5 A`` can ride on the page text ``0.5 A``.
     """
+    if edge in _NUMBER_BINDING and neighbour.isdigit():
+        return True
     if not edge.isalnum():
         return False
     if neighbour.isalnum():

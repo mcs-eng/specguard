@@ -209,6 +209,23 @@ def test_boundary_rule_allows_punctuation_edges(spec_pdf: Path) -> None:
 @pytest.mark.parametrize(
     ("page", "quote"),
     [
+        ("breaker rated 0.5 A minimum", ".5 A minimum"),
+        ("breaker rated 0.5 A minimum", "breaker rated 0."),
+    ],
+)
+def test_number_binding_punctuation_cannot_hide_a_partial_number(
+    page: str, quote: str, tmp_path: Path
+) -> None:
+    """Including a decimal point in the quote does not make a partial number whole."""
+    pdf = write_pdf(tmp_path / "numbers.pdf", [[page]])
+    result = verify_quote(quote, 1, pdf)
+    assert result.verified is False, quote
+    assert result.rejection_reason is RejectionReason.QUOTE_NOT_FOUND_ON_CITED_PAGE
+
+
+@pytest.mark.parametrize(
+    ("page", "quote"),
+    [
         ("breaker rated 0.5 A minimum", "5 A minimum"),
         ("pressure of -5 kPa at inlet", "5 kPa at inlet"),
         ("tolerance of ±5% allowed", "5% allowed"),
@@ -244,6 +261,33 @@ def test_match_may_not_start_against_a_unicode_minus() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("page", "quote"),
+    [
+        ("breaker rated 0.5 A minimum", "breaker rated 0"),
+        ("range is 5-10 kPa", "range is 5"),
+        ("ratio is 3/4", "ratio is 3"),
+        ("tolerance is 5+2 percent", "tolerance is 5"),
+    ],
+)
+def test_match_may_not_end_against_a_number_binding_character(
+    page: str, quote: str, tmp_path: Path
+) -> None:
+    """A quote ending in a digit may not truncate a compound numeric token."""
+    pdf = write_pdf(tmp_path / "numbers.pdf", [[page]])
+    result = verify_quote(quote, 1, pdf)
+    assert result.verified is False, quote
+    assert result.rejection_reason is RejectionReason.QUOTE_NOT_FOUND_ON_CITED_PAGE
+
+
+@pytest.mark.parametrize("binder", ["±", "⁄", "−"])
+def test_match_may_not_end_against_a_unicode_number_binding_character(binder: str) -> None:
+    """Unicode signs and fraction slashes bind to a preceding digit too."""
+    from specguard.gate import contains_on_boundaries
+
+    assert contains_on_boundaries(normalize(f"value 5{binder}2"), normalize("value 5")) is False
+
+
 def test_whole_numbers_still_verify(tmp_path: Path) -> None:
     """The numeric boundary rule must not reject an honest whole-number quote."""
     pdf = write_pdf(tmp_path / "numbers.pdf", [["breaker rated 0.5 A minimum"]])
@@ -260,10 +304,29 @@ def test_soft_hyphen_never_joins_digits(tmp_path: Path) -> None:
     assert verify_quote("NEMA 1 2 required here", 1, pdf).verified is True
 
 
+def test_soft_hyphen_directly_between_digits_creates_a_token_break(tmp_path: Path) -> None:
+    """Removing a soft hyphen may not turn two numeric tokens into one number."""
+    quote = "enclosure NEMA 1" + SOFT_HYPHEN + "2 required"
+    joined = write_pdf(tmp_path / "joined.pdf", [["enclosure NEMA 12 required"]])
+    separated = write_pdf(tmp_path / "separated.pdf", [["enclosure NEMA 1 2 required"]])
+
+    assert normalize(quote) == "enclosure nema 1 2 required"
+    assert normalize("unit AHU" + SOFT_HYPHEN + "1") == "unit ahu 1"
+    assert verify_quote(quote, 1, joined).verified is False
+    assert verify_quote(quote, 1, separated).verified is True
+
+
 def test_soft_hyphen_never_erases_a_space_next_to_a_digit(tmp_path: Path) -> None:
     """A quote may not use an invisible character to delete its own space."""
     pdf = write_pdf(tmp_path / "shy.pdf", [["unit AHU1 serves the lab"]])
     assert verify_quote("AHU" + SOFT_HYPHEN + " 1 serves", 1, pdf).verified is False
+
+
+def test_soft_hyphen_only_quote_rejects(spec_pdf: Path) -> None:
+    result = verify_quote(SOFT_HYPHEN, 1, spec_pdf)
+    assert result.verified is False
+    assert result.normalized_quote == ""
+    assert result.rejection_reason is RejectionReason.QUOTE_NOT_FOUND_ON_CITED_PAGE
 
 
 def test_boundary_rule_checks_every_occurrence() -> None:
@@ -272,6 +335,22 @@ def test_boundary_rule_checks_every_occurrence() -> None:
 
     assert contains_on_boundaries("x208 and 208 volts", "208") is True
     assert contains_on_boundaries("x208 and y208", "208") is False
+
+
+def test_boundary_rule_checks_past_a_bad_right_edge_occurrence() -> None:
+    """A truncated decimal first occurrence must not hide a later whole number."""
+    from specguard.gate import find_on_boundaries
+
+    haystack = normalize("limits are 5.0 and 5 amps")
+    assert find_on_boundaries(haystack, normalize("5")) == haystack.rindex("5")
+
+
+def test_boundary_rule_accepts_document_edges() -> None:
+    """The beginning and end of the page are valid token boundaries."""
+    from specguard.gate import contains_on_boundaries
+
+    assert contains_on_boundaries("alpha beta", "alpha") is True
+    assert contains_on_boundaries("alpha beta", "beta") is True
 
 
 def test_extract_page_text_reads_the_cited_page(spec_pdf: Path) -> None:

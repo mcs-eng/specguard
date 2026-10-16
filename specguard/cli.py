@@ -373,10 +373,19 @@ def _read_batch(source: str) -> str:
         raise _UsageError(f"cannot read batch file {source!r}: {exc.strerror or exc}") from exc
 
 
+def _parse_json_line(text: str) -> object:
+    """Parse strict JSON, rejecting Python's optional non-finite constants."""
+
+    def reject_constant(constant: str) -> None:
+        raise ValueError(f"invalid JSON constant {constant}")
+
+    return json.loads(text, parse_constant=reject_constant)
+
+
 def _check_batch_line(text: str, line: int, pdf_root: Path | None) -> dict[str, Any]:
     """Validate one batch line and run the gate on it, or describe why not."""
     try:
-        record = json.loads(text)
+        record = _parse_json_line(text)
     except json.JSONDecodeError as exc:
         return _result(
             record_id=None,
@@ -384,6 +393,17 @@ def _check_batch_line(text: str, line: int, pdf_root: Path | None) -> dict[str, 
             status="error",
             reason=ERROR_INVALID_JSON,
             detail=f"line {line} is not valid JSON: {exc.msg} at column {exc.colno}",
+            pdf=None,
+            page=None,
+            quote=None,
+        )
+    except ValueError as exc:
+        return _result(
+            record_id=None,
+            line=line,
+            status="error",
+            reason=ERROR_INVALID_JSON,
+            detail=f"line {line} is not valid JSON: {exc}",
             pdf=None,
             page=None,
             quote=None,

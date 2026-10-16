@@ -217,6 +217,18 @@ def test_a_whitespace_only_quote_is_an_error_record(capsys, spec_pdf: Path) -> N
     assert output["results"][0]["reason"] == "empty_quote"
 
 
+def test_a_soft_hyphen_only_quote_is_an_empty_quote_error(capsys, spec_pdf: Path) -> None:
+    code, output = run(
+        capsys, "--pdf", str(spec_pdf), "--page", "1", "--quote", SOFT_HYPHEN
+    )
+
+    assert code == 1
+    result = output["results"][0]
+    assert result["status"] == "error"
+    assert result["reason"] == "empty_quote"
+    assert result["normalized_quote"] == ""
+
+
 def test_the_id_is_echoed(capsys, spec_pdf: Path) -> None:
     _, output = run(
         capsys, "--pdf", str(spec_pdf), "--page", "1", "--quote", EXACT_QUOTE, "--id", "Q-7"
@@ -273,6 +285,107 @@ def test_text_format_prints_one_line_per_result_and_a_summary(capsys, spec_pdf: 
 
 
 # --- batch mode --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("record", "json_type"),
+    [
+        (None, "null"),
+        (False, "boolean"),
+        (17, "number"),
+        ("pdf", "string"),
+    ],
+)
+def test_valid_json_that_is_not_an_object_is_an_error_record(
+    capsys, tmp_path: Path, record: object, json_type: str
+) -> None:
+    """JSON values can be valid syntax without being valid JSON Lines records."""
+    batch = tmp_path / "non-object.jsonl"
+    batch.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    code, output = run(capsys, "--batch", str(batch))
+
+    assert code == 1
+    assert output["summary"] == {"total": 1, "passed": 0, "failed": 0, "errors": 1}
+    result = output["results"][0]
+    assert result["status"] == "error"
+    assert result["verified"] is False
+    assert result["reason"] == "invalid_record"
+    assert result["detail"] == (
+        "line 1 must be a JSON object with pdf, page, and quote; "
+        f"got a JSON {json_type}"
+    )
+    assert result["pdf"] is None
+    assert result["page"] is None
+    assert result["quote"] is None
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_nonstandard_json_constants_are_syntax_errors(
+    capsys, tmp_path: Path, constant: str
+) -> None:
+    """JSON Lines rejects Python's optional non-finite number extensions."""
+    batch = tmp_path / "constant.jsonl"
+    batch.write_text(constant + "\n", encoding="utf-8")
+
+    code, output = run(capsys, "--batch", str(batch))
+
+    assert code == 1
+    result = output["results"][0]
+    assert result["status"] == "error"
+    assert result["reason"] == "invalid_json"
+    assert result["detail"] == f"line 1 is not valid JSON: invalid JSON constant {constant}"
+
+
+def test_nonstandard_json_constant_does_not_report_a_column_inside_a_string(
+    capsys, tmp_path: Path
+) -> None:
+    batch = tmp_path / "constant-after-string.jsonl"
+    batch.write_text('{"label":"NaN","value":NaN}\n', encoding="utf-8")
+
+    code, output = run(capsys, "--batch", str(batch))
+
+    assert code == 1
+    result = output["results"][0]
+    assert result["reason"] == "invalid_json"
+    assert result["detail"] == "line 1 is not valid JSON: invalid JSON constant NaN"
+
+
+def test_all_batch_field_problems_are_reported_in_contract_order(capsys, tmp_path: Path) -> None:
+    """One bad field must not conceal the other actionable record errors."""
+    batch = write_batch(
+        tmp_path / "many-problems.jsonl",
+        [{"id": [], "pdf": "\t", "page": True, "quote": 9}],
+    )
+
+    code, output = run(capsys, "--batch", str(batch))
+
+    assert code == 1
+    result = output["results"][0]
+    assert result["id"] is None
+    assert result["status"] == "error"
+    assert result["reason"] == "invalid_record"
+    assert result["detail"] == (
+        "line 1: id must be a string or an integer; got a JSON array; "
+        "pdf must be a non-empty string; got a JSON string; "
+        "page must be a JSON integer (one-based); got a JSON boolean true; "
+        "quote must be a string; got a JSON number"
+    )
+    assert result["pdf"] == "\t"
+    assert result["page"] is None
+    assert result["quote"] is None
+
+
+def test_batch_cannot_be_combined_with_id_alone(capsys, tmp_path: Path) -> None:
+    """The batch parser reports the conflicting flag even without single-mode fields."""
+    batch = write_batch(tmp_path / "q.jsonl", [{"pdf": "x.pdf", "page": 1, "quote": "x"}])
+
+    code = main(["quote-check", "--batch", str(batch), "--id", "Q-1"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == ""
+    assert "--batch cannot be combined with --id" in captured.err
 
 
 def test_a_mixed_batch_reports_every_line_in_order(capsys, spec_pdf: Path, tmp_path) -> None:
