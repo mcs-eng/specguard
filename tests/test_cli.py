@@ -250,6 +250,16 @@ def test_a_non_integer_page_is_a_usage_error(capsys, spec_pdf: Path) -> None:
     assert "invalid int value" in capsys.readouterr().err
 
 
+def test_no_subcommand_is_an_argparse_usage_error(capsys) -> None:
+    with pytest.raises(SystemExit) as raised:
+        main([])
+    captured = capsys.readouterr()
+
+    assert raised.value.code == 2
+    assert captured.out == ""
+    assert "the following arguments are required: COMMAND" in captured.err
+
+
 def test_help_documents_the_formats_and_exit_codes(capsys) -> None:
     with pytest.raises(SystemExit) as raised:
         main(["quote-check", "--help"])
@@ -359,6 +369,32 @@ def test_a_denied_pdf_probe_does_not_abort_the_batch(
     assert output["results"][1]["status"] == "pass"
 
 
+def test_a_denied_pdf_read_is_an_error_record(
+    capsys, monkeypatch, spec_pdf: Path, tmp_path: Path
+) -> None:
+    denied = tmp_path / "denied.pdf"
+    denied.write_bytes(spec_pdf.read_bytes())
+    original_read_bytes = Path.read_bytes
+
+    def deny_one_path(path):
+        if path == denied:
+            raise PermissionError("access denied")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", deny_one_path)
+    code, output = run(capsys, "--pdf", str(denied), "--page", "1", "--quote", EXACT_QUOTE)
+
+    assert code == 1
+    assert output["summary"] == {"total": 1, "passed": 0, "failed": 0, "errors": 1}
+    result = output["results"][0]
+    assert result["status"] == "error"
+    assert result["verified"] is False
+    assert result["reason"] == "pdf_unreadable"
+    assert result["pdf_sha256"] is None
+    assert result["match"] is None
+    assert "PermissionError: access denied" in result["detail"]
+
+
 def test_relative_pdf_paths_resolve_against_pdf_root(capsys, spec_pdf: Path, tmp_path) -> None:
     batch = write_batch(
         tmp_path / "quotes.jsonl", [{"pdf": spec_pdf.name, "page": 1, "quote": EXACT_QUOTE}]
@@ -394,6 +430,36 @@ def test_batch_reads_standard_input(capsys, monkeypatch, spec_pdf: Path) -> None
     assert output["results"][0]["id"] == "stdin"
 
 
+@pytest.mark.parametrize("raw", [b"", b"\n \t\r\n"])
+def test_empty_standard_input_is_a_usage_error(capsys, monkeypatch, raw: bytes) -> None:
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw)))
+    code = main(["quote-check", "--batch", "-"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == ""
+    assert "the batch input holds no records" in captured.err
+    assert "run 'specguard quote-check --help'" in captured.err
+
+
+def test_an_unreadable_standard_input_is_a_usage_error(capsys, monkeypatch) -> None:
+    class UnreadableBuffer:
+        def read(self) -> bytes:
+            raise OSError("input unavailable")
+
+    class UnreadableStdin:
+        buffer = UnreadableBuffer()
+
+    monkeypatch.setattr(sys, "stdin", UnreadableStdin())
+    code = main(["quote-check", "--batch", "-"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == ""
+    assert "cannot read standard input: input unavailable" in captured.err
+    assert "run 'specguard quote-check --help'" in captured.err
+
+
 def test_an_empty_batch_is_a_usage_error_not_a_pass(capsys, tmp_path: Path) -> None:
     batch = tmp_path / "empty.jsonl"
     batch.write_text("\n  \n", encoding="utf-8")
@@ -405,11 +471,36 @@ def test_an_empty_batch_is_a_usage_error_not_a_pass(capsys, tmp_path: Path) -> N
     assert "no records" in captured.err
 
 
+@pytest.mark.parametrize("raw", [b"", b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff"])
+def test_an_empty_encoded_batch_is_a_usage_error(capsys, tmp_path: Path, raw: bytes) -> None:
+    batch = tmp_path / "empty.jsonl"
+    batch.write_bytes(raw)
+    code = main(["quote-check", "--batch", str(batch)])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == ""
+    assert captured.err == (
+        "specguard quote-check: error: the batch input holds no records; nothing was verified\n"
+        "run 'specguard quote-check --help' for the input format\n"
+    )
+
+
 def test_a_missing_batch_file_is_a_usage_error(capsys, tmp_path: Path) -> None:
     code = main(["quote-check", "--batch", str(tmp_path / "absent.jsonl")])
 
     assert code == 2
     assert "cannot read batch file" in capsys.readouterr().err
+
+
+def test_a_directory_cannot_be_read_as_a_batch_file(capsys, tmp_path: Path) -> None:
+    code = main(["quote-check", "--batch", str(tmp_path)])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == ""
+    assert f"cannot read batch file {str(tmp_path)!r}" in captured.err
+    assert "run 'specguard quote-check --help'" in captured.err
 
 
 def test_a_batch_that_is_not_utf8_is_a_usage_error(capsys, tmp_path: Path) -> None:
@@ -479,6 +570,52 @@ def test_a_pdf_replaced_during_the_check_is_an_error_not_a_verdict(
     assert result["status"] == "error"
     assert result["reason"] == "pdf_changed_during_check"
     assert result["match"] is None
+
+
+def test_a_snapshot_reopen_failure_is_an_error_record(
+    capsys, monkeypatch, spec_pdf: Path
+) -> None:
+    real_open = cli.pymupdf.open
+    calls = 0
+
+    def fail_second_open(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("snapshot unavailable")
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(cli.pymupdf, "open", fail_second_open)
+    code, output = run(capsys, "--pdf", str(spec_pdf), "--page", "1", "--quote", EXACT_QUOTE)
+
+    assert code == 1
+    result = output["results"][0]
+    assert result["status"] == "error"
+    assert result["verified"] is False
+    assert result["reason"] == "pdf_unreadable"
+    assert result["page_count"] == 4
+    assert result["normalized_quote"] == EXACT_QUOTE.casefold()
+    assert result["pdf_sha256"] == hashlib.sha256(spec_pdf.read_bytes()).hexdigest()
+    assert result["match"] is None
+    assert result["detail"] == f"could not re-open the snapshot of {spec_pdf}: RuntimeError"
+
+
+def test_a_gate_and_snapshot_disagreement_is_an_error_record(
+    capsys, monkeypatch, spec_pdf: Path
+) -> None:
+    monkeypatch.setattr(cli, "find_on_boundaries", lambda _haystack, _needle: -1)
+    code, output = run(capsys, "--pdf", str(spec_pdf), "--page", "1", "--quote", EXACT_QUOTE)
+
+    assert code == 1
+    result = output["results"][0]
+    assert result["status"] == "error"
+    assert result["verified"] is False
+    assert result["reason"] == "pdf_changed_during_check"
+    assert result["page_count"] == 4
+    assert result["normalized_quote"] == EXACT_QUOTE.casefold()
+    assert result["pdf_sha256"] == hashlib.sha256(spec_pdf.read_bytes()).hexdigest()
+    assert result["match"] is None
+    assert result["detail"] == f"the gate's read of {spec_pdf} and the CLI's snapshot disagree"
 
 
 def test_a_batch_spanning_pages_and_files(capsys, spec_pdf: Path, tmp_path: Path) -> None:

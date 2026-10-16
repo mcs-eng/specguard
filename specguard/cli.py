@@ -364,13 +364,12 @@ def _batch_lines(text: str) -> list[tuple[int, str]]:
 
 def _read_batch(source: str) -> str:
     """Read the batch input from a path, or from standard input for ``-``."""
-    if source == "-":
-        return _decode_batch(sys.stdin.buffer.read())
-    path = Path(source)
     try:
-        return _decode_batch(path.read_bytes())
+        raw = sys.stdin.buffer.read() if source == "-" else Path(source).read_bytes()
     except OSError as exc:
-        raise _UsageError(f"cannot read batch file {source!r}: {exc.strerror or exc}") from exc
+        location = "standard input" if source == "-" else f"batch file {source!r}"
+        raise _UsageError(f"cannot read {location}: {exc.strerror or exc}") from exc
+    return _decode_batch(raw)
 
 
 def _check_batch_line(text: str, line: int, pdf_root: Path | None) -> dict[str, Any]:
