@@ -272,6 +272,75 @@ def test_text_format_prints_one_line_per_result_and_a_summary(capsys, spec_pdf: 
     assert lines[-1] == "0 passed, 1 failed, 0 errors (1 total)"
 
 
+def test_text_format_pins_pass_fail_and_error_messages(capsys, monkeypatch, spec_pdf: Path) -> None:
+    """Text output keeps the documented verdict labels and one-line summaries stable."""
+    pass_code = main(
+        ["quote-check", "--pdf", str(spec_pdf), "--page", "1", "--quote", EXACT_QUOTE,
+         "--id", "good", "--format", "text"]
+    )
+    pass_lines = capsys.readouterr().out.splitlines()
+    assert pass_code == 0
+    assert pass_lines == [
+        f"PASS [good]  page 1  {EXACT_QUOTE!r}",
+        "1 passed, 0 failed, 0 errors (1 total)",
+    ]
+
+    fail_quote = "zzzz"
+    fail_code = main(
+        ["quote-check", "--pdf", str(spec_pdf), "--page", "1", "--quote", fail_quote,
+         "--format", "text"]
+    )
+    fail_lines = capsys.readouterr().out.splitlines()
+    assert fail_code == 1
+    assert fail_lines[0].startswith(
+        "FAIL  page 1  quote_not_found_on_cited_page: the normalized quote is not on page 1; "
+        "its longest prefix found there is 0 of 4 characters;"
+    )
+    assert fail_lines[0].endswith("check the page visually")
+    assert fail_lines[1] == "0 passed, 1 failed, 0 errors (1 total)"
+
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"{bad\n")))
+    error_code = main(["quote-check", "--batch", "-", "--format", "text"])
+    error_lines = capsys.readouterr().out.splitlines()
+    assert error_code == 1
+    assert error_lines == [
+        "ERROR line 1  page ?  invalid_json: line 1 is not valid JSON: Expecting property "
+        "name enclosed in double quotes at column 2",
+        "0 passed, 0 failed, 1 errors (1 total)",
+    ]
+
+
+@pytest.mark.parametrize("status", ["pass", "fail", "error"])
+def test_json_output_has_the_documented_exact_keys_for_each_status(
+    capsys, spec_pdf: Path, tmp_path: Path, status: str
+) -> None:
+    if status == "pass":
+        argv = ["--pdf", str(spec_pdf), "--page", "1", "--quote", EXACT_QUOTE]
+    elif status == "fail":
+        argv = ["--pdf", str(spec_pdf), "--page", "1", "--quote", "zzzz"]
+    else:
+        argv = ["--pdf", str(tmp_path / "absent.pdf"), "--page", "1", "--quote", "x"]
+
+    code, output = run(capsys, *argv)
+    assert code == (0 if status == "pass" else 1)
+    assert set(output) == {"schema", "ok", "summary", "results"}
+    assert set(output["summary"]) == {"total", "passed", "failed", "errors"}
+    result = output["results"][0]
+    assert set(result) == {
+        "id", "line", "status", "verified", "reason", "detail", "pdf", "pdf_sha256",
+        "page", "page_count", "quote", "normalized_quote", "match",
+    }
+    assert result["status"] == status
+    assert result["verified"] is (status == "pass")
+    if status == "error":
+        assert result["match"] is None
+    else:
+        assert set(result["match"]) == {
+            "found", "offset", "context", "substring_occurrences", "longest_prefix_found",
+            "page_text_chars",
+        }
+
+
 # --- batch mode --------------------------------------------------------------
 
 
