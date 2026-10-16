@@ -262,6 +262,103 @@ def test_vertex_endpoint_classifier_treats_empty_predictions_as_fallback() -> No
     assert session.post.call_count == 1
 
 
+def test_vertex_endpoint_discovers_dedicated_dns_before_predicting() -> None:
+    discovery = MagicMock(status_code=200)
+    discovery.json.return_value = {"dedicatedEndpointDns": "discovered.vertexai.example"}
+    prediction = MagicMock(status_code=200)
+    prediction.json.return_value = {"predictions": ["Output:\nHIGH"]}
+    session = MagicMock()
+    session.get.return_value = discovery
+    session.post.return_value = prediction
+
+    result = severity_module.VertexEndpointSeverityClassifier(
+        endpoint_resource_name="fictional-endpoint",
+        project_id="fictional-project",
+        location="fictional-region",
+        session=session,
+    ).classify("Discrepancy", "Spec quote", "Cut quote")
+
+    assert result.severity is Severity.HIGH
+    assert result.status == "classified"
+    session.get.assert_called_once_with(
+        "https://fictional-region-aiplatform.googleapis.com/v1/"
+        "projects/fictional-project/locations/fictional-region/endpoints/fictional-endpoint",
+        headers={"X-Goog-User-Project": "fictional-project"},
+        timeout=5.0,
+    )
+    assert session.post.call_args.args[0] == (
+        "https://discovered.vertexai.example/v1/"
+        "projects/fictional-project/locations/fictional-region/endpoints/fictional-endpoint:predict"
+    )
+
+
+def test_vertex_endpoint_uses_regional_url_when_dns_discovery_fails() -> None:
+    prediction = MagicMock(status_code=200)
+    prediction.json.return_value = {"predictions": ["Output:\nLOW"]}
+    session = MagicMock()
+    session.get.side_effect = RuntimeError("discovery unavailable")
+    session.post.return_value = prediction
+
+    result = severity_module.VertexEndpointSeverityClassifier(
+        endpoint_resource_name="projects/p/locations/region-a/endpoints/endpoint-1",
+        project_id="fictional-project",
+        location="region-a",
+        session=session,
+    ).classify("Discrepancy", "Spec quote", "Cut quote")
+
+    assert result.severity is Severity.LOW
+    assert result.status == "classified"
+    assert session.get.call_count == 1
+    assert session.post.call_args.args[0] == (
+        "https://region-a-aiplatform.googleapis.com/v1/"
+        "projects/p/locations/region-a/endpoints/endpoint-1:predict"
+    )
+
+
+def test_two_vertex_timeouts_return_the_exact_fallback() -> None:
+    session = MagicMock()
+    session.post.side_effect = [Timeout("first deadline"), Timeout("second deadline")]
+
+    result = severity_module.VertexEndpointSeverityClassifier(
+        endpoint_resource_name="fictional-endpoint",
+        endpoint_dns="fictional.vertexai.example",
+        model_id="fictional-model-label",
+        timeout_seconds=2.5,
+        session=session,
+    ).classify("Discrepancy", "Spec quote", "Cut quote")
+
+    assert result == SeverityResult(
+        severity=Severity.UNCLASSIFIED,
+        model_id=None,
+        endpoint_label="fictional-model-label",
+        status="fallback",
+        reason="Request timed out after 2.5 seconds",
+    )
+    assert session.post.call_count == 2
+
+
+def test_a_finding_without_quotes_falls_back_before_classification() -> None:
+    classifier = FakeSeverityClassifier()
+    finding = Finding.model_construct(
+        submittal_id="legacy-submittal",
+        claim_text="A fictional requirement differs.",
+        spec_locator="legacy-spec",
+        cut_sheet_locator="legacy-cut-sheet",
+        quotes=[],
+        verification_status=VerificationStatus.VERIFIED,
+    )
+
+    result = classify_severity(finding, classifier=classifier)
+
+    assert result == SeverityResult(
+        severity=Severity.UNCLASSIFIED,
+        model_id=None,
+        status="fallback",
+        reason="Finding has no quotes",
+    )
+    assert classifier.calls == []
+
+
 def test_unclassified_retained_on_classifier_failure() -> None:
     """If the classifier throws an exception, UNCLASSIFIED is retained and fallback recorded."""
     fake = FakeSeverityClassifier(should_fail=True)

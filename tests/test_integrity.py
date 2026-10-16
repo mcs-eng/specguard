@@ -479,6 +479,62 @@ def test_an_inline_image_body_cannot_forge_a_render_mode(tmp_path: Path) -> None
     assert check_text_layer(path).clean is True
 
 
+def test_content_stream_tokenizer_handles_strings_comments_and_delimiters() -> None:
+    stream = (
+        b"% ignored comment\r\n"
+        b"[(line\\n\\050nested\\051\\q) <4142F> /Name 3] "
+        b"<< /DictionaryValue 1 >> { }"
+    )
+
+    assert list(integrity._tokenize(stream)) == [
+        ("array_open", None),
+        ("string", b"line\n(nested)q"),
+        ("string", b"AB\xf0"),
+        ("name", "Name"),
+        ("token", "3"),
+        ("array_close", None),
+        ("name", "DictionaryValue"),
+        ("token", "1"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("stream", "expected"),
+    [
+        (b"1 0 0 rg 0 0 m 1 1 l f", (pytest.approx(0.299), True)),
+        (b"0 1 1 0 k 0 0 m 1 1 l f", (pytest.approx(0.299), True)),
+        (b"/Pattern cs 0 scn 0 0 m 1 1 l f", (None, False)),
+        (b"/Shade sh", (None, False)),
+        (b"BI /W 1 /H 1 /BPC 8 /CS /G ID x EI", (None, False)),
+    ],
+)
+def test_soft_mask_luminosity_is_bounded_only_for_constant_colors(
+    stream: bytes,
+    expected: tuple[float | None, bool],
+) -> None:
+    class FakeDocument:
+        def xref_stream(self, xref: int) -> bytes:
+            assert xref == 17
+            return stream
+
+    assert integrity._group_max_luminosity(FakeDocument(), 17) == expected
+
+
+@pytest.mark.parametrize(
+    ("backdrop", "expected"),
+    [
+        ("[0.25]", pytest.approx(0.25)),
+        ("[1 0 0]", pytest.approx(0.299)),
+        ("[0 1]", None),
+    ],
+)
+def test_soft_mask_backdrop_luminosity_supports_gray_and_rgb_only(
+    backdrop: str,
+    expected: float | None,
+) -> None:
+    assert integrity._backdrop_luminosity(backdrop) == expected
+
+
 # ---------------------------------------------------------------------------
 # sub_visible_glyph
 # ---------------------------------------------------------------------------
