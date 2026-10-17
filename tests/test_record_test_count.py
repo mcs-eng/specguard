@@ -7,9 +7,13 @@ that turn one pytest summary line into the published sentence.
 from __future__ import annotations
 
 from pathlib import Path
+from subprocess import CompletedProcess
+from unittest.mock import MagicMock
 
 import pytest
 
+import scripts.eval_fixtures as eval_fixtures
+import scripts.record_test_count as record_test_count
 from scripts.record_test_count import (
     README_COUNT_END,
     README_COUNT_START,
@@ -90,3 +94,82 @@ def test_the_committed_readme_carries_the_markers_and_a_generated_count() -> Non
     published = readme.split(README_COUNT_START)[1].split(README_COUNT_END)[0]
     assert "passed** on code revision" in published
     assert "scripts/record_test_count.py" in published
+
+
+def test_main_records_the_count_from_a_successful_suite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    readme_path = tmp_path / "README.md"
+    readme_path.write_text(
+        f"before\n{README_COUNT_START}\nold count\n{README_COUNT_END}\nafter\n",
+        encoding="utf-8",
+    )
+    completed = CompletedProcess(
+        args=["uv", "run", "pytest", "-q"],
+        returncode=0,
+        stdout="751 passed, 2 warnings in 1.00s\n",
+        stderr="",
+    )
+    run = MagicMock(return_value=completed)
+    monkeypatch.setattr(record_test_count.subprocess, "run", run)
+    monkeypatch.setattr(record_test_count, "README_PATH", readme_path)
+    monkeypatch.setattr(eval_fixtures, "current_code_revision", lambda: "abc1234")
+
+    assert record_test_count.main() == 0
+
+    rewritten = readme_path.read_text(encoding="utf-8")
+    run.assert_called_once_with(
+        ["uv", "run", "pytest", "-q"],
+        cwd=record_test_count.REPOSITORY_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rewritten.startswith("before\n")
+    assert rewritten.endswith("\nafter\n")
+    assert "old count" not in rewritten
+    assert "**751 passed**" in rewritten
+    assert "`abc1234`" in rewritten
+    assert "Recorded 751 passed on abc1234." in capsys.readouterr().out
+
+
+def test_main_leaves_readme_unchanged_when_the_suite_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    readme_path = tmp_path / "README.md"
+    original = f"{README_COUNT_START}\nold count\n{README_COUNT_END}\n"
+    readme_path.write_text(original, encoding="utf-8")
+    completed = CompletedProcess(
+        args=["uv", "run", "pytest", "-q"],
+        returncode=1,
+        stdout="750 passed, 1 failed in 1.00s\n",
+        stderr="failure details\n",
+    )
+    monkeypatch.setattr(record_test_count.subprocess, "run", lambda *args, **kwargs: completed)
+    monkeypatch.setattr(record_test_count, "README_PATH", readme_path)
+
+    assert record_test_count.main() == 1
+    assert readme_path.read_text(encoding="utf-8") == original
+    output = capsys.readouterr().out
+    assert "failure details" in output
+    assert "README was not changed" in output
+
+
+def test_main_leaves_readme_unchanged_without_a_pytest_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    readme_path = tmp_path / "README.md"
+    original = f"{README_COUNT_START}\nold count\n{README_COUNT_END}\n"
+    readme_path.write_text(original, encoding="utf-8")
+    completed = CompletedProcess(
+        args=["uv", "run", "pytest", "-q"],
+        returncode=0,
+        stdout="collected 751 items\n",
+        stderr="",
+    )
+    monkeypatch.setattr(record_test_count.subprocess, "run", lambda *args, **kwargs: completed)
+    monkeypatch.setattr(record_test_count, "README_PATH", readme_path)
+
+    assert record_test_count.main() == 2
+    assert readme_path.read_text(encoding="utf-8") == original
+    assert "No pytest summary line could be read" in capsys.readouterr().out
