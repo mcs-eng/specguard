@@ -14,3 +14,5 @@
 - Preserve existing assertions when adding test coverage.
 - Run the full offline suite with `uv run pytest -q` after code or test changes.
 - Do not run the live evaluation or confirm a demo-ledger reset as part of ordinary tests; those operations can call external services or change live data.
+
+Commits must never contain Co-authored-by trailers or any personal email; check `git log -1 --format=%B` before pushing.
