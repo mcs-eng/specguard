@@ -36,10 +36,10 @@ import re
 import unicodedata
 from pathlib import Path
 
-import pymupdf
 from pydantic import BaseModel, ConfigDict, Field
 
 from specguard.models import DocumentRecord, RejectionReason
+from specguard.pdf import open_pdf
 
 SOFT_HYPHEN = "\u00ad"
 
@@ -137,7 +137,7 @@ def extract_page_text(pdf_path: str | Path, page_number: int) -> str:
 
     Raises ``IndexError`` if the page number is outside the document.
     """
-    with pymupdf.open(str(pdf_path)) as document:
+    with open_pdf(pdf_path) as document:
         if page_number < 1 or page_number > document.page_count:
             raise IndexError(f"page {page_number} is outside a {document.page_count}-page document")
         return document[page_number - 1].get_text()
@@ -150,7 +150,7 @@ def verify_quote(quote: str, page_number: int, pdf_path: str | Path) -> Verifica
     reads the cited page only. A miss is a rejection, always.
     """
     path_text = str(pdf_path)
-    with pymupdf.open(path_text) as document:
+    with open_pdf(pdf_path) as document:
         page_count = document.page_count
         if page_number < 1 or page_number > page_count:
             return VerificationResult(
@@ -185,6 +185,6 @@ def build_document_record(pdf_path: str | Path) -> DocumentRecord:
     """
     path = Path(pdf_path)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    with pymupdf.open(str(path)) as document:
+    with open_pdf(path) as document:
         page_count = document.page_count
     return DocumentRecord(path=str(path), sha256=digest, page_count=page_count)

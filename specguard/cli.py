@@ -23,10 +23,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Never
 
-import pymupdf
-
 from specguard.gate import find_on_boundaries, normalize, verify_quote
 from specguard.models import RejectionReason
+from specguard.pdf import PdfLoadError, open_pdf
 
 OUTPUT_SCHEMA = "specguard.quote-check/v1"
 
@@ -242,17 +241,18 @@ def check_quote(
                 **common,
             )
         snapshot = path.read_bytes()
-        with pymupdf.open(stream=snapshot, filetype="pdf") as snapshot_document:
-            if not snapshot_document.is_pdf:
-                return _result(
-                    status="error",
-                    reason=ERROR_PDF_UNREADABLE,
-                    detail=f"{shown_path} is not a PDF",
-                    normalized_quote=normalized_quote,
-                    **common,
-                )
+        with open_pdf(snapshot):
+            pass
         verdict = verify_quote(quote, page, path)
         unchanged = path.read_bytes() == snapshot
+    except PdfLoadError as exc:
+        return _result(
+            status="error",
+            reason=ERROR_PDF_UNREADABLE,
+            detail=f"{shown_path} {exc}",
+            normalized_quote=normalized_quote,
+            **common,
+        )
     except Exception as exc:  # any open or read failure is reported, not raised
         return _result(
             status="error",
@@ -286,8 +286,17 @@ def check_quote(
         )
 
     try:
-        with pymupdf.open(stream=snapshot, filetype="pdf") as document:
+        with open_pdf(snapshot) as document:
             normalized_page = normalize(document[page - 1].get_text())
+    except PdfLoadError as exc:  # the validated snapshot should still open identically
+        return _result(
+            status="error",
+            reason=ERROR_PDF_UNREADABLE,
+            detail=f"{shown_path} {exc}",
+            page_count=verdict.page_count,
+            normalized_quote=verdict.normalized_quote,
+            **common,
+        )
     except Exception as exc:  # the gate opened these bytes, so this is not expected
         return _result(
             status="error",
