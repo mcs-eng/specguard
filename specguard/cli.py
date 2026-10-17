@@ -25,7 +25,7 @@ from typing import Any, Never
 
 from specguard.gate import find_on_boundaries, normalize, verify_quote
 from specguard.models import RejectionReason
-from specguard.pdf import PdfLoadError, open_pdf
+from specguard.pdf import PdfLoadError, open_pdf, read_page_text
 
 OUTPUT_SCHEMA = "specguard.quote-check/v1"
 
@@ -287,7 +287,7 @@ def check_quote(
 
     try:
         with open_pdf(snapshot) as document:
-            normalized_page = normalize(document[page - 1].get_text())
+            normalized_page = normalize(read_page_text(document, page - 1))
     except PdfLoadError as exc:  # the validated snapshot should still open identically
         return _result(
             status="error",

@@ -9,6 +9,7 @@ import pymupdf
 _PDF_HEADER_WINDOW = 1024
 _PDF_TRAILER_WINDOW = 1024
 _PDF_WHITESPACE = b"\x00\x09\x0a\x0c\x0d\x20"
+_DAMAGED_DETAIL = "is damaged or incomplete; PDF repair would be required"
 
 
 class PdfLoadError(RuntimeError):
@@ -28,7 +29,7 @@ def _unopenable_detail(source: str | Path | bytes) -> str:
         return "is empty; expected a PDF"
     if b"%PDF-" not in prefix:
         return "is not a PDF"
-    return "is damaged or incomplete; PDF repair would be required"
+    return _DAMAGED_DETAIL
 
 
 def _source_tail(source: str | Path | bytes) -> bytes:
@@ -42,6 +43,21 @@ def _source_tail(source: str | Path | bytes) -> bytes:
 
 def _has_complete_trailer(source: str | Path | bytes) -> bool:
     return _source_tail(source).rstrip(_PDF_WHITESPACE).endswith(b"%%EOF")
+
+
+def _is_encrypted(document: pymupdf.Document) -> bool:
+    """Return whether a PDF carries encryption, even after empty-password authentication."""
+    return bool(
+        document.needs_pass or document.is_encrypted or (document.metadata or {}).get("encryption")
+    )
+
+
+def read_page_text(document: pymupdf.Document, page_index: int) -> str:
+    """Extract one page, rejecting a document that MuPDF repairs during extraction."""
+    text = document[page_index].get_text()
+    if document.is_repaired:
+        raise PdfLoadError(_DAMAGED_DETAIL)
+    return text
 
 
 def open_pdf(source: str | Path | bytes) -> pymupdf.Document:
@@ -67,10 +83,10 @@ def open_pdf(source: str | Path | bytes) -> pymupdf.Document:
     try:
         if not document.is_pdf:
             raise PdfLoadError("is not a PDF")
-        if document.needs_pass or document.is_encrypted:
+        if _is_encrypted(document):
             raise PdfLoadError("is encrypted or password-protected")
         if document.is_repaired or not _has_complete_trailer(source):
-            raise PdfLoadError("is damaged or incomplete; PDF repair would be required")
+            raise PdfLoadError(_DAMAGED_DETAIL)
     except BaseException:
         document.close()
         raise

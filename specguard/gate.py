@@ -39,7 +39,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from specguard.models import DocumentRecord, RejectionReason
-from specguard.pdf import open_pdf
+from specguard.pdf import open_pdf, read_page_text
 
 SOFT_HYPHEN = "\u00ad"
 
@@ -140,7 +140,7 @@ def extract_page_text(pdf_path: str | Path, page_number: int) -> str:
     with open_pdf(pdf_path) as document:
         if page_number < 1 or page_number > document.page_count:
             raise IndexError(f"page {page_number} is outside a {document.page_count}-page document")
-        return document[page_number - 1].get_text()
+        return read_page_text(document, page_number - 1)
 
 
 def verify_quote(quote: str, page_number: int, pdf_path: str | Path) -> VerificationResult:
@@ -161,7 +161,7 @@ def verify_quote(quote: str, page_number: int, pdf_path: str | Path) -> Verifica
                 rejection_reason=RejectionReason.PAGE_OUT_OF_RANGE,
                 normalized_quote=normalize(quote),
             )
-        page_text = document[page_number - 1].get_text()
+        page_text = read_page_text(document, page_number - 1)
 
     normalized_quote = normalize(quote)
     normalized_page = normalize(page_text)
