@@ -123,6 +123,14 @@ def _one_line(text: str) -> str:
     )
 
 
+def _unreadable_pdf_detail(path: Path, failure: Exception) -> str:
+    """Format every PDF read failure with the resolved native path."""
+    return (
+        f"could not read {_one_line(str(path))}: "
+        f"{type(failure).__name__}: {_one_line(str(failure))}"
+    )
+
+
 class _ArgumentParser(argparse.ArgumentParser):
     """Argument parser that reports invalid invocations on one clear line."""
 
@@ -331,10 +339,7 @@ class _PdfSession:
         if failure is not None:
             self._replace_pending(
                 reason=ERROR_PDF_UNREADABLE,
-                detail=(
-                    f"could not read {self.shown_path}: "
-                    f"{type(failure).__name__}: {_one_line(str(failure))}"
-                ),
+                detail=_unreadable_pdf_detail(self.path, failure),
                 include_initial_digest=False,
             )
             return
@@ -409,7 +414,7 @@ def check_quote(
     path = Path(pdf)
     if pdf_root is not None and not path.is_absolute():
         path = pdf_root / path
-    raw_path = str(path)
+    raw_path = path.as_posix()
     shown_path = _one_line(raw_path)
     common = {"record_id": record_id, "line": line, "pdf": raw_path, "page": page, "quote": quote}
 
@@ -453,7 +458,7 @@ def check_quote(
         return _result(
             status="error",
             reason=ERROR_PDF_UNREADABLE,
-            detail=(f"could not read {shown_path}: {type(exc).__name__}: {_one_line(str(exc))}"),
+            detail=_unreadable_pdf_detail(path, exc),
             normalized_quote=normalized_quote,
             **common,
         )
@@ -721,6 +726,15 @@ def _render_text(document: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _write_report(output: str) -> None:
+    """Write one UTF-8, LF-terminated report on every supported platform."""
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8", errors="backslashreplace", newline="\n")
+    sys.stdout.write(output)
+    sys.stdout.write("\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Return the ``specguard`` argument parser."""
     parser = _ArgumentParser(
@@ -801,13 +815,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"specguard {args.command}: error: {_one_line(str(exc))}", file=sys.stderr)
         return EXIT_USAGE
 
-    if args.format == "text":
-        output = _render_text(document)
-        if hasattr(sys.stdout, "reconfigure"):
-            sys.stdout.reconfigure(errors="backslashreplace")
-    else:
-        output = json.dumps(document, indent=2)
-    print(output)
+    output = _render_text(document) if args.format == "text" else json.dumps(document, indent=2)
+    _write_report(output)
     return EXIT_ALL_PASSED if document["ok"] else EXIT_SOME_FAILED
 
 
