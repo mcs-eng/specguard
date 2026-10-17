@@ -188,7 +188,9 @@ def test_a_missing_pdf_is_an_error_record(capsys, tmp_path: Path) -> None:
     result = output["results"][0]
     assert result["status"] == "error"
     assert result["reason"] == "pdf_not_found"
-    assert str(missing) in result["detail"]
+    assert result["pdf"] == missing.as_posix()
+    assert Path(result["pdf"]) == missing
+    assert missing.as_posix() in result["detail"]
     assert output["summary"]["errors"] == 1
 
 
@@ -366,7 +368,9 @@ def test_relative_pdf_paths_resolve_against_pdf_root(capsys, spec_pdf: Path, tmp
     code, output = run(capsys, "--batch", str(batch), "--pdf-root", str(spec_pdf.parent))
 
     assert code == 0
-    assert output["results"][0]["pdf"] == str(spec_pdf)
+    reported_path = output["results"][0]["pdf"]
+    assert reported_path == spec_pdf.as_posix()
+    assert Path(reported_path) == spec_pdf
 
 
 @pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16"])
