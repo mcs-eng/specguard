@@ -209,8 +209,26 @@ def test_boundary_rule_allows_punctuation_edges(spec_pdf: Path) -> None:
 @pytest.mark.parametrize(
     ("page", "quote"),
     [
+        ("NEMA 5-15, rated 20 amperes", ", rated 20 amperes"),
+        ("Use type 1. Rated 20 amperes.", ". Rated 20 amperes."),
+    ],
+)
+def test_boundary_rule_allows_ordinary_punctuation_after_a_digit(
+    page: str, quote: str, tmp_path: Path
+) -> None:
+    pdf = write_pdf(tmp_path / "punctuation.pdf", [[page]])
+    result = verify_quote(quote, 1, pdf)
+
+    assert result.verified is True
+    assert result.rejection_reason is None
+
+
+@pytest.mark.parametrize(
+    ("page", "quote"),
+    [
         ("breaker rated 0.5 A minimum", ".5 A minimum"),
         ("breaker rated 0.5 A minimum", "breaker rated 0."),
+        ("feeder 12,500 kcmil", ",500 kcmil"),
     ],
 )
 def test_number_binding_punctuation_cannot_hide_a_partial_number(

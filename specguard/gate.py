@@ -55,6 +55,10 @@ _WHITESPACE_RUN = re.compile(r"\s+")
 #: a claim quoting ``5 A``, and ``-5 kPa`` would satisfy ``5 kPa``.
 _NUMBER_BINDING = frozenset(".,-+/±⁄−")
 
+#: A period or comma binds two digits as a decimal point or thousands
+#: separator. Next to whitespace it is ordinary punctuation instead.
+_NUMBER_SEPARATORS = frozenset(".,")
+
 
 class VerificationResult(BaseModel):
     """Outcome of one call to :func:`verify_quote`."""
@@ -88,13 +92,17 @@ def normalize(text: str) -> str:
     return text.strip()
 
 
-def _cuts_a_token(edge: str, neighbour: str) -> bool:
+def _cuts_a_token(edge: str, neighbour: str, opposite_neighbour: str) -> bool:
     """True if ``neighbour`` continues the token that ``edge`` belongs to.
 
     An alphanumeric edge may not sit against another alphanumeric character.
-    A digit and a number-binding character may not be split in either order,
-    so neither ``5 A`` nor ``.5 A`` can ride on the page text ``0.5 A``.
+    A decimal point or thousands separator binds only between two digits;
+    other number-binding characters bind whenever they sit against a digit.
+    Thus neither ``5 A`` nor ``.5 A`` can ride on ``0.5 A``, while a quote may
+    begin with the comma in ``15, rated``.
     """
+    if edge in _NUMBER_SEPARATORS and neighbour.isdigit():
+        return opposite_neighbour.isdigit()
     if edge in _NUMBER_BINDING and neighbour.isdigit():
         return True
     if not edge.isalnum():
@@ -107,9 +115,13 @@ def _cuts_a_token(edge: str, neighbour: str) -> bool:
 def _sits_on_token_boundaries(haystack: str, needle: str, start: int) -> bool:
     """True if the match at ``start`` does not cut a word or a number in half."""
     end = start + len(needle)
-    if start > 0 and _cuts_a_token(needle[0], haystack[start - 1]):
+    if start > 0 and _cuts_a_token(
+        needle[0], haystack[start - 1], haystack[start + 1 : start + 2]
+    ):
         return False
-    if end < len(haystack) and _cuts_a_token(needle[-1], haystack[end]):
+    if end < len(haystack) and _cuts_a_token(
+        needle[-1], haystack[end], haystack[end - 2 : end - 1]
+    ):
         return False
     return True
 

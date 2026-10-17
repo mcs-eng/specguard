@@ -211,7 +211,7 @@ def check_quote(
     path = Path(pdf)
     if pdf_root is not None and not path.is_absolute():
         path = pdf_root / path
-    raw_path = str(path)
+    raw_path = path.as_posix()
     shown_path = _one_line(raw_path)
     common = {"record_id": record_id, "line": line, "pdf": raw_path, "page": page, "quote": quote}
 
@@ -257,7 +257,7 @@ def check_quote(
         return _result(
             status="error",
             reason=ERROR_PDF_UNREADABLE,
-            detail=f"could not read {shown_path}: {type(exc).__name__}: {_one_line(str(exc))}",
+            detail=(f"could not read {shown_path}: {type(exc).__name__}: {_one_line(str(exc))}"),
             normalized_quote=normalized_quote,
             **common,
         )
@@ -387,7 +387,7 @@ def _batch_lines(text: str) -> list[tuple[int, str]]:
 
 
 def _batch_source_label(source: str) -> str:
-    """Return a single-line name for a batch file or standard input."""
+    """Return a human-readable name for a batch file or standard input."""
     return "standard input" if source == "-" else f"batch file {_one_line(source)}"
 
 
@@ -405,53 +405,38 @@ def _read_batch(source: str) -> str:
         raise _UsageError(f"{label}: {exc}") from exc
 
 
-def _parse_json_line(text: str) -> object:
-    """Parse strict JSON, rejecting Python's optional non-finite constants."""
-
-    def reject_constant(constant: str) -> None:
-        raise ValueError(f"invalid JSON constant {constant}")
-
-    return json.loads(text, parse_constant=reject_constant)
+def _reject_json_constant(value: str) -> Never:
+    """Reject Python's non-standard NaN and Infinity JSON extensions."""
+    raise ValueError(f"{value} is not a valid JSON value")
 
 
-def _invalid_json_result(*, line: int, source_location: str, problem: str) -> dict[str, Any]:
-    """Build a consistently located error for one invalid JSON Lines record."""
-    return _result(
-        record_id=None,
-        line=line,
-        status="error",
-        reason=ERROR_INVALID_JSON,
-        detail=f"{source_location}line {line} is not valid JSON: {_one_line(problem)}",
-        pdf=None,
-        page=None,
-        quote=None,
-    )
-
-
-def _check_batch_line(
-    text: str, line: int, pdf_root: Path | None, batch_source: str = "-"
-) -> dict[str, Any]:
+def _check_batch_line(text: str, line: int, pdf_root: Path | None, source: str) -> dict[str, Any]:
     """Validate one batch line and run the gate on it, or describe why not."""
-    source_location = f"{_batch_source_label(batch_source)}: " if batch_source != "-" else ""
+    location = f"{_batch_source_label(source)}, line {line}"
     try:
-        record = _parse_json_line(text)
+        record = json.loads(text, parse_constant=_reject_json_constant)
     except json.JSONDecodeError as exc:
-        return _invalid_json_result(
+        return _result(
+            record_id=None,
             line=line,
-            source_location=source_location,
-            problem=f"{exc.msg} at column {exc.colno}",
+            status="error",
+            reason=ERROR_INVALID_JSON,
+            detail=f"{location} is not valid JSON: {exc.msg} at column {exc.colno}",
+            pdf=None,
+            page=None,
+            quote=None,
         )
-    except RecursionError:
-        return _invalid_json_result(
+    except (RecursionError, ValueError) as exc:
+        message = _one_line(str(exc))
+        return _result(
+            record_id=None,
             line=line,
-            source_location=source_location,
-            problem="JSON nesting exceeds the parser limit",
-        )
-    except ValueError as exc:
-        return _invalid_json_result(
-            line=line,
-            source_location=source_location,
-            problem=str(exc),
+            status="error",
+            reason=ERROR_INVALID_JSON,
+            detail=f"{location} is not valid JSON: {message}",
+            pdf=None,
+            page=None,
+            quote=None,
         )
     if not isinstance(record, dict):
         return _result(
@@ -460,7 +445,7 @@ def _check_batch_line(
             status="error",
             reason=ERROR_INVALID_RECORD,
             detail=(
-                f"{source_location}line {line} must be a JSON object with pdf, page, and quote; "
+                f"{location} must be a JSON object with pdf, page, and quote; "
                 f"got a JSON {_json_type_name(record)}"
             ),
             pdf=None,
@@ -498,7 +483,7 @@ def _check_batch_line(
             line=line,
             status="error",
             reason=ERROR_INVALID_RECORD,
-            detail=f"{source_location}line {line}: " + "; ".join(problems),
+            detail=f"{location}: " + "; ".join(problems),
             pdf=pdf if isinstance(pdf, str) else None,
             page=page if isinstance(page, int) and not isinstance(page, bool) else None,
             quote=quote if isinstance(quote, str) else None,
@@ -538,6 +523,15 @@ def _render_text(document: dict[str, Any]) -> str:
         f"({summary['total']} total)"
     )
     return "\n".join(lines)
+
+
+def _write_report(output: str) -> None:
+    """Write one UTF-8, LF-terminated report on every supported platform."""
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8", errors="backslashreplace", newline="\n")
+    sys.stdout.write(output)
+    sys.stdout.write("\n")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -592,8 +586,7 @@ def _run_quote_check(args: argparse.Namespace) -> dict[str, Any]:
         ]
         if not results:
             raise _UsageError(
-                f"the batch input holds no records in {_batch_source_label(args.batch)}; "
-                "nothing was verified"
+                f"{_batch_source_label(args.batch)} holds no records; nothing was verified"
             )
         return _envelope(results)
 
@@ -618,16 +611,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         document = _run_quote_check(args)
     except _UsageError as exc:
         print(f"specguard {args.command}: error: {_one_line(str(exc))}", file=sys.stderr)
-        print(f"run 'specguard {args.command} --help' for the input format", file=sys.stderr)
         return EXIT_USAGE
 
-    if args.format == "text":
-        output = _render_text(document)
-        if hasattr(sys.stdout, "reconfigure"):
-            sys.stdout.reconfigure(errors="backslashreplace")
-    else:
-        output = json.dumps(document, indent=2)
-    print(output)
+    output = _render_text(document) if args.format == "text" else json.dumps(document, indent=2)
+    _write_report(output)
     return EXIT_ALL_PASSED if document["ok"] else EXIT_SOME_FAILED
 
 
