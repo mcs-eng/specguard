@@ -124,9 +124,9 @@ def _one_line(text: str) -> str:
 
 
 def _unreadable_pdf_detail(path: Path, failure: Exception) -> str:
-    """Format every PDF read failure with the resolved native path."""
+    """Format every PDF read failure with the report's portable path."""
     return (
-        f"could not read {_one_line(str(path))}: "
+        f"could not read {_one_line(path.as_posix())}: "
         f"{type(failure).__name__}: {_one_line(str(failure))}"
     )
 

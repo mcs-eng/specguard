@@ -202,7 +202,9 @@ def test_a_file_that_is_not_a_pdf_is_an_error_record(capsys, tmp_path: Path) -> 
     assert code == 1
     result = output["results"][0]
     assert result["reason"] == "pdf_unreadable"
-    assert result["detail"] == f"could not read {fake}: FileDataError: Failed to open stream"
+    assert result["detail"] == (
+        f"could not read {fake.as_posix()}: FileDataError: Failed to open stream"
+    )
 
 
 def test_an_empty_pdf_keeps_the_stream_specific_error_record(capsys, tmp_path: Path) -> None:
@@ -214,7 +216,7 @@ def test_an_empty_pdf_keeps_the_stream_specific_error_record(capsys, tmp_path: P
     result = output["results"][0]
     assert result["reason"] == "pdf_unreadable"
     assert result["detail"] == (
-        f"could not read {empty}: EmptyFileError: Cannot open empty stream."
+        f"could not read {empty.as_posix()}: EmptyFileError: Cannot open empty stream."
     )
 
 
