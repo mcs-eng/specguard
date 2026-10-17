@@ -42,7 +42,9 @@ def test_readable_non_pdf_with_a_matching_quote_is_rejected(
     result = document["results"][0]
     assert result["status"] == "error"
     assert result["reason"] == "pdf_unreadable"
-    assert result["detail"] == f"{source} is not a PDF"
+    assert result["pdf"] == source.as_posix()
+    assert Path(result["pdf"]) == source
+    assert result["detail"] == f"{source.as_posix()} is not a PDF"
 
 
 @pytest.mark.parametrize(
