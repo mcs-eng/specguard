@@ -437,6 +437,26 @@ def test_a_mixed_batch_reports_every_line_in_order(capsys, spec_pdf: Path, tmp_p
     assert output["summary"] == {"total": 8, "passed": 1, "failed": 2, "errors": 5}
 
 
+def test_malformed_batch_errors_name_the_file_and_physical_line(capsys, tmp_path: Path) -> None:
+    batch = tmp_path / "malformed.jsonl"
+    batch.write_text(
+        '\n{"pdf": [], "page": 1, "quote": "x"}\n{not json\n[]\n', encoding="utf-8"
+    )
+
+    code, output = run(capsys, "--batch", str(batch))
+
+    assert code == 1
+    results = output["results"]
+    assert [(result["line"], result["reason"]) for result in results] == [
+        (2, "invalid_record"),
+        (3, "invalid_json"),
+        (4, "invalid_record"),
+    ]
+    for result in results:
+        assert str(batch) in result["detail"]
+        assert f"line {result['line']}" in result["detail"]
+
+
 def test_an_all_passing_batch_exits_zero(capsys, spec_pdf: Path, tmp_path) -> None:
     batch = write_batch(
         tmp_path / "quotes.jsonl",
