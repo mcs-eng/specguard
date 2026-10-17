@@ -64,6 +64,25 @@ def test_a_quote_on_its_cited_page_passes(capsys, spec_pdf: Path) -> None:
     assert result["normalized_quote"] in result["match"]["context"]
 
 
+def test_matching_text_in_a_non_pdf_is_rejected_as_unreadable(capsys, tmp_path: Path) -> None:
+    document = tmp_path / "notes.md"
+    document.write_text("# Synthetic notes\n\nThis contains a matching quote.\n", encoding="utf-8")
+
+    assert verify_quote("matching quote", 1, document).verified is True
+    code, output = run(capsys, "--pdf", str(document), "--page", "1", "--quote", "matching quote")
+
+    assert code == 1
+    assert output["summary"] == {"total": 1, "passed": 0, "failed": 0, "errors": 1}
+    result = output["results"][0]
+    assert result["status"] == "error"
+    assert result["verified"] is False
+    assert result["reason"] == "pdf_unreadable"
+    assert result["detail"] == f"{document} is not a PDF"
+    assert result["pdf_sha256"] is None
+    assert result["page_count"] is None
+    assert result["match"] is None
+
+
 def test_one_changed_digit_fails_with_the_gate_reason(capsys, spec_pdf: Path) -> None:
     quote = EXACT_QUOTE.replace("20 amperes", "30 amperes")
     code, output = run(capsys, "--pdf", str(spec_pdf), "--page", "1", "--quote", quote)
@@ -262,6 +281,28 @@ def test_a_non_integer_page_is_a_usage_error(capsys, spec_pdf: Path) -> None:
     assert "invalid int value" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--he"],
+        ["quote-check", "--he"],
+        ["quote-check", "--bat", "quotes.jsonl"],
+        ["quote-check", "--pdf", "spec.pdf", "--pag", "1", "--quote", "x"],
+        ["quote-check", "--pdf", "spec.pdf", "--page", "1", "--quot", "x"],
+        ["quote-check", "--forma", "text"],
+    ],
+)
+def test_abbreviated_long_options_are_invalid(capsys, argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as raised:
+        main(argv)
+    captured = capsys.readouterr()
+
+    assert raised.value.code == 2
+    assert captured.out == ""
+    assert captured.err.count("\n") == 1
+    assert "error: unrecognized arguments:" in captured.err
+
+
 def test_no_subcommand_is_an_argparse_usage_error(capsys) -> None:
     with pytest.raises(SystemExit) as raised:
         main([])
@@ -294,6 +335,69 @@ def test_text_format_prints_one_line_per_result_and_a_summary(capsys, spec_pdf: 
     assert lines[-1] == "0 passed, 1 failed, 0 errors (1 total)"
 
 
+def test_control_characters_cannot_add_diagnostic_lines(capsys, tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as raised:
+        main(["quote-check", "--bad\nflag"])
+    invalid_flag = capsys.readouterr()
+
+    assert raised.value.code == 2
+    assert invalid_flag.out == ""
+    assert invalid_flag.err.count("\n") == 1
+    assert "--bad\\nflag" in invalid_flag.err
+
+    missing_batch = tmp_path / "missing\nbatch.jsonl"
+    code = main(["quote-check", "--batch", str(missing_batch)])
+    batch_error = capsys.readouterr()
+
+    assert code == 2
+    assert batch_error.out == ""
+    assert len(batch_error.err.splitlines()) == 2
+    assert "missing\\nbatch.jsonl" in batch_error.err.splitlines()[0]
+
+    missing_pdf = tmp_path / "missing\ninput.pdf"
+    code = main(
+        [
+            "quote-check",
+            "--pdf",
+            str(missing_pdf),
+            "--page",
+            "1",
+            "--quote",
+            "x",
+            "--format",
+            "text",
+        ]
+    )
+    pdf_error = capsys.readouterr()
+
+    assert code == 1
+    assert pdf_error.err == ""
+    assert len(pdf_error.out.splitlines()) == 2
+    assert "missing\\ninput.pdf" in pdf_error.out.splitlines()[0]
+
+    code = main(
+        [
+            "quote-check",
+            "--pdf",
+            str(tmp_path / "missing-id.pdf"),
+            "--page",
+            "1",
+            "--quote",
+            "x",
+            "--id",
+            "first\nforged",
+            "--format",
+            "text",
+        ]
+    )
+    id_error = capsys.readouterr()
+
+    assert code == 1
+    assert id_error.err == ""
+    assert len(id_error.out.splitlines()) == 2
+    assert "[first\\nforged]" in id_error.out.splitlines()[0]
+
+
 # --- batch mode --------------------------------------------------------------
 
 
@@ -322,7 +426,7 @@ def test_valid_json_that_is_not_an_object_is_an_error_record(
     assert result["verified"] is False
     assert result["reason"] == "invalid_record"
     assert result["detail"] == (
-        "line 1 must be a JSON object with pdf, page, and quote; "
+        f"batch file {batch}: line 1 must be a JSON object with pdf, page, and quote; "
         f"got a JSON {json_type}"
     )
     assert result["pdf"] is None
@@ -344,7 +448,9 @@ def test_nonstandard_json_constants_are_syntax_errors(
     result = output["results"][0]
     assert result["status"] == "error"
     assert result["reason"] == "invalid_json"
-    assert result["detail"] == f"line 1 is not valid JSON: invalid JSON constant {constant}"
+    assert result["detail"] == (
+        f"batch file {batch}: line 1 is not valid JSON: invalid JSON constant {constant}"
+    )
 
 
 def test_nonstandard_json_constant_does_not_report_a_column_inside_a_string(
@@ -358,7 +464,55 @@ def test_nonstandard_json_constant_does_not_report_a_column_inside_a_string(
     assert code == 1
     result = output["results"][0]
     assert result["reason"] == "invalid_json"
-    assert result["detail"] == "line 1 is not valid JSON: invalid JSON constant NaN"
+    assert result["detail"] == (
+        f"batch file {batch}: line 1 is not valid JSON: invalid JSON constant NaN"
+    )
+
+
+def test_an_oversized_json_integer_is_an_error_record(capsys, tmp_path: Path) -> None:
+    batch = tmp_path / "oversized-integer.jsonl"
+    batch.write_text("9" * 5000 + "\n", encoding="utf-8")
+
+    code, output = run(capsys, "--batch", str(batch))
+
+    assert code == 1
+    assert output["summary"] == {"total": 1, "passed": 0, "failed": 0, "errors": 1}
+    result = output["results"][0]
+    assert result["status"] == "error"
+    assert result["reason"] == "invalid_json"
+    assert str(batch) in result["detail"]
+    assert "line 1" in result["detail"]
+    assert "Exceeds the limit" in result["detail"]
+    assert "\n" not in result["detail"]
+
+
+def test_excessive_json_nesting_is_an_error_record_and_batch_continues(
+    capsys, spec_pdf: Path, tmp_path: Path
+) -> None:
+    nested_array = "[" * 10_000 + "]" * 10_000
+    valid_record = json.dumps({"id": "good", "pdf": str(spec_pdf), "page": 1, "quote": EXACT_QUOTE})
+    batch = tmp_path / "nested.jsonl"
+    batch.write_text(f"{nested_array}\n{valid_record}\n", encoding="utf-8")
+
+    code, output = run(capsys, "--batch", str(batch))
+
+    assert code == 1
+    assert output["summary"] == {"total": 2, "passed": 1, "failed": 0, "errors": 1}
+    invalid, valid = output["results"]
+    assert invalid["line"] == 1
+    assert invalid["status"] == "error"
+    assert invalid["verified"] is False
+    assert invalid["reason"] == "invalid_json"
+    assert invalid["detail"] == (
+        f"batch file {batch}: line 1 is not valid JSON: JSON nesting exceeds the parser limit"
+    )
+    assert invalid["pdf"] is None
+    assert invalid["page"] is None
+    assert invalid["quote"] is None
+    assert valid["line"] == 2
+    assert valid["id"] == "good"
+    assert valid["status"] == "pass"
+    assert valid["verified"] is True
 
 
 def test_all_batch_field_problems_are_reported_in_contract_order(capsys, tmp_path: Path) -> None:
@@ -376,7 +530,8 @@ def test_all_batch_field_problems_are_reported_in_contract_order(capsys, tmp_pat
     assert result["status"] == "error"
     assert result["reason"] == "invalid_record"
     assert result["detail"] == (
-        "line 1: id must be a string or an integer; got a JSON array; "
+        f"batch file {batch}: line 1: "
+        "id must be a string or an integer; got a JSON array; "
         "pdf must be a non-empty string; got a JSON string; "
         "page must be a JSON integer (one-based); got a JSON boolean true; "
         "quote must be a string; got a JSON number"
@@ -593,6 +748,29 @@ def test_an_unreadable_standard_input_is_a_usage_error(capsys, monkeypatch) -> N
     assert "run 'specguard quote-check --help'" in captured.err
 
 
+def test_a_batch_read_value_error_is_a_located_usage_error(
+    capsys, monkeypatch, tmp_path: Path
+) -> None:
+    batch = tmp_path / "invalid-path.jsonl"
+    original_read_bytes = Path.read_bytes
+
+    def reject_one_path(path: Path) -> bytes:
+        if path == batch:
+            raise ValueError("invalid\npath")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_one_path)
+    code = main(["quote-check", "--batch", str(batch)])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert captured.out == ""
+    assert len(captured.err.splitlines()) == 2
+    assert str(batch) in captured.err.splitlines()[0]
+    assert "invalid\\npath" in captured.err.splitlines()[0]
+    assert "Traceback" not in captured.err
+
+
 def test_an_empty_batch_is_a_usage_error_not_a_pass(capsys, tmp_path: Path) -> None:
     batch = tmp_path / "empty.jsonl"
     batch.write_text("\n  \n", encoding="utf-8")
@@ -614,7 +792,8 @@ def test_an_empty_encoded_batch_is_a_usage_error(capsys, tmp_path: Path, raw: by
     assert code == 2
     assert captured.out == ""
     assert captured.err == (
-        "specguard quote-check: error: the batch input holds no records; nothing was verified\n"
+        f"specguard quote-check: error: the batch input holds no records in batch file {batch}; "
+        "nothing was verified\n"
         "run 'specguard quote-check --help' for the input format\n"
     )
 
@@ -632,7 +811,7 @@ def test_a_directory_cannot_be_read_as_a_batch_file(capsys, tmp_path: Path) -> N
 
     assert code == 2
     assert captured.out == ""
-    assert f"cannot read batch file {str(tmp_path)!r}" in captured.err
+    assert f"cannot read batch file {tmp_path}" in captured.err
     assert "run 'specguard quote-check --help'" in captured.err
 
 
@@ -652,7 +831,9 @@ def test_a_truncated_utf16_batch_is_a_usage_error(capsys, tmp_path: Path) -> Non
     code = main(["quote-check", "--batch", str(batch)])
 
     assert code == 2
-    assert "not valid UTF-8 or BOM-marked UTF-16" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert str(batch) in error
+    assert "not valid UTF-8 or BOM-marked UTF-16" in error
 
 
 def test_a_unicode_line_separator_inside_a_quote_does_not_split_the_record(
@@ -711,14 +892,14 @@ def test_a_snapshot_reopen_failure_is_an_error_record(
     real_open = cli.pymupdf.open
     calls = 0
 
-    def fail_second_open(*args, **kwargs):
+    def fail_third_open(*args, **kwargs):
         nonlocal calls
         calls += 1
-        if calls == 2:
+        if calls == 3:
             raise RuntimeError("snapshot unavailable")
         return real_open(*args, **kwargs)
 
-    monkeypatch.setattr(cli.pymupdf, "open", fail_second_open)
+    monkeypatch.setattr(cli.pymupdf, "open", fail_third_open)
     code, output = run(capsys, "--pdf", str(spec_pdf), "--page", "1", "--quote", EXACT_QUOTE)
 
     assert code == 1

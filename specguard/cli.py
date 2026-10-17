@@ -21,7 +21,7 @@ import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Never
 
 import pymupdf
 
@@ -103,6 +103,21 @@ examples:
   Get-Content quotes.jsonl | specguard quote-check --batch -     (ASCII quotes only
       on Windows PowerShell 5.1, which re-encodes pipes; prefer a file path)
 """
+
+
+def _one_line(text: str) -> str:
+    """Escape control characters so a diagnostic cannot forge another line."""
+    return "".join(
+        character if character.isprintable() else character.encode("unicode_escape").decode("ascii")
+        for character in text
+    )
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    """Argument parser that reports invalid invocations on one clear line."""
+
+    def error(self, message: str) -> Never:
+        self.exit(EXIT_USAGE, f"{self.prog}: error: {_one_line(message)}\n")
 
 
 class _UsageError(Exception):
@@ -196,8 +211,9 @@ def check_quote(
     path = Path(pdf)
     if pdf_root is not None and not path.is_absolute():
         path = pdf_root / path
-    shown_path = str(path)
-    common = {"record_id": record_id, "line": line, "pdf": shown_path, "page": page, "quote": quote}
+    raw_path = str(path)
+    shown_path = _one_line(raw_path)
+    common = {"record_id": record_id, "line": line, "pdf": raw_path, "page": page, "quote": quote}
 
     normalized_quote = normalize(quote)
     if not normalized_quote:
@@ -226,13 +242,22 @@ def check_quote(
                 **common,
             )
         snapshot = path.read_bytes()
+        with pymupdf.open(stream=snapshot, filetype="pdf") as snapshot_document:
+            if not snapshot_document.is_pdf:
+                return _result(
+                    status="error",
+                    reason=ERROR_PDF_UNREADABLE,
+                    detail=f"{shown_path} is not a PDF",
+                    normalized_quote=normalized_quote,
+                    **common,
+                )
         verdict = verify_quote(quote, page, path)
         unchanged = path.read_bytes() == snapshot
     except Exception as exc:  # any open or read failure is reported, not raised
         return _result(
             status="error",
             reason=ERROR_PDF_UNREADABLE,
-            detail=f"could not read {shown_path}: {type(exc).__name__}: {exc}",
+            detail=f"could not read {shown_path}: {type(exc).__name__}: {_one_line(str(exc))}",
             normalized_quote=normalized_quote,
             **common,
         )
@@ -261,8 +286,7 @@ def check_quote(
         )
 
     try:
-        filetype = path.suffix.lstrip(".") or "pdf"
-        with pymupdf.open(stream=snapshot, filetype=filetype) as document:
+        with pymupdf.open(stream=snapshot, filetype="pdf") as document:
             normalized_page = normalize(document[page - 1].get_text())
     except Exception as exc:  # the gate opened these bytes, so this is not expected
         return _result(
@@ -362,14 +386,23 @@ def _batch_lines(text: str) -> list[tuple[int, str]]:
     return [(number, raw) for number, raw in enumerate(lines, start=1) if raw.strip(" \t\r")]
 
 
+def _batch_source_label(source: str) -> str:
+    """Return a single-line name for a batch file or standard input."""
+    return "standard input" if source == "-" else f"batch file {_one_line(source)}"
+
+
 def _read_batch(source: str) -> str:
     """Read the batch input from a path, or from standard input for ``-``."""
+    label = _batch_source_label(source)
     try:
         raw = sys.stdin.buffer.read() if source == "-" else Path(source).read_bytes()
-    except OSError as exc:
-        location = "standard input" if source == "-" else f"batch file {source!r}"
-        raise _UsageError(f"cannot read {location}: {exc.strerror or exc}") from exc
-    return _decode_batch(raw)
+    except (OSError, ValueError) as exc:
+        message = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
+        raise _UsageError(f"cannot read {label}: {_one_line(message)}") from exc
+    try:
+        return _decode_batch(raw)
+    except _UsageError as exc:
+        raise _UsageError(f"{label}: {exc}") from exc
 
 
 def _parse_json_line(text: str) -> object:
@@ -381,37 +414,44 @@ def _parse_json_line(text: str) -> object:
     return json.loads(text, parse_constant=reject_constant)
 
 
+def _invalid_json_result(*, line: int, source_location: str, problem: str) -> dict[str, Any]:
+    """Build a consistently located error for one invalid JSON Lines record."""
+    return _result(
+        record_id=None,
+        line=line,
+        status="error",
+        reason=ERROR_INVALID_JSON,
+        detail=f"{source_location}line {line} is not valid JSON: {_one_line(problem)}",
+        pdf=None,
+        page=None,
+        quote=None,
+    )
+
+
 def _check_batch_line(
     text: str, line: int, pdf_root: Path | None, batch_source: str = "-"
 ) -> dict[str, Any]:
     """Validate one batch line and run the gate on it, or describe why not."""
-    source_location = f"batch file {batch_source}: " if batch_source != "-" else ""
+    source_location = f"{_batch_source_label(batch_source)}: " if batch_source != "-" else ""
     try:
         record = _parse_json_line(text)
     except json.JSONDecodeError as exc:
-        return _result(
-            record_id=None,
+        return _invalid_json_result(
             line=line,
-            status="error",
-            reason=ERROR_INVALID_JSON,
-            detail=(
-                f"{source_location}line {line} is not valid JSON: "
-                f"{exc.msg} at column {exc.colno}"
-            ),
-            pdf=None,
-            page=None,
-            quote=None,
+            source_location=source_location,
+            problem=f"{exc.msg} at column {exc.colno}",
+        )
+    except RecursionError:
+        return _invalid_json_result(
+            line=line,
+            source_location=source_location,
+            problem="JSON nesting exceeds the parser limit",
         )
     except ValueError as exc:
-        return _result(
-            record_id=None,
+        return _invalid_json_result(
             line=line,
-            status="error",
-            reason=ERROR_INVALID_JSON,
-            detail=f"line {line} is not valid JSON: {exc}",
-            pdf=None,
-            page=None,
-            quote=None,
+            source_location=source_location,
+            problem=str(exc),
         )
     if not isinstance(record, dict):
         return _result(
@@ -485,7 +525,7 @@ def _render_text(document: dict[str, Any]) -> str:
     for result in document["results"]:
         label = result["status"].upper()
         where = f"line {result['line']}" if result["line"] is not None else ""
-        name = f"[{result['id']}]" if result["id"] is not None else ""
+        name = f"[{_one_line(str(result['id']))}]" if result["id"] is not None else ""
         head = " ".join(part for part in (label, name, where) if part)
         page = f"page {result['page']}" if result["page"] is not None else "page ?"
         if result["status"] == "pass":
@@ -502,18 +542,19 @@ def _render_text(document: dict[str, Any]) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     """Return the ``specguard`` argument parser."""
-    parser = argparse.ArgumentParser(
+    parser = _ArgumentParser(
         prog="specguard",
         description="SpecGuard local tools. The hosted audit demo is not needed for these.",
+        allow_abbrev=False,
     )
     commands = parser.add_subparsers(dest="command", metavar="COMMAND")
-    commands.required = True
     quote_check = commands.add_parser(
         "quote-check",
         help="verify that quotes appear on their cited PDF pages",
         description=QUOTE_CHECK_DESCRIPTION,
         epilog=QUOTE_CHECK_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
     )
     quote_check.add_argument("--pdf", help="PDF to read (single mode)")
     quote_check.add_argument("--page", type=int, help="one-based page number (single mode)")
@@ -550,7 +591,10 @@ def _run_quote_check(args: argparse.Namespace) -> dict[str, Any]:
             for number, raw in _batch_lines(text)
         ]
         if not results:
-            raise _UsageError("the batch input holds no records; nothing was verified")
+            raise _UsageError(
+                f"the batch input holds no records in {_batch_source_label(args.batch)}; "
+                "nothing was verified"
+            )
         return _envelope(results)
 
     if len(single) != 3:
@@ -568,10 +612,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Entry point for the ``specguard`` console script."""
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command is None:
+        parser.error("the following arguments are required: COMMAND")
     try:
         document = _run_quote_check(args)
     except _UsageError as exc:
-        print(f"specguard {args.command}: error: {exc}", file=sys.stderr)
+        print(f"specguard {args.command}: error: {_one_line(str(exc))}", file=sys.stderr)
         print(f"run 'specguard {args.command} --help' for the input format", file=sys.stderr)
         return EXIT_USAGE
 
