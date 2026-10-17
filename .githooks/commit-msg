@@ -1,5 +1,6 @@
 #!/bin/sh
-# commit-msg hook: strip every Co-authored-by trailer (case-insensitive) so no personal email lands in a commit.
+# commit-msg hook: strip every Co-authored-by trailer (case-insensitive, incl. folded continuation lines)
+# so no personal email lands in a commit.
 # Fails closed: if filtering fails, the commit is aborted and the original message is left untouched.
 set -eu
 msg="${1:-}"
@@ -7,9 +8,14 @@ msg="${1:-}"
 tmp=$(mktemp "$msg.strip.XXXXXX") || { echo "commit-msg: cannot create a temp file; commit aborted, message kept" >&2; exit 1; }
 trap 'rm -f "$tmp"' EXIT
 rc=0
-LC_ALL=C grep -a -i -v -E '^[[:space:]]*co-authored-by[[:space:]]*:' "$msg" > "$tmp" || rc=$?
-if [ "$rc" -gt 1 ]; then
-  echo "commit-msg: could not filter Co-authored-by lines (grep exit $rc); commit aborted, message kept" >&2
+LC_ALL=C awk '
+  skip && /^[ \t]/ { next }
+  { skip = 0 }
+  tolower($0) ~ /^[ \t]*co-authored-by[ \t]*:/ { skip = 1; next }
+  { print }
+' "$msg" > "$tmp" || rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "commit-msg: could not filter Co-authored-by lines (awk exit $rc); commit aborted, message kept" >&2
   exit 1
 fi
 mv -f "$tmp" "$msg"
