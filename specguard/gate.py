@@ -143,38 +143,58 @@ def extract_page_text(pdf_path: str | Path, page_number: int) -> str:
         return document[page_number - 1].get_text()
 
 
+def _verify_quote_in_document(
+    quote: str,
+    page_number: int,
+    pdf_path: str | Path,
+    document: pymupdf.Document,
+) -> tuple[VerificationResult, str | None]:
+    """Apply the gate to an already-open document and return its normalized page.
+
+    ``verify_quote`` uses this for one check. The CLI also uses it so a batch can
+    keep one document open and reuse the exact page text that produced the
+    verdict for its diagnostics.
+    """
+    path_text = str(pdf_path)
+    page_count = document.page_count
+    normalized_quote = normalize(quote)
+    if page_number < 1 or page_number > page_count:
+        return (
+            VerificationResult(
+                verified=False,
+                pdf_path=path_text,
+                page_number=page_number,
+                page_count=page_count,
+                rejection_reason=RejectionReason.PAGE_OUT_OF_RANGE,
+                normalized_quote=normalized_quote,
+            ),
+            None,
+        )
+
+    normalized_page = normalize(document[page_number - 1].get_text())
+    found = contains_on_boundaries(normalized_page, normalized_quote)
+    return (
+        VerificationResult(
+            verified=found,
+            pdf_path=path_text,
+            page_number=page_number,
+            page_count=page_count,
+            rejection_reason=None if found else RejectionReason.QUOTE_NOT_FOUND_ON_CITED_PAGE,
+            normalized_quote=normalized_quote,
+        ),
+        normalized_page,
+    )
+
+
 def verify_quote(quote: str, page_number: int, pdf_path: str | Path) -> VerificationResult:
     """Verify that ``quote`` appears on page ``page_number`` of ``pdf_path``.
 
     The gate follows the verification contract in the module docstring. It
     reads the cited page only. A miss is a rejection, always.
     """
-    path_text = str(pdf_path)
-    with pymupdf.open(path_text) as document:
-        page_count = document.page_count
-        if page_number < 1 or page_number > page_count:
-            return VerificationResult(
-                verified=False,
-                pdf_path=path_text,
-                page_number=page_number,
-                page_count=page_count,
-                rejection_reason=RejectionReason.PAGE_OUT_OF_RANGE,
-                normalized_quote=normalize(quote),
-            )
-        page_text = document[page_number - 1].get_text()
-
-    normalized_quote = normalize(quote)
-    normalized_page = normalize(page_text)
-
-    found = contains_on_boundaries(normalized_page, normalized_quote)
-    return VerificationResult(
-        verified=found,
-        pdf_path=path_text,
-        page_number=page_number,
-        page_count=page_count,
-        rejection_reason=None if found else RejectionReason.QUOTE_NOT_FOUND_ON_CITED_PAGE,
-        normalized_quote=normalized_quote,
-    )
+    with pymupdf.open(str(pdf_path)) as document:
+        result, _ = _verify_quote_in_document(quote, page_number, pdf_path, document)
+    return result
 
 
 def build_document_record(pdf_path: str | Path) -> DocumentRecord:

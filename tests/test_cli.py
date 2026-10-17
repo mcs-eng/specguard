@@ -198,7 +198,22 @@ def test_a_file_that_is_not_a_pdf_is_an_error_record(capsys, tmp_path: Path) -> 
     code, output = run(capsys, "--pdf", str(fake), "--page", "1", "--quote", "x")
 
     assert code == 1
-    assert output["results"][0]["reason"] == "pdf_unreadable"
+    result = output["results"][0]
+    assert result["reason"] == "pdf_unreadable"
+    assert result["detail"] == f"could not read {fake}: FileDataError: Failed to open stream"
+
+
+def test_an_empty_pdf_keeps_the_stream_specific_error_record(capsys, tmp_path: Path) -> None:
+    empty = tmp_path / "empty.pdf"
+    empty.write_bytes(b"")
+    code, output = run(capsys, "--pdf", str(empty), "--page", "1", "--quote", "x")
+
+    assert code == 1
+    result = output["results"][0]
+    assert result["reason"] == "pdf_unreadable"
+    assert result["detail"] == (
+        f"could not read {empty}: EmptyFileError: Cannot open empty stream."
+    )
 
 
 def test_a_directory_is_not_accepted_as_a_pdf(capsys, tmp_path: Path) -> None:
@@ -327,6 +342,32 @@ def test_an_all_passing_batch_exits_zero(capsys, spec_pdf: Path, tmp_path) -> No
     assert code == 0
     assert output["ok"] is True
     assert output["summary"]["passed"] == 2
+
+
+def test_a_batch_reuses_one_pdf_parse_for_consecutive_records(
+    capsys, monkeypatch, spec_pdf: Path, tmp_path: Path
+) -> None:
+    batch = write_batch(
+        tmp_path / "quotes.jsonl",
+        [
+            {"id": "pass", "pdf": str(spec_pdf), "page": 1, "quote": EXACT_QUOTE},
+            {"id": "fail", "pdf": str(spec_pdf), "page": 2, "quote": EXACT_QUOTE},
+        ],
+    )
+    real_open = cli.pymupdf.open
+    open_count = 0
+
+    def counted_open(*args, **kwargs):
+        nonlocal open_count
+        open_count += 1
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(cli.pymupdf, "open", counted_open)
+    code, output = run(capsys, "--batch", str(batch))
+
+    assert code == 1
+    assert [result["status"] for result in output["results"]] == ["pass", "fail"]
+    assert open_count == 1
 
 
 @pytest.mark.parametrize("probe", ["exists", "is_file"])
@@ -458,20 +499,37 @@ def test_the_result_carries_the_sha256_of_the_bytes_checked(capsys, spec_pdf: Pa
     assert output["results"][0]["pdf_sha256"] == hashlib.sha256(spec_pdf.read_bytes()).hexdigest()
 
 
+def test_a_check_never_materializes_the_whole_pdf_with_read_bytes(
+    capsys, monkeypatch, spec_pdf: Path
+) -> None:
+    real_read_bytes = Path.read_bytes
+
+    def reject_pdf_read_bytes(path: Path) -> bytes:
+        if path == spec_pdf:
+            raise AssertionError("the PDF must be streamed")
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_pdf_read_bytes)
+    code, output = run(capsys, "--pdf", str(spec_pdf), "--page", "1", "--quote", EXACT_QUOTE)
+
+    assert code == 0
+    assert output["results"][0]["status"] == "pass"
+
+
 def test_a_pdf_replaced_during_the_check_is_an_error_not_a_verdict(
     capsys, monkeypatch, tmp_path: Path
 ) -> None:
     """Same quote, same page, same verdict after the swap: the bytes still differ."""
     pdf = write_pdf(tmp_path / "moving.pdf", [["rated 20 amperes"]])
     replacement = write_pdf(tmp_path / "replacement.pdf", [["NOTICE rated 20 amperes"], ["x"]])
-    real_verify = cli.verify_quote
+    real_verify = cli._verify_quote_in_document
 
-    def verify_then_swap(quote, page_number, pdf_path):
-        result = real_verify(quote, page_number, pdf_path)
+    def verify_then_swap(quote, page_number, pdf_path, document):
+        result = real_verify(quote, page_number, pdf_path, document)
         Path(pdf_path).write_bytes(replacement.read_bytes())
         return result
 
-    monkeypatch.setattr(cli, "verify_quote", verify_then_swap)
+    monkeypatch.setattr(cli, "_verify_quote_in_document", verify_then_swap)
     code, output = run(capsys, "--pdf", str(pdf), "--page", "1", "--quote", "rated 20 amperes")
 
     assert code == 1

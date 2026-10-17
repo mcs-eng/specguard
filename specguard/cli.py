@@ -1,12 +1,12 @@
 """Command-line quote check: is this quote on this page of this PDF?
 
 ``specguard quote-check`` runs the verification gate in :mod:`specguard.gate`
-on a local PDF. The verdict for every record comes from
-:func:`specguard.gate.verify_quote` and nothing else, so the CLI admits exactly
-what the gate admits: the normalized quote must sit on token boundaries on the
-cited page. The extra fields in each result (match offset, surrounding text,
-longest matching prefix) are diagnostics for a human or an agent deciding how
-to retry. They never change a verdict.
+on a local PDF. The CLI and :func:`specguard.gate.verify_quote` share the same
+gate implementation, so the CLI admits exactly what the gate admits: the
+normalized quote must sit on token boundaries on the cited page. The extra
+fields in each result (match offset, surrounding text, longest matching prefix)
+are diagnostics for a human or an agent deciding how to retry. They never
+change a verdict.
 
 This module imports only the gate, the models, and the standard library. It
 needs none of the hosted demo's dependencies (ADK, Gemini, Firestore, Cloud
@@ -18,14 +18,21 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import mmap
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Never
+from typing import Any, BinaryIO, Never
 
 import pymupdf
 
-from specguard.gate import find_on_boundaries, normalize, verify_quote
+from specguard.gate import (
+    VerificationResult,
+    _verify_quote_in_document,
+    find_on_boundaries,
+    normalize,
+)
 from specguard.models import RejectionReason
 
 OUTPUT_SCHEMA = "specguard.quote-check/v1"
@@ -41,6 +48,9 @@ CONTEXT_CHARS = 40
 #: block or a seal alone, and a miss says more about the file than the quote.
 #: It only changes the wording of a failure's detail, never a verdict.
 SPARSE_TEXT_CHARS = 500
+
+#: Bound Python heap use while copying or comparing arbitrarily large PDFs.
+FILE_CHUNK_BYTES = 1024 * 1024
 
 #: Record-level error reasons. A record with one of these was never judged by
 #: the gate; it still counts against the exit code.
@@ -189,6 +199,182 @@ def _longest_prefix_found(haystack: str, needle: str) -> str:
     return needle[:low]
 
 
+class _NotPdfError(Exception):
+    """A readable input that PyMuPDF identifies as something other than PDF."""
+
+
+def _snapshot_file(path: Path) -> tuple[BinaryIO, str]:
+    """Copy a file to temporary storage and return the copy plus its digest."""
+    digest = hashlib.sha256()
+    snapshot = tempfile.TemporaryFile()
+    try:
+        with path.open("rb") as source:
+            while chunk := source.read(FILE_CHUNK_BYTES):
+                digest.update(chunk)
+                snapshot.write(chunk)
+        snapshot.seek(0)
+    except Exception:
+        snapshot.close()
+        raise
+    return snapshot, digest.hexdigest()
+
+
+def _matches_snapshot(path: Path, snapshot: BinaryIO) -> bool:
+    """Compare current file bytes with a temporary snapshot using bounded memory."""
+    snapshot.seek(0)
+    with path.open("rb") as current:
+        while True:
+            expected = snapshot.read(FILE_CHUNK_BYTES)
+            actual = current.read(FILE_CHUNK_BYTES)
+            if expected != actual:
+                return False
+            if not expected:
+                return True
+
+
+class _PdfSession:
+    """One stable PDF parse shared by consecutive checks in a batch."""
+
+    def __init__(self, path: Path, shown_path: str) -> None:
+        self.path = path
+        self.shown_path = shown_path
+        self._mapping: mmap.mmap | None = None
+        self._stream: memoryview | None = None
+        self._snapshot, self.sha256 = _snapshot_file(path)
+        try:
+            self._snapshot.seek(0, 2)
+            snapshot_size = self._snapshot.tell()
+            self._snapshot.seek(0)
+            if snapshot_size == 0:
+                # Preserve PyMuPDF's stream-specific public error for empty files.
+                self.document = pymupdf.open(stream=b"", filetype="pdf")
+            else:
+                self._mapping = mmap.mmap(
+                    self._snapshot.fileno(), length=0, access=mmap.ACCESS_READ
+                )
+                self._stream = memoryview(self._mapping)
+                self.document = pymupdf.open(stream=self._stream, filetype="pdf")
+        except Exception:
+            self._release_mapping()
+            self._snapshot.close()
+            raise
+        if not self.document.is_pdf:
+            self.document.close()
+            self.document.stream = None
+            self._release_mapping()
+            self._snapshot.close()
+            raise _NotPdfError
+        self._pending: list[dict[str, Any]] = []
+        self._closed = False
+
+    def _release_mapping(self) -> None:
+        """Release the zero-copy view after MuPDF has released the document."""
+        if self._stream is not None:
+            self._stream.release()
+            self._stream = None
+        if self._mapping is not None:
+            self._mapping.close()
+            self._mapping = None
+
+    def verify(self, quote: str, page: int) -> tuple[VerificationResult, str | None]:
+        """Run the canonical gate against this session's open document."""
+        return _verify_quote_in_document(quote, page, self.path, self.document)
+
+    def remember(self, result: dict[str, Any]) -> None:
+        """Retain a result reference until the closing digest confirms stability."""
+        self._pending.append(result)
+
+    def _replace_pending(self, *, reason: str, detail: str, include_initial_digest: bool) -> None:
+        for result in self._pending:
+            replacement = _result(
+                record_id=result["id"],
+                line=result["line"],
+                status="error",
+                reason=reason,
+                detail=detail,
+                pdf=result["pdf"],
+                page=result["page"],
+                quote=result["quote"],
+                normalized_quote=result["normalized_quote"],
+                pdf_sha256=self.sha256 if include_initial_digest else None,
+            )
+            result.clear()
+            result.update(replacement)
+
+    def finish(self) -> None:
+        """Close the parser and reject provisional results if the bytes changed."""
+        if self._closed:
+            return
+        self._closed = True
+        failure: Exception | None = None
+        unchanged = False
+        try:
+            self.document.close()
+        except Exception as exc:
+            failure = exc
+        else:
+            try:
+                self.document.stream = None
+                self._release_mapping()
+            except Exception as exc:
+                failure = exc
+        if failure is None:
+            try:
+                unchanged = _matches_snapshot(self.path, self._snapshot)
+            except Exception as exc:
+                failure = exc
+        try:
+            self._snapshot.close()
+        except Exception as exc:
+            if failure is None:
+                failure = exc
+        if failure is not None:
+            self._replace_pending(
+                reason=ERROR_PDF_UNREADABLE,
+                detail=(
+                    f"could not read {self.shown_path}: "
+                    f"{type(failure).__name__}: {_one_line(str(failure))}"
+                ),
+                include_initial_digest=False,
+            )
+            return
+        if not unchanged:
+            self._replace_pending(
+                reason=ERROR_PDF_CHANGED,
+                detail=(
+                    f"{self.shown_path} changed while it was being checked; "
+                    "re-run once it is stable"
+                ),
+                include_initial_digest=True,
+            )
+
+
+class _PdfSessionCache:
+    """Reuse one consecutive PDF safely without retaining an unbounded document set."""
+
+    def __init__(self) -> None:
+        self._current: _PdfSession | None = None
+
+    def __enter__(self) -> _PdfSessionCache:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def get(self, path: Path, shown_path: str) -> _PdfSession:
+        if self._current is not None and self._current.path != path:
+            self._current.finish()
+            self._current = None
+        if self._current is None:
+            self._current = _PdfSession(path, shown_path)
+        return self._current
+
+    def close(self) -> None:
+        if self._current is not None:
+            self._current.finish()
+            self._current = None
+
+
 def check_quote(
     pdf: str,
     page: int,
@@ -197,17 +383,29 @@ def check_quote(
     record_id: object = None,
     line: int | None = None,
     pdf_root: Path | None = None,
+    _sessions: _PdfSessionCache | None = None,
 ) -> dict[str, Any]:
     """Run the gate on one quote and return a result record.
 
-    The verdict is :func:`specguard.gate.verify_quote`, which reads the file
-    itself. The CLI reads the file's bytes once before the gate and once after
-    it. The diagnostics in ``match`` come from that first snapshot, and the
-    record carries its SHA-256. If the two reads differ, the file changed while
-    it was checked and the record is an error, not a verdict. A writer that
-    replaces the file and restores it between the reads is outside this check,
-    exactly as it is outside the gate's own guarantee.
+    The verdict and diagnostics share the gate's canonical implementation and
+    one open PDF. The CLI copies and hashes the bytes with bounded memory before
+    checking, then compares the file byte-for-byte with that snapshot. A change
+    makes every result from the open session an error. Batch mode reuses the
+    session only for consecutive records naming the same path, which bounds
+    parser state while avoiding record-by-record reparsing.
     """
+    if _sessions is None:
+        with _PdfSessionCache() as sessions:
+            return check_quote(
+                pdf,
+                page,
+                quote,
+                record_id=record_id,
+                line=line,
+                pdf_root=pdf_root,
+                _sessions=sessions,
+            )
+
     path = Path(pdf)
     if pdf_root is not None and not path.is_absolute():
         path = pdf_root / path
@@ -241,18 +439,16 @@ def check_quote(
                 normalized_quote=normalized_quote,
                 **common,
             )
-        snapshot = path.read_bytes()
-        with pymupdf.open(stream=snapshot, filetype="pdf") as snapshot_document:
-            if not snapshot_document.is_pdf:
-                return _result(
-                    status="error",
-                    reason=ERROR_PDF_UNREADABLE,
-                    detail=f"{shown_path} is not a PDF",
-                    normalized_quote=normalized_quote,
-                    **common,
-                )
-        verdict = verify_quote(quote, page, path)
-        unchanged = path.read_bytes() == snapshot
+        session = _sessions.get(path, shown_path)
+        verdict, normalized_page = session.verify(quote, page)
+    except _NotPdfError:
+        return _result(
+            status="error",
+            reason=ERROR_PDF_UNREADABLE,
+            detail=f"{shown_path} is not a PDF",
+            normalized_quote=normalized_quote,
+            **common,
+        )
     except Exception as exc:  # any open or read failure is reported, not raised
         return _result(
             status="error",
@@ -262,18 +458,10 @@ def check_quote(
             **common,
         )
 
-    common["pdf_sha256"] = hashlib.sha256(snapshot).hexdigest()
-    if not unchanged:
-        return _result(
-            status="error",
-            reason=ERROR_PDF_CHANGED,
-            detail=f"{shown_path} changed while it was being checked; re-run once it is stable",
-            normalized_quote=normalized_quote,
-            **common,
-        )
+    common["pdf_sha256"] = session.sha256
 
     if verdict.rejection_reason is RejectionReason.PAGE_OUT_OF_RANGE:
-        return _result(
+        result = _result(
             status="fail",
             reason=verdict.rejection_reason.value,
             detail=(
@@ -284,20 +472,10 @@ def check_quote(
             normalized_quote=verdict.normalized_quote,
             **common,
         )
+        session.remember(result)
+        return result
 
-    try:
-        with pymupdf.open(stream=snapshot, filetype="pdf") as document:
-            normalized_page = normalize(document[page - 1].get_text())
-    except Exception as exc:  # the gate opened these bytes, so this is not expected
-        return _result(
-            status="error",
-            reason=ERROR_PDF_UNREADABLE,
-            detail=f"could not re-open the snapshot of {shown_path}: {type(exc).__name__}",
-            page_count=verdict.page_count,
-            normalized_quote=verdict.normalized_quote,
-            **common,
-        )
-
+    assert normalized_page is not None
     needle = verdict.normalized_quote
     offset = find_on_boundaries(normalized_page, needle)
     if (offset != -1) is not verdict.verified:
@@ -322,7 +500,7 @@ def check_quote(
         match["offset"] = offset
         start = max(0, offset - CONTEXT_CHARS)
         match["context"] = normalized_page[start : offset + len(needle) + CONTEXT_CHARS]
-        return _result(
+        result = _result(
             status="pass",
             reason=None,
             detail=f"found on page {page} at offset {offset} of the normalized page text",
@@ -331,6 +509,8 @@ def check_quote(
             match=match,
             **common,
         )
+        session.remember(result)
+        return result
 
     if not normalized_page:
         detail = (
@@ -355,7 +535,7 @@ def check_quote(
                 "content may be drawn as outlines or an image: check the page visually"
             )
     assert verdict.rejection_reason is not None
-    return _result(
+    result = _result(
         status="fail",
         reason=verdict.rejection_reason.value,
         detail=detail,
@@ -364,6 +544,8 @@ def check_quote(
         match=match,
         **common,
     )
+    session.remember(result)
+    return result
 
 
 def _decode_batch(raw: bytes) -> str:
@@ -410,7 +592,13 @@ def _reject_json_constant(value: str) -> Never:
     raise ValueError(f"{value} is not a valid JSON value")
 
 
-def _check_batch_line(text: str, line: int, pdf_root: Path | None, source: str) -> dict[str, Any]:
+def _check_batch_line(
+    text: str,
+    line: int,
+    pdf_root: Path | None,
+    source: str,
+    sessions: _PdfSessionCache,
+) -> dict[str, Any]:
     """Validate one batch line and run the gate on it, or describe why not."""
     location = f"{_batch_source_label(source)}, line {line}"
     try:
@@ -488,7 +676,15 @@ def _check_batch_line(text: str, line: int, pdf_root: Path | None, source: str) 
             page=page if isinstance(page, int) and not isinstance(page, bool) else None,
             quote=quote if isinstance(quote, str) else None,
         )
-    return check_quote(pdf, page, quote, record_id=record_id, line=line, pdf_root=pdf_root)
+    return check_quote(
+        pdf,
+        page,
+        quote,
+        record_id=record_id,
+        line=line,
+        pdf_root=pdf_root,
+        _sessions=sessions,
+    )
 
 
 def _envelope(results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -571,10 +767,11 @@ def _run_quote_check(args: argparse.Namespace) -> dict[str, Any]:
             flags = ", ".join(f"--{name}" for name in single) or "--id"
             raise _UsageError(f"--batch cannot be combined with {flags}")
         text = _read_batch(args.batch)
-        results = [
-            _check_batch_line(raw, number, args.pdf_root, args.batch)
-            for number, raw in _batch_lines(text)
-        ]
+        with _PdfSessionCache() as sessions:
+            results = [
+                _check_batch_line(raw, number, args.pdf_root, args.batch, sessions)
+                for number, raw in _batch_lines(text)
+            ]
         if not results:
             raise _UsageError(
                 f"{_batch_source_label(args.batch)} holds no records; nothing was verified"
