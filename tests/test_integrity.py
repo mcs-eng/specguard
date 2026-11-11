@@ -36,6 +36,7 @@ from tests.fixtures_pdf import (
     write_inline_image_pdf,
     write_invalid_render_mode_pdf,
     write_matrix_scaled_pdf,
+    write_non_finite_render_mode_pdf,
     write_path_clipped_pdf,
     write_pdf,
     write_render_mode_pdf,
@@ -776,6 +777,59 @@ def test_an_out_of_range_render_mode_operand_is_ignored(tmp_path: Path) -> None:
     path = write_invalid_render_mode_pdf(tmp_path / "badmode.pdf", "Ordinary painted line.")
 
     assert check_text_layer(path).clean is True
+
+
+NON_FINITE_OPERANDS = [b"inf", b"-inf", b"nan", b"1e400"]
+
+
+@pytest.mark.parametrize("operand", NON_FINITE_OPERANDS, ids=lambda o: o.decode())
+def test_a_non_finite_render_mode_operand_does_not_abort_the_screen(
+    tmp_path: Path, operand: bytes
+) -> None:
+    """``inf Tr`` once reached ``int()`` and raised instead of returning a report.
+
+    A PDF number is finite, and MuPDF reads each of these operands as an
+    unknown keyword and paints the line that follows. The scan reads the
+    operand as an operator too, so the ``Tr`` sets no mode and the page
+    reports what MuPDF paints.
+    """
+    path = write_non_finite_render_mode_pdf(tmp_path / "nonfinite.pdf", "Second line.", operand)
+
+    report = check_text_layer(path)
+
+    assert report.clean is True
+    with pymupdf.open(path) as document:
+        flags = [
+            span["char_flags"]
+            for block in document[0].get_text("dict")["blocks"]
+            for line in block.get("lines", [])
+            for span in line["spans"]
+            if span["text"] == "Second line."
+        ]
+    assert flags and all(flag & integrity.PAINTING_CHAR_FLAGS for flag in flags)
+
+
+@pytest.mark.parametrize("operand", NON_FINITE_OPERANDS, ids=lambda o: o.decode())
+def test_a_non_finite_render_mode_operand_cannot_clear_a_hiding_mode(
+    tmp_path: Path, operand: bytes
+) -> None:
+    """A malformed ``Tr`` after ``7 Tr`` leaves clip-only mode 7 in effect for the scan.
+
+    An invalid operand sets no mode, the same rule ``99 Tr`` follows, so text
+    shown after it is still flagged rather than resolved in the document's
+    favour. MuPDF 1.28.2 happens to fall back to mode 0 here and paint the
+    line, but a malformed operator has no defined outcome across viewers, and
+    the screen prefers a disclosure a human resolves over a miss nobody sees.
+    """
+    path = write_non_finite_render_mode_pdf(
+        tmp_path / "nonfinite7.pdf", "Clip only line.", operand, prior_mode=7
+    )
+
+    report = check_text_layer(path)
+
+    assert report.clean is False
+    assert report.detectors == [integrity.DETECTOR_CONTENT_STREAM_RENDER_MODE]
+    assert "render mode 7" in report.hidden_spans[0].evidence
 
 
 # ---------------------------------------------------------------------------

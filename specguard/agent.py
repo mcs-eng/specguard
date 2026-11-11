@@ -426,7 +426,8 @@ def _recorded_page_number(value: Any) -> int | None:
         return None
     try:
         return int(value)
-    except ValueError:
+    except (ValueError, OverflowError):
+        # A float infinity raises OverflowError, not ValueError.
         return None
 
 

@@ -654,6 +654,29 @@ def test_a_later_turn_files_its_calls_under_a_later_turn_index() -> None:
     assert [call.page_number for call in generator.model_tool_calls()] == [3, 9]
 
 
+@pytest.mark.parametrize("page_number", [float("inf"), float("-inf"), float("nan")])
+def test_a_non_finite_page_number_is_recorded_as_none(page_number: float) -> None:
+    """``int(inf)`` raises OverflowError, which must not abort the model turn."""
+    generator = _generator_over(
+        [
+            FakeEvent(
+                function_calls=(
+                    types.FunctionCall(
+                        id="call-1",
+                        name="extract_pdf_text",
+                        args={"document_role": "specification", "page_number": page_number},
+                    ),
+                )
+            ),
+            FakeEvent(text='{"claims": []}'),
+        ]
+    )
+
+    asyncio.run(generator.generate_claims("Audit this document."))
+
+    assert [call.page_number for call in generator.model_tool_calls()] == [None]
+
+
 def test_the_receipt_never_carries_the_quote_the_model_sent() -> None:
     generator = _generator_over([*_check_events("call-1", 5, verified=True), FakeEvent(text="{}")])
 

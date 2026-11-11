@@ -511,6 +511,37 @@ def write_invalid_render_mode_pdf(path: Path, text: str) -> Path:
     return path
 
 
+def write_non_finite_render_mode_pdf(
+    path: Path, text: str, operand: bytes, prior_mode: int | None = None
+) -> Path:
+    """Write one page whose second line is shown after ``<operand> Tr``.
+
+    ``operand`` is a token Python's ``float`` reads but a PDF cannot carry,
+    such as ``inf`` or ``nan``. With ``prior_mode`` set, a valid ``Tr`` sets
+    that mode first, so the malformed ``Tr`` arrives while it is in effect.
+    """
+    document = pymupdf.open()
+    page = document.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    page.insert_text((72.0, 100.0), "Ordinary first line.", fontname=SIMPLE_FONT, fontsize=11)
+    reference = _font_reference(page).encode("latin-1")
+    prior = b"" if prior_mode is None else str(prior_mode).encode() + b" Tr "
+    _append_operators(
+        document,
+        page,
+        b"q BT /"
+        + reference
+        + b" 11 Tf 1 0 0 1 72 600 Tm "
+        + prior
+        + operand
+        + b" Tr ("
+        + text.encode("latin-1")
+        + b") Tj ET Q",
+    )
+    document.save(str(path))
+    document.close()
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Builders for the soft-mask detector
 #
