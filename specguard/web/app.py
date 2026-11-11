@@ -145,6 +145,10 @@ GATE_FIXTURES = {
 }
 GATE_DEFAULT_FIXTURE = "specification"
 GATE_DEFAULT_PAGE = 5
+
+#: Longest page number the playground accepts. Nine digits is far past any real
+#: document and far below Python's integer string conversion limit.
+GATE_PAGE_MAX_DIGITS = 9
 GATE_DEFAULT_QUOTE = "Conductor terminations shall be rated 90 deg C minimum."
 
 #: Shown when the committed fixtures could not be read at import.
@@ -1000,10 +1004,22 @@ CONTEXT_UNAVAILABLE = (
 
 
 def _gate_input_error(fixture_id: str, page_text: str, quote_text: str) -> str | None:
-    """Return the user-visible reason the playground cannot run this input."""
+    """Return the user-visible reason the playground cannot run this input.
+
+    The page must be ASCII digits and at most :data:`GATE_PAGE_MAX_DIGITS` long.
+    ``str.isdigit`` alone also accepts characters such as ``²`` that ``int``
+    refuses, and ``int`` refuses a digit string past Python's conversion limit,
+    so either would raise instead of reaching this validation message.
+    """
     if fixture_id not in GATE_FIXTURES:
         return "Choose one of the committed fixtures."
-    if not page_text.strip().isdigit() or int(page_text) < 1:
+    page_digits = page_text.strip()
+    if (
+        not page_digits.isascii()
+        or not page_digits.isdigit()
+        or len(page_digits) > GATE_PAGE_MAX_DIGITS
+        or int(page_digits) < 1
+    ):
         return "The page number must be a whole number of at least 1."
     if not quote_text.strip():
         return "Enter a quote to check."

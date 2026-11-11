@@ -1992,7 +1992,22 @@ def test_gate_playground_refuses_a_fixture_it_does_not_hold() -> None:
     assert "Choose one of the committed fixtures." in response.text
 
 
-@pytest.mark.parametrize("page", ["0", "-3", "two", ""])
+@pytest.mark.parametrize(
+    "page",
+    [
+        "0",
+        "-3",
+        "two",
+        "",
+        # str.isdigit accepts these and int either refuses them or reads a
+        # non-ASCII digit as a page number. Each must get the validation error.
+        pytest.param("²", id="superscript-two"),
+        pytest.param("٥", id="arabic-indic-five"),
+        pytest.param("1²", id="digit-then-superscript"),
+        pytest.param("9" * 5000, id="past-int-string-limit"),
+        pytest.param("1" + "0" * 9, id="ten-digits"),
+    ],
+)
 def test_gate_playground_refuses_a_page_that_is_not_a_positive_number(page: str) -> None:
     client, _, _, _ = _client()
 
