@@ -2006,6 +2006,11 @@ def test_gate_playground_refuses_a_fixture_it_does_not_hold() -> None:
         pytest.param("1²", id="digit-then-superscript"),
         pytest.param("9" * 5000, id="past-int-string-limit"),
         pytest.param("1" + "0" * 9, id="ten-digits"),
+        # A bare str.strip() drops these, int() refuses them: the page must be
+        # refused by validation, not raise at conversion.
+        pytest.param("\x1c5", id="file-separator-then-digit"),
+        pytest.param("5\x1f", id="digit-then-unit-separator"),
+        pytest.param("\xa05", id="no-break-space-then-digit"),
     ],
 )
 def test_gate_playground_refuses_a_page_that_is_not_a_positive_number(page: str) -> None:
@@ -2017,6 +2022,16 @@ def test_gate_playground_refuses_a_page_that_is_not_a_positive_number(page: str)
 
     assert response.status_code == 400
     assert "whole number of at least 1" in response.text
+
+
+def test_gate_playground_accepts_a_page_padded_with_plain_whitespace() -> None:
+    client, _, _, _ = _client()
+
+    response = client.post(
+        "/gate", data={"fixture": "specification", "page": " 5\t\r\n", "quote": SPEC_QUOTE}
+    )
+
+    assert response.status_code == 200
 
 
 def test_gate_playground_refuses_an_empty_quote() -> None:

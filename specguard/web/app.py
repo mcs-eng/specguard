@@ -415,7 +415,9 @@ def create_app(services: WebServices | None = None) -> FastAPI:
         selected = GATE_FIXTURES[fixture_id]
         try:
             result = gate.verify_quote(
-                quote_text, int(page_text), FIXTURES_DIRECTORY / selected.filename
+                quote_text,
+                int(_gate_page_digits(page_text)),
+                FIXTURES_DIRECTORY / selected.filename,
             )
         except OSError:
             raise HTTPException(
@@ -1003,6 +1005,16 @@ CONTEXT_UNAVAILABLE = (
 )
 
 
+def _gate_page_digits(page_text: str) -> str:
+    """Return the page field with plain surrounding whitespace removed.
+
+    Validation and conversion both use this one trimming. ``str.strip()`` with
+    no argument also drops the separators ``\\x1c`` to ``\\x1f``, which ``int``
+    refuses, so a field validated after a bare ``strip`` could still raise.
+    """
+    return page_text.strip(" \t\r\n")
+
+
 def _gate_input_error(fixture_id: str, page_text: str, quote_text: str) -> str | None:
     """Return the user-visible reason the playground cannot run this input.
 
@@ -1013,7 +1025,7 @@ def _gate_input_error(fixture_id: str, page_text: str, quote_text: str) -> str |
     """
     if fixture_id not in GATE_FIXTURES:
         return "Choose one of the committed fixtures."
-    page_digits = page_text.strip()
+    page_digits = _gate_page_digits(page_text)
     if (
         not page_digits.isascii()
         or not page_digits.isdigit()
