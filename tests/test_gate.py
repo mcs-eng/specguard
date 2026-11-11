@@ -231,6 +231,46 @@ def test_match_may_not_start_against_a_number_binding_character(
     assert result.rejection_reason is RejectionReason.QUOTE_NOT_FOUND_ON_CITED_PAGE
 
 
+@pytest.mark.parametrize(
+    ("page", "quote"),
+    [
+        ("Rated working pressure is 5.5 psi", "Rated working pressure is 5."),
+        ("Max load 15,000 lb", "Max load 15,"),
+        ("see section 3.2.1", "see section 3."),
+        ("rated 15.5 psi", ".5 psi"),
+        ("rated 12,500 kcmil", ",500 kcmil"),
+    ],
+)
+def test_a_number_binding_edge_may_not_cut_a_number(page: str, quote: str, tmp_path: Path) -> None:
+    """A quote may not end or start on a decimal point or separator inside a number.
+
+    The quote ``Rated working pressure is 5.`` stops in the middle of ``5.5``.
+    The same quote without its trailing ``.`` was already refused; the edge
+    punctuation used to skip the boundary check.
+    """
+    pdf = write_pdf(tmp_path / "numbers.pdf", [[page]])
+    result = verify_quote(quote, 1, pdf)
+    assert result.verified is False, quote
+    assert result.rejection_reason is RejectionReason.QUOTE_NOT_FOUND_ON_CITED_PAGE
+
+
+@pytest.mark.parametrize(
+    ("page", "quote"),
+    [
+        ("The pressure is 5. Then stop.", "The pressure is 5."),
+        ("Rated 5, 10, or 15 amperes.", "Rated 5,"),
+        ("Set to 1.5 bar. 2 units.", ". 2 units"),
+        ("Rated working pressure is 5.5 psi", "Rated working pressure is 5.5"),
+    ],
+)
+def test_a_number_binding_edge_outside_a_number_still_verifies(
+    page: str, quote: str, tmp_path: Path
+) -> None:
+    """A sentence-final ``5.`` or a list ``5,`` is not inside a longer number."""
+    pdf = write_pdf(tmp_path / "numbers.pdf", [[page]])
+    assert verify_quote(quote, 1, pdf).verified is True, quote
+
+
 def test_match_may_not_start_against_a_unicode_minus() -> None:
     """A Unicode minus must bind to the following numeric token too."""
     from specguard.gate import contains_on_boundaries

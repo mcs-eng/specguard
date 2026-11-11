@@ -85,7 +85,7 @@ The scope of this construction is the SpecGuard application path. A separate pro
    d. Casefold.
    e. Collapse every run of whitespace to a single space.
    f. Strip leading and trailing whitespace.
-3. **Match.** The claim verifies only if the normalized quote is a contiguous substring of the normalized text of the cited page, and the substring sits on token boundaries: the match may not begin or end in the middle of a word or a number. A digit at the edge of the quote may not sit against a character that binds to a number either, so a claim quoting `5 A` cannot ride on the page text `0.5 A`. There is no fuzzy matching, no edit distance, and no cross-page search.
+3. **Match.** The claim verifies only if the normalized quote is a contiguous substring of the normalized text of the cited page, and the substring sits on token boundaries: the match may not begin or end in the middle of a word or a number. A digit at the edge of the quote may not sit against a character that binds to a number either, so a claim quoting `5 A` cannot ride on the page text `0.5 A`. An edge character that binds to a number, with a digit on the quote side and a digit on the page side, sits inside a number too, so a claim quoting `pressure is 5.` cannot ride on the page text `pressure is 5.5 psi`. There is no fuzzy matching, no edit distance, and no cross-page search.
 4. **A miss is a rejection, always.** Every rejection carries a machine-readable reason: `page_out_of_range` or `quote_not_found_on_cited_page`.
 
 ### What the contract does not claim
@@ -273,6 +273,7 @@ Known-bad cases that reject:
 - A page number outside the document.
 - An empty quote.
 - A quote whose leading digit rides on a longer number: `5 A` against `0.5 A`, `5 kPa` against `-5 kPa`, `5%` against `±5%`, `500 kcmil` against `12,500 kcmil`, `1 unit` against `AHU-1 unit`.
+- A quote whose edge is a decimal point or separator inside a longer number: `pressure is 5.` against `pressure is 5.5 psi`, `max load 15,` against `max load 15,000 lb`, `.5 psi` against `15.5 psi`.
 - A quote that merges digits across a soft hyphen: `NEMA 12` against a page whose `NEMA 1` is broken by a soft hyphen before a `2`.
 
 Known limitations, each pinned by a test so the limitation cannot quietly disappear:
