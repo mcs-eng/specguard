@@ -21,7 +21,10 @@ VERIFICATION CONTRACT
    on token boundaries: the match may not begin or end in the middle of a word
    or a number. A digit at the edge of the quote may not sit against a
    character that binds to a number either, so a claim quoting ``5 A`` cannot
-   ride on the page text ``0.5 A``. There is no fuzzy matching, no edit
+   ride on the page text ``0.5 A``. An edge character that binds to a number,
+   with a digit on the quote side and a digit on the page side, sits inside a
+   number too, so a claim quoting ``pressure is 5.`` cannot ride on the page
+   text ``pressure is 5.5 psi``. There is no fuzzy matching, no edit
    distance, and no cross-page search.
 4. A miss is a rejection, always. Every rejection carries a machine-readable
    reason: ``page_out_of_range`` or ``quote_not_found_on_cited_page``.
@@ -85,26 +88,34 @@ def normalize(text: str) -> str:
     return text.strip()
 
 
-def _cuts_a_token(edge: str, neighbour: str) -> bool:
+def _cuts_a_token(edge: str, inner: str, neighbour: str) -> bool:
     """True if ``neighbour`` continues the token that ``edge`` belongs to.
+
+    ``edge`` is the quote's first or last character, ``inner`` is the quote
+    character next to it (empty for a one-character quote), and ``neighbour``
+    is the page character just outside the match.
 
     An alphanumeric edge may not sit against another alphanumeric character.
     A digit edge additionally may not sit against a character that binds to a
     number, so a quote of ``5 A`` cannot ride on the page text ``0.5 A``.
+    A number-binding edge with a digit on each side of it is inside a number,
+    so a quote ending ``5.`` cannot ride on the page text ``5.5 psi``, and a
+    quote starting ``.5`` cannot ride on ``15.5 psi``. A sentence-final
+    ``5.`` followed by a space still matches.
     """
-    if not edge.isalnum():
-        return False
-    if neighbour.isalnum():
-        return True
-    return edge.isdigit() and neighbour in _NUMBER_BINDING
+    if edge.isalnum():
+        if neighbour.isalnum():
+            return True
+        return edge.isdigit() and neighbour in _NUMBER_BINDING
+    return edge in _NUMBER_BINDING and inner.isdigit() and neighbour.isdigit()
 
 
 def _sits_on_token_boundaries(haystack: str, needle: str, start: int) -> bool:
     """True if the match at ``start`` does not cut a word or a number in half."""
     end = start + len(needle)
-    if start > 0 and _cuts_a_token(needle[0], haystack[start - 1]):
+    if start > 0 and _cuts_a_token(needle[0], needle[1:2], haystack[start - 1]):
         return False
-    if end < len(haystack) and _cuts_a_token(needle[-1], haystack[end]):
+    if end < len(haystack) and _cuts_a_token(needle[-1], needle[-2:-1], haystack[end]):
         return False
     return True
 

@@ -145,6 +145,10 @@ GATE_FIXTURES = {
 }
 GATE_DEFAULT_FIXTURE = "specification"
 GATE_DEFAULT_PAGE = 5
+
+#: Longest page number the playground accepts. Nine digits is far past any real
+#: document and far below Python's integer string conversion limit.
+GATE_PAGE_MAX_DIGITS = 9
 GATE_DEFAULT_QUOTE = "Conductor terminations shall be rated 90 deg C minimum."
 
 #: Shown when the committed fixtures could not be read at import.
@@ -411,7 +415,9 @@ def create_app(services: WebServices | None = None) -> FastAPI:
         selected = GATE_FIXTURES[fixture_id]
         try:
             result = gate.verify_quote(
-                quote_text, int(page_text), FIXTURES_DIRECTORY / selected.filename
+                quote_text,
+                int(_gate_page_digits(page_text)),
+                FIXTURES_DIRECTORY / selected.filename,
             )
         except OSError:
             raise HTTPException(
@@ -999,11 +1005,33 @@ CONTEXT_UNAVAILABLE = (
 )
 
 
+def _gate_page_digits(page_text: str) -> str:
+    """Return the page field with plain surrounding whitespace removed.
+
+    Validation and conversion both use this one trimming. ``str.strip()`` with
+    no argument also drops the separators ``\\x1c`` to ``\\x1f``, which ``int``
+    refuses, so a field validated after a bare ``strip`` could still raise.
+    """
+    return page_text.strip(" \t\r\n")
+
+
 def _gate_input_error(fixture_id: str, page_text: str, quote_text: str) -> str | None:
-    """Return the user-visible reason the playground cannot run this input."""
+    """Return the user-visible reason the playground cannot run this input.
+
+    The page must be ASCII digits and at most :data:`GATE_PAGE_MAX_DIGITS` long.
+    ``str.isdigit`` alone also accepts characters such as ``²`` that ``int``
+    refuses, and ``int`` refuses a digit string past Python's conversion limit,
+    so either would raise instead of reaching this validation message.
+    """
     if fixture_id not in GATE_FIXTURES:
         return "Choose one of the committed fixtures."
-    if not page_text.strip().isdigit() or int(page_text) < 1:
+    page_digits = _gate_page_digits(page_text)
+    if (
+        not page_digits.isascii()
+        or not page_digits.isdigit()
+        or len(page_digits) > GATE_PAGE_MAX_DIGITS
+        or int(page_digits) < 1
+    ):
         return "The page number must be a whole number of at least 1."
     if not quote_text.strip():
         return "Enter a quote to check."

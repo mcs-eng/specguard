@@ -148,6 +148,7 @@ not close it.
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Iterator
 from functools import partial
 from pathlib import Path
@@ -576,14 +577,21 @@ def _tokenize(data: bytes) -> Iterator[tuple[str, object]]:
 
 
 def _is_number(token: object) -> bool:
-    """True when a token is a PDF numeric object."""
+    """True when a token is a PDF numeric object.
+
+    A PDF number is finite. Python's ``float`` also reads ``inf``, ``nan`` and
+    an overflowing exponent such as ``1e400``, none of which a PDF can carry;
+    MuPDF reports each as an unknown keyword. Accepting them would let a
+    crafted operand reach ``int()`` and abort the screen, so they are read as
+    operators, and the operator that follows them sees no operand.
+    """
     if not isinstance(token, str):
         return False
     try:
-        float(token)
+        value = float(token)
     except ValueError:
         return False
-    return True
+    return math.isfinite(value)
 
 
 def _readable(data: bytes) -> str:
@@ -883,7 +891,9 @@ class _RenderModeScan:
                 requested = int(float(str(operands[-1])))
                 # PDF defines modes 0 to 7. Any other operand is invalid, and
                 # honouring it would also let one page mint unbounded keys for
-                # the per-form scan cache below.
+                # the per-form scan cache below. A non-finite operand never
+                # reaches here: it is read as an operator, so this Tr has no
+                # operand and the mode in effect stays in effect.
                 if 0 <= requested <= 7:
                     render_mode = requested
             elif operator == "gs" and operands and isinstance(operands[-1], str):
